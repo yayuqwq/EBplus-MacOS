@@ -2,18 +2,21 @@
 //
 // Layout (design §5.1):
 //   - central:  EventDisplayWidget (OpenGL)
-//   - right dock: SettingsPanel
+//   - right dock: SettingsPanel (two tabs: 基础功能 / 算法模块)
 //   - bottom (status bar): connection | event rate | timestamp | recording state
 //   - bottom (above status bar): PlaybackControls (file playback only)
-//   - menu bar: File | View | Camera | Preprocess | Frame Mode | Algorithm |
-//               Calibration | Tools | Help
+//   - menu bar: File | View | Camera | Calibration | Tools | Help
+//
+// The Algorithm menu has been removed — all algorithm configuration lives
+// in the sidebar's "算法模块" tab. The sidebar can be hidden via the
+// View menu (Ctrl+Shift+S) to maximize the display area.
 //
 // Phase 1-2: live camera + bias/roi/esp/trigger control.
 // Phase 3:   recorder + playback controls.
 // Phase 4:   exporter dialog + config manager.
 // Phase 5:   preprocessing panel, algorithms panel, file tools panel.
 // Phase 9:   calibration wizard.
-// Phase 10:  temporal plot, multi-window layout, i18n, layout save/restore.
+// Phase 10:  multi-window layout, i18n, layout save/restore.
 
 #ifndef GUI_MAIN_WINDOW_H
 #define GUI_MAIN_WINDOW_H
@@ -39,7 +42,6 @@
 #include "panels/settings_panel.h"
 #include "recorder/playback_controller.h"
 #include "recorder/recorder_controller.h"
-#include "temporal/temporal_plot_window.h"
 #include "display/space_time_display.h"
 #include "widgets/algo_window.h"
 #include "widgets/multi_window_manager.h"
@@ -94,12 +96,8 @@ private slots:
     // Phase 9 — calibration.
     void on_intrinsic_wizard();
 
-    // Phase 10 — temporal plot / multi-window / layout.
-    void on_open_temporal_plot();
-    void on_open_time_surface();
+    // Phase 10 — multi-window / layout / standalone algorithm views.
     void on_open_xyt_view();
-    void on_open_event_to_video();
-    void on_open_freq_detector();
     void on_open_algo_window(const std::string& algo_name);
     void on_add_display_window();
     void on_tile_windows();
@@ -116,14 +114,6 @@ private:
 
     void on_file_opened_for_playback(const QString& path);
 
-    // Phase 10 — temporal plot callback management. The CD callback is
-    // installed on the live camera when the plot window opens and removed
-    // when it closes (or when the camera disconnects). Using QPointer +
-    // a stored CallbackId avoids the dangling-pointer race that existed
-    // when the raw pointer was read from the SDK thread.
-    void install_temporal_callback();
-    void remove_temporal_callback();
-
     // Algorithm event/result pipeline — pushes CD events to all live
     // AlgoInstances and pulls results for overlay/replace/standalone display.
     void install_algo_callback();
@@ -132,6 +122,7 @@ private:
 
     EventDisplayWidget* display_{nullptr};
     SettingsPanel* settings_{nullptr};
+    QDockWidget* settings_dock_{nullptr};  ///< Right-dock wrapper, for hide/show.
     PlaybackControls* playback_controls_{nullptr};
 
     QLabel* status_conn_{nullptr};
@@ -150,11 +141,6 @@ private:
 
     // Camera menu actions.
     QAction* a_roi_drag_{nullptr};
-
-    // Preprocess menu actions.
-    QMenu* m_preprocess_{nullptr};
-    /// Preprocess menu actions keyed by stage id, for sync with the panel.
-    QHash<QString, QAction*> preprocess_actions_;
 
     // Calibration menu actions.
     QMenu* m_calibration_{nullptr};
@@ -180,11 +166,8 @@ private:
     // Phase 9 — owned lazily; built when the wizard is first opened.
     CalibrationWizard* calibration_wizard_{nullptr};
 
-    // Phase 10 — temporal plot is lazily created; layout manager is owned
-    // from construction; multi-window manager is owned lazily.
-    QPointer<TemporalPlotWindow> temporal_plot_;
-    std::optional<Metavision::CallbackId> temporal_cd_cb_id_;
-    std::atomic<Metavision::timestamp> temporal_last_post_us_{0};
+    // Phase 10 — layout manager is owned from construction; multi-window
+    // manager is owned lazily.
     std::unique_ptr<MultiWindowManager> multi_window_;
     std::unique_ptr<LayoutManager> layout_manager_;
 
@@ -200,21 +183,14 @@ private:
     /// user can adjust any parameter (including the 5 ROI params) at runtime.
     QHash<std::string, QPointer<AlgoWindow>> algo_windows_;
 
-    /// Algorithm ROI actions keyed by algo name (the "算法ROI" checkable
-    /// submenu item that toggles roi_enabled). Kept separate from
-    /// algo_actions_ (the "Enable" item) so the two can be toggled
-    /// independently.
-    QHash<std::string, QAction*> algo_roi_actions_;
-
     // Algorithm event/result pipeline.
     std::optional<Metavision::CallbackId> algo_cd_cb_id_;
     std::atomic<Metavision::timestamp> algo_last_xyt_post_us_{0};
     FrameAnnotator annotator_;
     Metavision::timestamp prev_frame_ts_{0};
 
-    /// Algorithm menu actions keyed by algo name (for checkable state sync
-    /// between the menu, AlgorithmsPanel, and standalone windows).
-    QHash<std::string, QAction*> algo_actions_;
+    /// View menu action to toggle the sidebar (settings dock) visibility.
+    QAction* a_toggle_sidebar_{nullptr};
 
     /// Draws the ROI rectangle of any enabled self-developed algorithm
     /// (design §5.6.6: all self-developed algos support ROI) on the main

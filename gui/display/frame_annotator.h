@@ -76,6 +76,14 @@ public:
                      double radius = 2.0,
                      const QColor& color = QColor());
 
+    /// @brief Draws a set of colored filled rectangles (one per point).
+    /// Used for HSV optical-flow visualization (hue=direction, value=strength).
+    /// @param pts  (position, color) pairs in image coords.
+    /// @param side Square side length in pixels.
+    void draw_colored_points(QImage& img,
+                             const std::vector<std::pair<QPointF, QColor>>& pts,
+                             double side = 3.0);
+
     /// @brief Draws a set of circles (center + radius).
     void draw_circles(QImage& img,
                       const std::vector<std::pair<QPointF, double>>& circles,

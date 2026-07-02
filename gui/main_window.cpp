@@ -73,13 +73,13 @@ MainWindow::MainWindow(QWidget* parent)
     setCentralWidget(display_);
 
     settings_ = new SettingsPanel(&algo_bridge_, &file_converter_, this);
-    auto* dock = new QDockWidget(tr("Settings"), this);
-    dock->setObjectName("SettingsDock");
-    dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-    dock->setWidget(settings_);
-    dock->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
-    addDockWidget(Qt::RightDockWidgetArea, dock);
-    dock->setMinimumWidth(320);
+    settings_dock_ = new QDockWidget(tr("Settings"), this);
+    settings_dock_->setObjectName("SettingsDock");
+    settings_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    settings_dock_->setWidget(settings_);
+    settings_dock_->setFeatures(QDockWidget::DockWidgetMovable | QDockWidget::DockWidgetClosable);
+    addDockWidget(Qt::RightDockWidgetArea, settings_dock_);
+    settings_dock_->setMinimumWidth(320);
 
     // Phase 3: bottom-bar playback transport (hidden until a file is opened).
     playback_controls_ = new PlaybackControls(this);
@@ -122,12 +122,8 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     if (layout_manager_) layout_manager_->save_default();
     // Delete lazily-created child windows before our members are destroyed.
     // Their destroyed() handlers access MainWindow members (e.g. camera_,
-    // temporal_cd_cb_id_) that would already be gone by the time ~QWidget
+    // algo_cd_cb_id_) that would already be gone by the time ~QWidget
     // runs its automatic child cleanup.
-    if (temporal_plot_) {
-        delete temporal_plot_.data();
-        // QPointer is auto-nulled by the destroyed signal.
-    }
     if (calibration_wizard_) {
         delete calibration_wizard_;
         // calibration_wizard_ is nulled by the destroyed signal handler.
@@ -211,14 +207,14 @@ void MainWindow::build_menus() {
     m_file->addSeparator();
     m_file->addAction(tr("E&xit"), this, &QWidget::close, QKeySequence::Quit);
 
-    // View
+    // View — includes the sidebar (settings dock) toggle with shortcut.
     auto* m_view = mb->addMenu(tr("&View"));
-    auto* dock_toggle = m_view->addAction(tr("Toggle Settings Panel"));
-    dock_toggle->setCheckable(true);
-    dock_toggle->setChecked(true);
-    connect(dock_toggle, &QAction::toggled, this, [this](bool on) {
-        auto* dock = findChild<QDockWidget*>("SettingsDock");
-        if (dock) dock->setVisible(on);
+    a_toggle_sidebar_ = m_view->addAction(tr("Toggle Sidebar"));
+    a_toggle_sidebar_->setCheckable(true);
+    a_toggle_sidebar_->setChecked(true);
+    a_toggle_sidebar_->setShortcut(QKeySequence("Ctrl+Shift+S"));
+    connect(a_toggle_sidebar_, &QAction::toggled, this, [this](bool on) {
+        if (settings_dock_) settings_dock_->setVisible(on);
     });
     auto* pb_toggle = m_view->addAction(tr("Toggle Playback Panel"));
     pb_toggle->setCheckable(true);
@@ -234,18 +230,10 @@ void MainWindow::build_menus() {
     m_view->addAction(tr("&Fullscreen"), this,
                       [this]() { showFullScreen(); }, QKeySequence("F11"));
 
-    // Camera
+    // Camera — only display-interaction controls and presets that are NOT
+    // in the sidebar's Devices panel. Connect/Disconnect/Refresh live in
+    // the DevicesPanel (基础功能 tab).
     auto* m_cam = mb->addMenu(tr("&Camera"));
-    m_cam->addAction(tr("&Connect First Available"), this,
-                     &MainWindow::on_connect_first, QKeySequence("Ctrl+Shift+C"));
-    m_cam->addAction(tr("&Disconnect"), this, &MainWindow::on_disconnect);
-    m_cam->addSeparator();
-    m_cam->addAction(tr("Refresh Device &List"), this, &MainWindow::on_refresh_devices);
-    m_cam->addAction(tr("&Device List..."), this, [this]() {
-        auto* dock = findChild<QDockWidget*>("SettingsDock");
-        if (dock) { dock->show(); dock->raise(); }
-    });
-    m_cam->addSeparator();
     a_roi_drag_ = m_cam->addAction(tr("&ROI Drag Mode"), this, &MainWindow::on_toggle_roi_drag);
     a_roi_drag_->setCheckable(true);
     a_roi_drag_->setChecked(false);
@@ -259,188 +247,22 @@ void MainWindow::build_menus() {
         m_presets->addAction(preset_names[i], this, [this, i]() { on_apply_preset(i); });
     }
 
-    // Preprocess (Phase 5) — checkable actions mirrored to the PreprocessingPanel.
-    m_preprocess_ = mb->addMenu(tr("&Preprocess"));
-    {
-        struct StageEntry { QString id; QString label; };
-        const std::vector<StageEntry> stages = {
-            {"roi_filter",      tr("ROI Filter")},
-            {"polarity_filter", tr("Polarity Filter")},
-            {"polarity_invert", tr("Polarity Invert")},
-            {"flip_x",          tr("Flip X")},
-            {"flip_y",          tr("Flip Y")},
-            {"rotate",          tr("Rotate (0/90/180/270)")},
-            {"transpose",       tr("Transpose")},
-            {"rescale",         tr("Rescale")},
-        };
-        for (const auto& s : stages) {
-            auto* a = m_preprocess_->addAction(s.label);
-            a->setCheckable(true);
-            a->setChecked(false);
-            preprocess_actions_[s.id] = a;
-            // Use 'triggered' (not 'toggled') so programmatic setChecked()
-            // from the panel sync doesn't re-enter this slot.
-            connect(a, &QAction::triggered, this, [this, id = s.id](bool on) {
-                settings_->preprocessing_panel()->set_stage_enabled(id, on);
-            });
-        }
-        m_preprocess_->addSeparator();
-        m_preprocess_->addAction(tr("Open Preprocessing Panel..."), this, [this]() {
-            auto* dock = findChild<QDockWidget*>("SettingsDock");
-            if (dock) { dock->show(); dock->raise(); }
-        });
-    }
+    // Preprocess menu and Frame Mode menu have been removed — all
+    // preprocessing stage toggles live in the PreprocessingPanel and all
+    // frame mode selection lives in the DisplayPanel (both in the sidebar's
+    // 基础功能 tab). This eliminates duplication with the sidebar.
 
-    // Frame Mode (Phase 5) — controls event accumulation time per frame.
-    // Feasible modes adjust the accumulation window; unimplemented modes
-    // are disabled.
-    auto* m_frame = mb->addMenu(tr("Frame &Mode"));
-    {
-        const QStringList modes = {
-            tr("Diff (10ms)"), tr("Integration (50ms)"), tr("Histogram"),
-            tr("Time Decay (30ms)"), tr("Contrast Map"), tr("Periodic"), tr("On-Demand")
-        };
-        // Modes that are not yet implemented (disabled).
-        const QSet<int> disabled = {2, 4, 5, 6};
-        auto* grp = new QActionGroup(this);
-        for (int i = 0; i < modes.size(); ++i) {
-            auto* a = m_frame->addAction(modes[i]);
-            a->setCheckable(true);
-            a->setEnabled(!disabled.contains(i));
-            if (i == 0) a->setChecked(true);
-            grp->addAction(a);
-            connect(a, &QAction::triggered, this, [this, i]() {
-                settings_->display_panel()->set_frame_mode(i);
-            });
-        }
-    }
-
-    // Algorithm (design §5.4 / §5.6.6) — 29 self-developed modules.
-    // Each algorithm gets a submenu with:
-    //   - "Enable" (checkable)        — toggles the algorithm on/off
-    //   - "算法ROI" (checkable)        — toggles roi_enabled (design §5.6.6)
-    //   - "Configure..."              — opens the AlgoWindow for parameter
-    //                                   adjustment (incl. ROI x/y/w/h)
-    // When "Enable" is checked, the AlgoWindow opens automatically so the
-    // user can tune any parameter at runtime. For Standalone algorithms the
-    // AlgoWindow also hosts the result display widget.
-    auto* m_algo = mb->addMenu(tr("&Algorithm"));
-    {
-        // Maps menu display name → algo_bridge name.
-        const std::vector<std::pair<QString, QString>> algos = {
-            {tr("Noise Filter"), "noise_filter"},
-            {tr("Hot Pixel Filter"), "hot_pixel_filter"},
-            {tr("Orientation Filter"), "orientation_filter"},
-            {tr("Direction Selective"), "direction_selective"},
-            {tr("Optical Flow (Sparse)"), "sparse_optical_flow"},
-            {tr("Blob Detect"), "blob_detector"},
-            {tr("Object Tracker"), "object_tracker"},
-            {tr("Corner Detect"), "corner_detector"},
-            {tr("Line Segment (ELiSeD)"), "line_segment"},
-            {tr("Hough Line"), "hough_line"},
-            {tr("Hough Circle"), "hough_circle"},
-            {tr("Orientation Cluster"), "orientation_cluster"},
-            {tr("Cluster LIF"), "cluster_lif"},
-            {tr("Background Mask"), "background_mask"},
-            {tr("Perspective Undistort"), "perspective_undistort"},
-            {tr("Trigger Synced"), "trigger_synced"},
-            {tr("Bandpass Filter"), "bandpass_filter"},
-            {tr("EIS (Optical Gyro)"), "optical_gyro"},
-            {tr("Ultra Slow Motion"), "ultra_slow_motion"},
-            {tr("XYT 3D"), "xyt_visualizer"},
-            {tr("Time Surface"), "time_surface"},
-            {tr("Active Marker"), "active_marker"},
-            {tr("Event -> Video"), "event_to_video"},
-            {tr("Flow Statistics"), "flow_statistics"},
-            {tr("ISI Analyzer"), "isi_analyzer"},
-            {tr("Particle Counter"), "particle_counter"},
-            {tr("Auto Bias"), "auto_bias"},
-            {tr("Freq Detector"), "freq_detector"},
-            {tr("Overlay"), "overlay"},
-        };
-        for (const auto& [label, name] : algos) {
-            auto* sub = m_algo->addMenu(label);
-
-            // "Enable" checkable action.
-            auto* a_enable = sub->addAction(tr("Enable"));
-            a_enable->setCheckable(true);
-            a_enable->setChecked(false);
-            algo_actions_[name.toStdString()] = a_enable;
-
-            // "算法ROI" checkable action — toggles roi_enabled. Defaults to
-            // true (design §5.6.6: ROI is on by default with center 128×128).
-            auto* a_roi = sub->addAction(tr("算法ROI"));
-            a_roi->setCheckable(true);
-            a_roi->setChecked(true);
-            a_roi->setToolTip(tr("When checked, the algorithm only processes "
-                                 "events inside the Algorithm ROI region "
-                                 "(default: center 128×128)."));
-            algo_roi_actions_[name.toStdString()] = a_roi;
-
-            sub->addSeparator();
-
-            // "Configure..." action — opens the AlgoWindow.
-            sub->addAction(tr("Configure..."), this,
-                           [this, name]() { on_open_algo_window(name.toStdString()); });
-
-            // Use `triggered` (not `toggled`) so programmatic setChecked()
-            // from window close handlers doesn't re-enter this slot.
-            connect(a_enable, &QAction::triggered, this, [this, name, label](bool on) {
-                const auto key = name.toStdString();
-                auto inst = algo_bridge_.find_or_create(key);
-                if (inst) {
-                    inst->set_enabled(on);
-                    statusBar()->showMessage(
-                        tr("%1: %2").arg(label).arg(on ? "ON" : "OFF"), 3000);
-                }
-                // Sync the AlgorithmsPanel checkbox (blocked, no re-entry).
-                if (auto* ap = settings_->algorithms_panel()) {
-                    ap->set_algo_enabled(key, on);
-                }
-                if (on) {
-                    // Auto-open the AlgoWindow so the user can tune params.
-                    on_open_algo_window(key);
-                } else {
-                    // Close the AlgoWindow (if any) when disabled.
-                    auto it = algo_windows_.find(key);
-                    if (it != algo_windows_.end() && it.value()) {
-                        it.value()->close();
-                    }
-                    // xyt_visualizer has a separate SpaceTimeDisplay window.
-                    if (name == "xyt_visualizer" && xyt_display_) xyt_display_->close();
-                }
-            });
-
-            // ROI toggle — forward to the live instance's roi_enabled param.
-            connect(a_roi, &QAction::triggered, this, [this, name](bool on) {
-                const auto key = name.toStdString();
-                auto inst = algo_bridge_.find_or_create(key);
-                if (inst) {
-                    inst->set_param("roi_enabled", on ? "true" : "false");
-                    statusBar()->showMessage(
-                        tr("%1 ROI: %2").arg(name).arg(on ? "ON" : "OFF"), 3000);
-                }
-            });
-        }
-    }
+    // The Algorithm menu has been removed — all algorithm configuration
+    // (enable, ROI, parameters, configure) lives in the sidebar's "算法模块"
+    // tab (AlgorithmsPanel).
 
     // Calibration (Phase 9) — launches the wizard lazily.
     m_calibration_ = mb->addMenu(tr("&Calibration"));
     m_calibration_->addAction(tr("&Intrinsic Wizard..."), this, &MainWindow::on_intrinsic_wizard);
 
-    // Tools (design §5.5).
+    // Tools (design §5.5) — window management only. Algorithm-specific
+    // windows are opened from the sidebar's "算法模块" tab, not duplicated here.
     m_tools_ = mb->addMenu(tr("&Tools"));
-    // Standalone algorithm windows (design §5.6.1).
-    m_tools_->addAction(tr("&Time Surface..."), this, &MainWindow::on_open_time_surface,
-                        QKeySequence("Ctrl+Shift+T"));
-    m_tools_->addAction(tr("&XYT 3D View..."), this, &MainWindow::on_open_xyt_view,
-                        QKeySequence("Ctrl+Shift+X"));
-    m_tools_->addAction(tr("&Event -> Video..."), this, &MainWindow::on_open_event_to_video,
-                        QKeySequence("Ctrl+Shift+E"));
-    m_tools_->addAction(tr("&Frequency Detector..."), this, &MainWindow::on_open_freq_detector,
-                        QKeySequence("Ctrl+Shift+F"));
-    m_tools_->addSeparator();
-    m_tools_->addAction(tr("&Temporal Plot (legacy)..."), this, &MainWindow::on_open_temporal_plot);
     m_tools_->addAction(tr("&Add Display Window..."), this, &MainWindow::on_add_display_window);
     m_tools_->addAction(tr("&Tile Windows"), this, &MainWindow::on_tile_windows);
     m_tools_->addAction(tr("&Cascade Windows"), this, [this]() {
@@ -520,14 +342,14 @@ void MainWindow::wire_signals() {
         if (auto* pb = findChild<QDockWidget*>("PlaybackDock")) {
             pb->setVisible(info.is_file);
         }
-        // Phase 10: re-install the temporal plot callback on the new camera.
-        // The previous camera (if any) was destroyed in teardown(), which
-        // invalidated the old CallbackId.
-        temporal_cd_cb_id_.reset();
-        if (temporal_plot_) {
-            temporal_plot_->set_sensor_geometry(info.width, info.height);
+        // Keep the XYT 3D display's sensor geometry in sync with the live
+        // camera so point coordinates are normalized correctly. Without this
+        // (e.g. when the XYT window was opened before a camera connected, or
+        // after a reconnect) points render at raw pixel scale and the cloud
+        // is clipped/garbled.
+        if (xyt_display_) {
+            xyt_display_->set_sensor_geometry(info.width, info.height);
         }
-        install_temporal_callback();
         install_algo_callback();
         camera_.start();
     });
@@ -535,7 +357,6 @@ void MainWindow::wire_signals() {
         // Phase 10: the camera was torn down in teardown(); the CD callback
         // was removed by the SDK. Just clear our ID so a fresh one can be
         // registered on the next connect.
-        temporal_cd_cb_id_.reset();
         algo_cd_cb_id_.reset();
         prev_frame_ts_ = 0;
         settings_->information_panel()->clear();
@@ -546,10 +367,6 @@ void MainWindow::wire_signals() {
         settings_->esp_panel()->on_camera_disconnected();
         settings_->trigger_panel()->on_camera_disconnected();
         settings_->preprocessing_panel()->on_camera_disconnected();
-        // Uncheck all Preprocess menu actions (the panel already cleared its
-        // checkboxes in on_camera_disconnected). Menu actions use 'triggered',
-        // so setChecked(false) does not re-enter the slot.
-        for (auto* a : preprocess_actions_) a->setChecked(false);
         status_conn_->setText(tr("Disconnected"));
         status_rate_->setText(tr("— ev/s"));
         status_ts_->setText(tr("t: —"));
@@ -703,12 +520,6 @@ void MainWindow::wire_signals() {
                 [forward](const QString& m) { forward(m, false); });
         connect(pp, &PreprocessingPanel::error_message, this,
                 [forward](const QString& m) { forward(m, true); });
-        // Sync the Preprocess menu actions with the panel. Menu actions use
-        // 'triggered', so setChecked() here does not re-enter the menu slot.
-        connect(pp, &PreprocessingPanel::stage_toggled, this,
-                [this](const QString& stage, bool on) {
-                    if (auto* a = preprocess_actions_.value(stage)) a->setChecked(on);
-                });
     }
     if (auto* ap = settings_->algorithms_panel()) {
         connect(ap, &AlgorithmsPanel::info_message, this,
@@ -718,17 +529,22 @@ void MainWindow::wire_signals() {
                     statusBar()->showMessage(
                         tr("%1: %2").arg(name).arg(on ? tr("enabled") : tr("disabled")), 3000);
                     const auto key = name.toStdString();
-                    // Sync the Algorithm menu "Enable" action. setChecked does
-                    // not trigger 'triggered', so no re-entry into the menu slot.
-                    if (auto* a = algo_actions_.value(key)) a->setChecked(on);
                     if (!on) {
                         // Close the AlgoWindow if open (its closing handler will
-                        // disable the instance and uncheck the menu — both are
-                        // idempotent given the blocker in set_algo_enabled).
+                        // disable the instance and uncheck the sidebar checkbox —
+                        // both are idempotent given the blocker in set_algo_enabled).
                         auto it = algo_windows_.find(key);
                         if (it != algo_windows_.end() && it.value()) it.value()->close();
                         if (key == "xyt_visualizer" && xyt_display_) xyt_display_->close();
                     }
+                });
+        // When an algorithm is enabled from the sidebar, open its AlgoWindow
+        // so Standalone algorithms have a display and Overlay algorithms get
+        // their ROI zoom view. Without this the sidebar-enabled algorithm
+        // produces no visible output (the root cause of "侧栏算法不生效").
+        connect(ap, &AlgorithmsPanel::open_algo_window_requested, this,
+                [this](const std::string& name) {
+                    on_open_algo_window(name);
                 });
     }
 }
@@ -885,78 +701,6 @@ void MainWindow::on_apply_preset(int index) {
     statusBar()->showMessage(tr("Preset applied."), 3000);
 }
 
-void MainWindow::on_open_temporal_plot() {
-    if (!temporal_plot_) {
-        temporal_plot_ = new TemporalPlotWindow(this);
-        temporal_plot_->setAttribute(Qt::WA_DeleteOnClose);
-        connect(temporal_plot_, &QObject::destroyed, this, [this]() {
-            // Remove the SDK callback so the SDK thread stops copying events
-            // for a window that no longer exists. The QPointer itself is
-            // auto-nulled by Qt after this slot returns.
-            remove_temporal_callback();
-        });
-        // Pass the current sensor geometry so axis_position is clamped to a
-        // valid range and the Y-axis can be drawn to scale.
-        if (camera_.is_connected()) {
-            const auto& info = camera_.sensor_info();
-            temporal_plot_->set_sensor_geometry(info.width, info.height);
-        }
-        // Install the CD callback if a camera is already connected. If not,
-        // it will be installed when CameraController::connected fires.
-        install_temporal_callback();
-    }
-    temporal_plot_->show();
-    temporal_plot_->raise();
-    temporal_plot_->activateWindow();
-}
-
-void MainWindow::install_temporal_callback() {
-    if (temporal_cd_cb_id_) return;          // already installed on this camera
-    if (!temporal_plot_) return;             // no window to feed
-    auto* cam = camera_.camera_handle();
-    if (!cam) return;                        // no live camera
-    temporal_cd_cb_id_ = cam->cd().add_callback(
-        [this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
-            if (b == e) return;
-            // Throttle: limit to ~20 posts/second to avoid flooding the GUI
-            // event loop at high event rates (10-100 Mev/s). Without this,
-            // the queued invocations accumulate faster than the GUI thread
-            // can process them, making the entire application unresponsive.
-            const Metavision::timestamp cur_ts = (e - 1)->t;
-            const Metavision::timestamp last = temporal_last_post_us_.load(std::memory_order_relaxed);
-            if (cur_ts - last < 50000) return;  // 50ms minimum interval
-            temporal_last_post_us_.store(cur_ts, std::memory_order_relaxed);
-
-            // Downsample: cap at 5000 events per batch to limit copy size
-            // and GUI thread processing per queued invocation.
-            const std::size_t count = static_cast<std::size_t>(e - b);
-            auto copy = std::make_shared<std::vector<Metavision::EventCD>>();
-            if (count > 5000) {
-                const std::size_t stride = count / 5000;
-                copy->reserve(count / stride + 1);
-                for (std::size_t i = 0; i < count; i += stride) {
-                    copy->push_back(b[i]);
-                }
-            } else {
-                copy->assign(b, e);
-            }
-            QMetaObject::invokeMethod(this, [this, copy]() {
-                if (temporal_plot_) {
-                    temporal_plot_->push_events(copy->data(),
-                                                copy->data() + copy->size());
-                }
-            }, Qt::QueuedConnection);
-        });
-}
-
-void MainWindow::remove_temporal_callback() {
-    if (!temporal_cd_cb_id_) return;
-    if (auto* cam = camera_.camera_handle()) {
-        try { cam->cd().remove_callback(*temporal_cd_cb_id_); } catch (...) {}
-    }
-    temporal_cd_cb_id_.reset();
-}
-
 // ---------------------------------------------------------------------------
 // Algorithm event/result pipeline (design §3.8, §5.6.1)
 // ---------------------------------------------------------------------------
@@ -985,7 +729,6 @@ void MainWindow::install_algo_callback() {
             // Throttled, downsampled feed to the XYT 3D window. The
             // SpaceTimeDisplay is a QOpenGLWidget and must only be touched
             // from the GUI thread, so we marshal via QMetaObject::invokeMethod.
-            // (Same throttle/downsample pattern as install_temporal_callback.)
             if (xyt_display_) {
                 const Metavision::timestamp cur_ts = (e - 1)->t;
                 const Metavision::timestamp last =
@@ -1029,9 +772,51 @@ void MainWindow::process_algo_results(QImage& frame) {
     // dedicated child display widget. Passive instances are skipped.
     auto instances = algo_bridge_.list_live();
     for (auto& inst : instances) {
+        // Surface the flood-guard auto-disable so the user knows why an algo
+        // stopped producing output (design §5.6.7). Re-enabling it from the
+        // sidebar's "算法模块" tab clears the overload and restarts processing.
+        if (inst->is_overloaded()) {
+            const QString nm = QString::fromStdString(inst->info().display_name);
+            statusBar()->showMessage(
+                tr("%1 auto-disabled: event rate too high (re-enable to retry)").arg(nm), 5000);
+            // Reflect the disabled state in the AlgoWindow status label.
+            auto wit = algo_windows_.find(inst->info().name);
+            if (wit != algo_windows_.end() && wit.value()) {
+                wit.value()->set_status_text(
+                    tr("AUTO-DISABLED: event flooding detected. Re-enable from the sidebar."));
+            }
+            continue;
+        }
         if (!inst->is_enabled()) continue;
         const auto mode = inst->info().display_mode;
-        if (mode == AlgoDisplayMode::Passive) continue;
+
+        // Passive algorithms (in-place event filters like noise_filter /
+        // hot_pixel_filter) don't draw overlays or replace the frame, but if
+        // the user opened an AlgoWindow for one we still need to pull_result
+        // and update the status text so the window doesn't stay stuck on
+        // "Waiting for events..." forever.
+        if (mode == AlgoDisplayMode::Passive) {
+            auto wit = algo_windows_.find(inst->info().name);
+            if (wit == algo_windows_.end() || !wit.value()) continue;
+            AlgoResult r;
+            try {
+                r = inst->pull_result();
+            } catch (...) {
+                continue;
+            }
+            if (!r.status.empty()) {
+                QString text = QString::fromStdString(r.status);
+                for (const auto& t : r.texts) {
+                    text += QStringLiteral("\n  ");
+                    text += QString::fromStdString(t.text);
+                }
+                AlgoWindow* w = wit.value();
+                QMetaObject::invokeMethod(this, [w, text]() {
+                    w->set_status_text(text);
+                }, Qt::QueuedConnection);
+            }
+            continue;
+        }
 
         AlgoResult r;
         try {
@@ -1072,6 +857,16 @@ void MainWindow::process_algo_results(QImage& frame) {
                 }
                 annotator_.draw_points(frame, pts);
             }
+            // Colored points (optical-flow HSV visualization).
+            if (!r.colored_points.empty()) {
+                std::vector<std::pair<QPointF, QColor>> pts;
+                pts.reserve(r.colored_points.size());
+                for (const auto& p : r.colored_points) {
+                    pts.emplace_back(QPointF(p.x, p.y),
+                                     QColor(p.r, p.g, p.b));
+                }
+                annotator_.draw_colored_points(frame, pts, 3.0);
+            }
             // Circles.
             if (!r.circles.empty()) {
                 std::vector<std::pair<QPointF, double>> circs;
@@ -1086,6 +881,44 @@ void MainWindow::process_algo_results(QImage& frame) {
                 for (const auto& t : r.texts) {
                     annotator_.draw_text(frame, QString::fromStdString(t.text),
                                          QPoint(t.x, t.y));
+                }
+            }
+            // ROI zoom view (design §5.6.6): if the algo has ROI enabled and an
+            // AlgoWindow with an EventDisplayWidget is open, crop the ROI
+            // region from the annotated main frame and push it to the window.
+            // This gives the user a zoomed-in view of just the ROI region
+            // (with the algorithm's overlay drawn on it), which is otherwise
+            // hard to inspect on the sensor-scale main display.
+            const std::string en_str = inst->get_param("roi_enabled");
+            const bool roi_on = (en_str == "true" || en_str == "1");
+            if (roi_on) {
+                auto parse_int = [](const std::string& s, int def) -> int {
+                    try { return s.empty() ? def : std::stoi(s); }
+                    catch (...) { return def; }
+                };
+                int sw = 1280, sh = 720;
+                if (camera_.is_connected()) {
+                    const auto& sinfo = camera_.sensor_info();
+                    sw = sinfo.width; sh = sinfo.height;
+                }
+                int rx = parse_int(inst->get_param("roi_x"), -1);
+                int ry = parse_int(inst->get_param("roi_y"), -1);
+                int rw = parse_int(inst->get_param("roi_w"), 128);
+                int rh = parse_int(inst->get_param("roi_h"), 128);
+                int aw = (rw <= 0) ? sw : std::min(rw, sw);
+                int ah = (rh <= 0) ? sh : std::min(rh, sh);
+                int ax = (rx < 0) ? (sw - aw) / 2
+                                  : std::min(std::max(0, rx), sw - aw);
+                int ay = (ry < 0) ? (sh - ah) / 2
+                                  : std::min(std::max(0, ry), sh - ah);
+                auto wit = algo_windows_.find(inst->info().name);
+                if (wit != algo_windows_.end() && wit.value()) {
+                    if (auto* disp = wit.value()->frame_display()) {
+                        QRect roi_rect(ax, ay, aw, ah);
+                        QImage zoom = frame.copy(roi_rect);
+                        QMetaObject::invokeMethod(disp,
+                            "set_frame", Qt::QueuedConnection, Q_ARG(QImage, zoom));
+                    }
                 }
             }
             continue;
@@ -1275,7 +1108,7 @@ void MainWindow::on_about() {
            "<p>Camera discovery, real-time OpenGL event display, statistics, "
            "Bias / ROI / ESP / Trigger panels, recording & playback, HDF5 / AVI "
            "export, JSON config with presets, OpenEB filter-chain preprocessing, "
-           "file conversion tools, calibration wizard, temporal plot, "
+           "file conversion tools, calibration wizard, "
            "30 self-developed CV/analytics algorithms with overlay/replace/"
            "standalone display modes, XYT 3D point cloud, and more.</p>"
            "<p>See doc/design.md for the full roadmap.</p>"));
@@ -1310,6 +1143,12 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
     // so process_algo_results() can push frames to it. The frame size may be
     // the ROI dimensions (e.g. event_to_video at 128×128) and the widget
     // scales it to fit.
+    //
+    // For self-developed Overlay algorithms (design §5.6.6) we also install
+    // an EventDisplayWidget: it shows a zoomed view of just the ROI region
+    // with the algorithm's overlay primitives drawn on it. Without this the
+    // user cannot easily inspect the algorithm's result inside the small ROI
+    // on the main (sensor-scale) display.
     const auto* info = algo_bridge_.find(algo_name);
     if (info && info->display_mode == AlgoDisplayMode::Standalone) {
         if (algo_name == "time_surface" || algo_name == "event_to_video" ||
@@ -1317,6 +1156,11 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
             auto* disp = new EventDisplayWidget(w);
             w->set_display_widget(disp);
         }
+    } else if (info && info->display_mode == AlgoDisplayMode::Overlay &&
+               info->source == "self") {
+        // ROI zoom view for overlay algorithms (design §5.6.6).
+        auto* disp = new EventDisplayWidget(w);
+        w->set_display_widget(disp);
     }
 
     // For xyt_visualizer, also open the dedicated SpaceTimeDisplay window
@@ -1326,22 +1170,18 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
         on_open_xyt_view();
     }
 
-    // Sync the Algorithm menu "Enable" checkbox so the user has consistent
-    // feedback regardless of which entry point they used.
-    if (auto* a = algo_actions_.value(algo_name)) a->setChecked(true);
-    // Sync the AlgorithmsPanel checkbox as well (blocked, no re-entry).
+    // Sync the AlgorithmsPanel checkbox (blocked, no re-entry).
     if (auto* ap = settings_->algorithms_panel()) {
         ap->set_algo_enabled(algo_name, true);
     }
 
-    // On close: disable the algo instance, uncheck the menu item, and remove
-    // the window from the map. The AlgoWindow emits `closing` from its
-    // closeEvent, which fires before Qt::WA_DeleteOnClose destroys it.
+    // On close: disable the algo instance and remove the window from the map.
+    // The AlgoWindow emits `closing` from its closeEvent, which fires before
+    // Qt::WA_DeleteOnClose destroys it.
     connect(w, &AlgoWindow::closing, this, [this, algo_name](const std::string&) {
         algo_windows_.remove(algo_name);
         auto inst = algo_bridge_.find_live(algo_name);
         if (inst) inst->set_enabled(false);
-        if (auto* a = algo_actions_.value(algo_name)) a->setChecked(false);
         // Sync the AlgorithmsPanel checkbox (blocked, no re-entry).
         if (auto* ap = settings_->algorithms_panel()) {
             ap->set_algo_enabled(algo_name, false);
@@ -1358,20 +1198,8 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
     }
 }
 
-// Legacy entry points kept for the Tools menu. They now delegate to the
-// generic AlgoWindow so the parameter panel is always available.
-void MainWindow::on_open_time_surface() {
-    on_open_algo_window("time_surface");
-}
-
-void MainWindow::on_open_event_to_video() {
-    on_open_algo_window("event_to_video");
-}
-
-void MainWindow::on_open_freq_detector() {
-    on_open_algo_window("freq_detector");
-}
-
+// XYT 3D view has a dedicated SpaceTimeDisplay (QOpenGLWidget) that is opened
+// from on_open_algo_window("xyt_visualizer") or directly from the sidebar.
 void MainWindow::on_open_xyt_view() {
     if (!xyt_display_) {
         xyt_display_ = new SpaceTimeDisplay(this);
@@ -1385,16 +1213,21 @@ void MainWindow::on_open_xyt_view() {
         xyt_algo_ = algo_bridge_.find_live("xyt_visualizer");
         if (!xyt_algo_) xyt_algo_ = algo_bridge_.find_or_create("xyt_visualizer");
         if (xyt_algo_) xyt_algo_->set_enabled(true);
-        if (auto* a = algo_actions_.value("xyt_visualizer")) a->setChecked(true);
+        // Sync the sidebar checkbox (blocked, no re-entry).
+        if (auto* ap = settings_->algorithms_panel()) {
+            ap->set_algo_enabled("xyt_visualizer", true);
+        }
         // The QOpenGLWidget is itself the window; on close we must null
         // xyt_display_ (QPointer does this), disable the algo instance so it
-        // stops processing events, and uncheck the menu item.
+        // stops processing events, and sync the sidebar checkbox.
         connect(xyt_display_, &QObject::destroyed, this, [this]() {
             if (xyt_algo_) {
                 xyt_algo_->set_enabled(false);
                 xyt_algo_.reset();
             }
-            if (auto* a = algo_actions_.value("xyt_visualizer")) a->setChecked(false);
+            if (auto* ap = settings_->algorithms_panel()) {
+                ap->set_algo_enabled("xyt_visualizer", false);
+            }
             // Also close the AlgoWindow if open.
             auto it = algo_windows_.find("xyt_visualizer");
             if (it != algo_windows_.end() && it.value()) it.value()->close();

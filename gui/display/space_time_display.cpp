@@ -15,7 +15,11 @@ namespace gui {
 
 namespace {
 constexpr const char* kVertSrc = R"GLSL(#version 330 core
-in vec3 aPos;     // (t_norm, x_norm, 1 - y_norm), each in [0,1]
+// aPos layout matches Lighthouse event_3d_scatter.py: (t, 1-y, x) so that in
+// OGL space X=t (horizontal), Y=1-y (vertical, image origin at top), Z=x
+// (depth). This matches mpl's z-up convention after the (t, x, y)->mpl
+// (x, y, z) remap used by ax.scatter(t, x, y).
+in vec3 aPos;     // (t_norm, 1 - y_norm, x_norm), each in [0,1]
 in vec3 aColor;
 out vec3 vColor;
 out float vAge;
@@ -185,8 +189,8 @@ void SpaceTimeDisplay::rebuild_vbo() {
     data.reserve(static_cast<std::size_t>(point_count_) * 6);
     for (const auto& p : points_) {
         data.push_back(p.t);
-        data.push_back(p.x * sx);
         data.push_back(1.0f - p.y * sy);
+        data.push_back(p.x * sx);
         data.push_back(p.r);
         data.push_back(p.g);
         data.push_back(p.b);
@@ -221,7 +225,10 @@ void SpaceTimeDisplay::update_camera_uniforms() {
                      0.05f, 100.0f);
 
     QMatrix4x4 model;
-    model.scale(3.0f, 1.0f, 1.0f);
+    // Match Lighthouse ax.set_box_aspect((5, 3, 2)) — mpl x=t, y=image-x,
+    // z=image-y. After our OGL remap (X=t, Y=1-y, Z=x) the per-axis scales
+    // become (t=5, image-y=2, image-x=3).
+    model.scale(5.0f, 2.0f, 3.0f);
 
     QMatrix4x4 mvp = proj * view * model;
     program_->setUniformValue("uMVP", mvp);

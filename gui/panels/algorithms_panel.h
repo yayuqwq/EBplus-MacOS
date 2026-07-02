@@ -14,6 +14,8 @@
 #define GUI_PANELS_ALGORITHMS_PANEL_H
 
 #include <QCheckBox>
+#include <QSpinBox>
+#include <QVBoxLayout>
 #include <QWidget>
 #include <memory>
 #include <string>
@@ -40,6 +42,9 @@ signals:
     void info_message(const QString& msg);
     /// @brief Emitted when an algorithm's enable state changes.
     void algorithm_toggled(const QString& name, bool enabled);
+    /// @brief Emitted when an algorithm is enabled from the sidebar and
+    /// needs an AlgoWindow opened (Standalone/Overlay algos need a display).
+    void open_algo_window_requested(const std::string& name);
 
 private:
     void build_ui();
@@ -50,6 +55,12 @@ private:
     void apply_param(const std::string& algo_name,
                      const std::string& param_key,
                      const std::string& value);
+    /// Applies the global Algorithm ROI (x/y/w/h + enabled) to every live
+    /// algorithm instance. Called whenever the user edits the global ROI
+    /// controls at the top of the panel.
+    void apply_global_roi();
+    /// Builds the global Algorithm ROI selector group at the top of the panel.
+    void build_roi_selector(QVBoxLayout* parent_layout);
 
     AlgoBridge* bridge_;
     /// Owns a long-lived copy of the registry so pointers handed to lambdas
@@ -64,6 +75,15 @@ private:
     std::unordered_map<std::string, std::shared_ptr<AlgoInstance>> live_instances_;
     /// Enable checkboxes keyed by algo name, for programmatic sync.
     std::unordered_map<std::string, QCheckBox*> checkboxes_;
+
+    /// Global Algorithm ROI controls (design §5.6.6). All self-developed
+    /// algorithms share this ROI; per-algorithm roi_* params are removed
+    /// from the parameter editors and controlled exclusively here.
+    QCheckBox* roi_enabled_cb_{nullptr};
+    QSpinBox* roi_x_sp_{nullptr};
+    QSpinBox* roi_y_sp_{nullptr};
+    QSpinBox* roi_w_sp_{nullptr};
+    QSpinBox* roi_h_sp_{nullptr};
 };
 
 } // namespace gui

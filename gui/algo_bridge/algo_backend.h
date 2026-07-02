@@ -9,6 +9,7 @@
 #define GUI_ALGO_BRIDGE_ALGO_BACKEND_H
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -37,6 +38,13 @@ struct OverlayPoint {
     float strength{1.0F};
 };
 
+/// @brief 叠加层带颜色点（光流 HSV 可视化等）。
+/// r/g/b 在 [0,255]。用于光流场可视化：色相=方向，亮度=强度。
+struct OverlayColoredPoint {
+    int x{0}, y{0};
+    std::uint8_t r{255}, g{255}, b{255};
+};
+
 /// @brief 叠加层圆（霍夫圆输出）。
 struct OverlayCircle {
     int cx{0}, cy{0}, r{0};
@@ -58,6 +66,7 @@ struct AlgoResult {
     std::vector<OverlayBox> boxes;
     std::vector<OverlayLine> lines;
     std::vector<OverlayPoint> points;
+    std::vector<OverlayColoredPoint> colored_points;
     std::vector<OverlayCircle> circles;
     std::vector<OverlayText> texts;
 };

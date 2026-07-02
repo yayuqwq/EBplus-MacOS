@@ -45,22 +45,60 @@ std::string AlgoInstance::get_param(const std::string& key) const {
 void AlgoInstance::set_enabled(bool e) {
     std::lock_guard<std::mutex> lk(mutex_);
     enabled_ = e;
+    if (e) {
+        // Re-enabling clears any prior overload state and resets the strike
+        // counter so the algo gets a fresh start.
+        overloaded_ = false;
+        flood_strikes_ = 0;
+    }
 }
 
 bool AlgoInstance::is_enabled() const {
     std::lock_guard<std::mutex> lk(mutex_);
-    return enabled_;
+    return enabled_ && !overloaded_;
+}
+
+bool AlgoInstance::is_overloaded() const {
+    std::lock_guard<std::mutex> lk(mutex_);
+    return overloaded_;
+}
+
+void AlgoInstance::clear_overload() {
+    std::lock_guard<std::mutex> lk(mutex_);
+    overloaded_ = false;
+    flood_strikes_ = 0;
 }
 
 void AlgoInstance::push_events(const Metavision::EventCD* begin,
                                const Metavision::EventCD* end) {
     std::lock_guard<std::mutex> lk(mutex_);
-    if (!enabled_) {
+    if (!enabled_ || overloaded_) {
         return;
     }
     if (backend_) {
-        // 真实算法后端处理事件。
-        backend_->push_events(begin, end);
+        std::size_t n = static_cast<std::size_t>(end - begin);
+
+        // Flood guard (design §5.6.7): cap each batch to the most recent
+        // kMaxBatchEvents events. If a batch was capped, increment the strike
+        // counter; kFloodStrikes consecutive capped batches mean the algo is
+        // being fed faster than it can process → auto-disable to prevent
+        // memory blowup and GUI stalls. A non-capped batch resets the count.
+        const Metavision::EventCD* b = begin;
+        const Metavision::EventCD* e = end;
+        if (n > kMaxBatchEvents) {
+            // Keep the most recent events (drop older ones from the front).
+            b = end - kMaxBatchEvents;
+            n = kMaxBatchEvents;
+            if (++flood_strikes_ >= kFloodStrikes) {
+                overloaded_ = true;
+                enabled_ = false;
+                return;
+            }
+        } else {
+            flood_strikes_ = 0;
+        }
+
+        backend_->push_events(b, e);
     } else {
         // OpenEB 包装算法：透传（由 filter_chain 处理）。
     }
@@ -474,12 +512,14 @@ void AlgoBridge::register_self_cv() {
           pint("num_rho_bins", "Rho bins (0=auto)", "0", "0", "4000"),
           pint("accumulator_decay_us", "Decay (us)", "100000", "1000", "5000000")}});
 
-    // §4.3.15 Hough Circle Tracker
+    // §4.3.15 Hough Circle Tracker — tightened defaults to reduce lag:
+    // narrower radius range (8-30 → 23 radii vs 5-50 → 46) and higher
+    // threshold (50 vs 30) so find_peaks scans fewer candidates.
     add({"hough_circle", "Hough Circle Tracker", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pint("min_radius", "Min radius (px)", "5", "1", "100"),
-          pint("max_radius", "Max radius (px)", "50", "5", "500"),
-          pint("threshold", "Threshold", "30", "2", "500"),
+         {pint("min_radius", "Min radius (px)", "8", "1", "100"),
+          pint("max_radius", "Max radius (px)", "30", "5", "500"),
+          pint("threshold", "Threshold", "50", "2", "500"),
           pint("accumulator_decay_us", "Decay (us)", "100000", "1000", "5000000")}});
 
     // §4.3.17 Orientation Cluster

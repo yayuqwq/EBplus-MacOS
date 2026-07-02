@@ -76,6 +76,20 @@ public:
     cv::Mat get_frame() {
         cv::Mat frame(height_, width_, CV_8UC1, cv::Scalar(0));
         if (width_ <= 0 || height_ <= 0) return frame;
+        // Apply temporal decay so stale log-intensity values fade and the
+        // reconstruction tracks recent events. Without this, log_intensity_
+        // accumulates indefinitely (each event contributes +/-theta with no
+        // forgetting factor) and the normalized to_gray() output freezes on
+        // the residual pattern established by the first batch of events.
+        if (current_t_ > last_frame_t_ && decay_tau_ms_ > 0.0f) {
+            const double dt_us =
+                static_cast<double>(current_t_ - last_frame_t_);
+            const double tau_us =
+                static_cast<double>(decay_tau_ms_) * 1000.0;
+            const double decay = std::exp(-dt_us / tau_us);
+            for (auto& v : log_intensity_) v *= decay;
+        }
+        last_frame_t_ = current_t_;
         switch (mode_) {
             case Mode::BardowVariational:
                 frame = reconstruct_bardow();
@@ -116,6 +130,13 @@ public:
 
     void set_num_iterations(int n) { num_iterations_ = clamp_iter(n, 10, 500); }
     int num_iterations() const { return num_iterations_; }
+
+    /// @brief Sets the log-intensity decay time constant in ms.
+    /// Larger values = slower decay (longer memory); 0 disables decay.
+    void set_decay_tau_ms(float ms) {
+        decay_tau_ms_ = (ms < 0.0f) ? 0.0f : (ms > 1000.0f ? 1000.0f : ms);
+    }
+    float decay_tau_ms() const { return decay_tau_ms_; }
 
     // InteractingMaps parameters -----------------------------------------
     void set_relaxation_step(float s) {
@@ -163,6 +184,7 @@ public:
     void reset() {
         std::fill(log_intensity_.begin(), log_intensity_.end(), 0.0);
         current_t_ = 0;
+        last_frame_t_ = 0;
         e2vid_.reset();
         e2vid_event_buffer_.clear();
         intensity_rescaler_.reset();
@@ -377,6 +399,10 @@ private:
     std::vector<double> p1_;
     std::vector<double> p2_;
     Metavision::timestamp current_t_{0};
+    Metavision::timestamp last_frame_t_{0};   ///< Last get_frame() timestamp
+    /// Exponential decay time constant for log_intensity_ (ms). Prevents
+    /// unbounded accumulation which would freeze the normalized output.
+    float decay_tau_ms_{50.0f};
 
     // E2VID parameters.
     std::string model_path_;

@@ -2,10 +2,9 @@
 //
 // Design §4.3.25. Provides the data slicing + color mapping for a 3D x-y-t
 // event point cloud (X = pixel column, Y = pixel row, T = depth/time axis).
-// Replaces the legacy 2D Temporal Plot. Inspired by jAER
-// SpaceTimeRollingEventDisplayMethod. The actual GL/VBO rendering lives in
-// gui/display/space_time_display.h; this class only produces the point buffer.
-// Header-only.
+// Inspired by jAER SpaceTimeRollingEventDisplayMethod. The actual GL/VBO
+// rendering lives in gui/display/space_time_display.h; this class only
+// produces the point buffer. Header-only.
 
 #ifndef GUI_ALGO_CV_XYT_VISUALIZER_H
 #define GUI_ALGO_CV_XYT_VISUALIZER_H
@@ -65,7 +64,17 @@ public:
         }
         latest_t_ = buffer_.back().t;
         prune();
+        // Hard cap: even with time-window pruning, a very high event rate can
+        // grow the deque faster than prune() trims it, exhausting memory. Drop
+        // the oldest events to stay under the cap.
+        if (buffer_.size() > kMaxBuffer) {
+            const std::size_t drop = buffer_.size() - kMaxBuffer;
+            for (std::size_t i = 0; i < drop; ++i) buffer_.pop_front();
+        }
     }
+
+    /// @brief Number of events currently held in the rolling buffer.
+    std::size_t size() const { return buffer_.size(); }
 
     /// @brief Slices the rolling buffer to the current time window and applies
     ///        color mapping, returning the point cloud for VBO rendering.
@@ -167,6 +176,9 @@ private:
     bool depth_shade_;
     std::deque<Event> buffer_;
     Metavision::timestamp latest_t_{0};
+
+    /// Hard cap on the rolling buffer to bound memory under event flooding.
+    static constexpr std::size_t kMaxBuffer = 200000;
 };
 
 } // namespace gui_algo

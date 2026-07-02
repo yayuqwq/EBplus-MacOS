@@ -69,7 +69,17 @@ public:
     void set_enabled(bool e);
     bool is_enabled() const;
 
+    /// Returns true if the instance was auto-disabled by the flood guard.
+    /// The GUI should surface this so the user knows why the algo stopped.
+    bool is_overloaded() const;
+
+    /// Clears the overload flag (called when the user re-enables the algo).
+    void clear_overload();
+
     /// Push events to the algorithm backend. Thread-safe.
+    /// A flood guard caps the batch size and auto-disables the instance if
+    /// events arrive far faster than the algo can process them, preventing
+    /// memory blowup and GUI freezes under high event rates.
     void push_events(const Metavision::EventCD* begin, const Metavision::EventCD* end);
 
     /// Pull the latest result (filtered events + overlay + frame).
@@ -86,6 +96,19 @@ private:
     std::unordered_map<std::string, std::string> param_values_;
     std::unique_ptr<AlgoBackend> backend_;
     bool enabled_{false};
+
+    // --- Flood guard (design §5.6.7) -------------------------------------
+    // When event rates spike (e.g. 10-100 Mev/s) a slow algorithm cannot keep
+    // up; without backpressure its internal buffers grow unbounded and the
+    // GUI thread stalls. The guard:
+    //   1. caps each batch to the most recent kMaxBatchEvents events,
+    //   2. counts consecutive capped batches; if that count exceeds
+    //      kFloodStrikes the instance is auto-disabled (overloaded_=true).
+    bool overloaded_{false};
+    int flood_strikes_{0};
+    Metavision::timestamp last_batch_t_{0};
+    static constexpr std::size_t kMaxBatchEvents = 50000;
+    static constexpr int kFloodStrikes = 4;
 };
 
 /// @brief Unified algorithm-call bridge (design §3.8).

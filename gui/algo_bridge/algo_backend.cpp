@@ -571,18 +571,53 @@ public:
     AlgoResult pull_result() override {
         AlgoResult r;
         r.filtered_events = passthrough_;
+        // Optical-flow visualization: render each flow vector as a single
+        // colored pixel/square at its origin. Color encodes direction (HSV
+        // hue 0..360° mapped to the (vx,vy) angle) and brightness encodes
+        // magnitude. This is the standard dense-flow visualization style
+        // (Farneback/OpenCV hue-intensity scheme) and avoids the previous
+        // "long lines all over the screen" problem caused by drawing
+        // vx*10/vy*10 line segments.
+        r.colored_points.reserve(flows_.size());
         for (const auto& f : flows_) {
-            OverlayLine line;
-            line.x1 = f.x; line.y1 = f.y;
-            line.x2 = f.x + static_cast<int>(f.vx * 10);
-            line.y2 = f.y + static_cast<int>(f.vy * 10);
-            r.lines.push_back(line);
+            OverlayColoredPoint cp;
+            cp.x = f.x;
+            cp.y = f.y;
+            // Direction -> hue (atan2 returns -pi..pi, map to 0..1).
+            const float angle_rad = std::atan2(f.vy, f.vx);
+            float hue = (angle_rad + static_cast<float>(M_PI)) / (2.0f * static_cast<float>(M_PI));
+            if (hue < 0.0f) hue = 0.0f;
+            if (hue > 1.0f) hue = 1.0f;
+            // Magnitude -> value (normalize against a typical px/s reference).
+            const float mag = std::sqrt(f.vx * f.vx + f.vy * f.vy);
+            const float val = std::min(1.0f, mag / 1000.0f);  // 1000 px/s -> full brightness
+            hsv_to_rgb(hue, 1.0f, val, cp.r, cp.g, cp.b);
+            r.colored_points.push_back(cp);
         }
         r.status = "flow: " + std::to_string(flows_.size()) + " vectors" +
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); flows_.clear(); }
+private:
+    /// HSV (h,s,v in [0,1]) -> RGB (r,g,b in [0,255]).
+    static void hsv_to_rgb(float h, float s, float v,
+                           std::uint8_t& r, std::uint8_t& g, std::uint8_t& b) {
+        const float c = v * s;
+        const float hp = h * 6.0f;
+        const float x = c * (1.0f - std::fabs(std::fmod(hp, 2.0f) - 1.0f));
+        float rf = 0.0f, gf = 0.0f, bf = 0.0f;
+        if (hp < 1.0f)      { rf = c; gf = x; bf = 0.0f; }
+        else if (hp < 2.0f) { rf = x; gf = c; bf = 0.0f; }
+        else if (hp < 3.0f) { rf = 0.0f; gf = c; bf = x; }
+        else if (hp < 4.0f) { rf = 0.0f; gf = x; bf = c; }
+        else if (hp < 5.0f) { rf = x; gf = 0.0f; bf = c; }
+        else                { rf = c; gf = 0.0f; bf = x; }
+        const float m = v - c;
+        r = static_cast<std::uint8_t>((rf + m) * 255.0f + 0.5f);
+        g = static_cast<std::uint8_t>((gf + m) * 255.0f + 0.5f);
+        b = static_cast<std::uint8_t>((bf + m) * 255.0f + 0.5f);
+    }
 };
 
 // ===========================================================================
@@ -590,88 +625,190 @@ public:
 // ===========================================================================
 
 /// HoughLineTracker backend — detected lines as overlay lines.
+///
+/// Complex algorithm (design §4.3.14): the Hough accumulator is built at ROI
+/// dimensions (not sensor dimensions) to bound memory and per-frame scan cost.
+/// Events are cropped to ROI-relative coordinates; detected line endpoints are
+/// shifted back by the ROI origin so they render at the correct sensor position.
 class HoughLineBackend final : public AlgoBackend {
-    gui_algo::HoughLineTracker algo_;
+    int sensor_w_{0}, sensor_h_{0};
+    ProcessRegion roi_;
+    int num_theta_bins_{90};
+    int num_rho_bins_{0};
+    int threshold_{50};
+    Metavision::timestamp decay_us_{100000};
+    std::unique_ptr<gui_algo::HoughLineTracker> algo_;
     std::vector<Metavision::EventCD> passthrough_;
+    std::vector<gui_algo::Event> roi_events_;
     std::vector<gui_algo::HoughLine> last_;
-    RoiFilter roi_;
-    std::vector<gui_algo::Event> roi_buf_;
 public:
-    HoughLineBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
+    HoughLineBackend(int w, int h) : sensor_w_(w), sensor_h_(h) {
+        roi_.compute(sensor_w_, sensor_h_);
+        rebuild();
+    }
+    void rebuild() {
+        const int aw = roi_.enabled ? roi_.rw : sensor_w_;
+        const int ah = roi_.enabled ? roi_.rh : sensor_h_;
+        algo_ = std::make_unique<gui_algo::HoughLineTracker>(
+            aw, ah, num_theta_bins_, num_rho_bins_, threshold_, decay_us_);
+    }
     void set_param(const std::string& k, const std::string& v) override {
-        if (roi_.set_param(k, v)) return;
-        if (k == "threshold") algo_.set_threshold(to_i(v));
-        else if (k == "num_theta_bins") algo_.set_num_theta_bins(to_i(v));
-        else if (k == "num_rho_bins") algo_.set_num_rho_bins(to_i(v));
-        else if (k == "accumulator_decay_us")
-            algo_.set_accumulator_decay_us(static_cast<Metavision::timestamp>(to_i(v)));
+        bool need_rebuild = false;
+        if (k == "threshold") { threshold_ = to_i(v); if (algo_) algo_->set_threshold(threshold_); }
+        else if (k == "num_theta_bins") { num_theta_bins_ = to_i(v); need_rebuild = true; }
+        else if (k == "num_rho_bins") { num_rho_bins_ = to_i(v); need_rebuild = true; }
+        else if (k == "accumulator_decay_us") {
+            decay_us_ = static_cast<Metavision::timestamp>(to_i(v));
+            if (algo_) algo_->set_accumulator_decay_us(decay_us_);
+        }
+        else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
+        else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
+        else if (k == "roi_y") { roi_.y = to_i(v); need_rebuild = true; }
+        else if (k == "roi_w") { roi_.w = to_i(v); need_rebuild = true; }
+        else if (k == "roi_h") { roi_.h = to_i(v); need_rebuild = true; }
+        if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
     }
     std::string get_param(const std::string& k) const override {
-        auto r = roi_.get_param(k); if (!r.empty()) return r;
+        if (k == "roi_enabled") return from_b(roi_.enabled);
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         passthrough_.assign(b, e);
-        auto [ev, n] = roi_.apply(as_events(passthrough_.data()), passthrough_.size(), roi_buf_);
-        gui_algo::EventPacket pkt(ev, n);
-        last_ = algo_.process(pkt);
+        if (roi_.enabled && roi_.rw > 0 && roi_.rh > 0) {
+            roi_events_ = crop_to_roi(as_events(passthrough_.data()),
+                                       passthrough_.size(), roi_);
+            gui_algo::EventPacket pkt(roi_events_.data(), roi_events_.size());
+            last_ = algo_->process(pkt);
+        } else {
+            gui_algo::EventPacket pkt(as_events(passthrough_.data()),
+                                      passthrough_.size());
+            last_ = algo_->process(pkt);
+        }
     }
     AlgoResult pull_result() override {
         AlgoResult r;
         r.filtered_events = passthrough_;
+        // Shift ROI-relative endpoints back to sensor coordinates.
+        const int dx = (roi_.enabled && roi_.rw > 0) ? roi_.x0 : 0;
+        const int dy = (roi_.enabled && roi_.rh > 0) ? roi_.y0 : 0;
         for (const auto& hl : last_) {
             OverlayLine l;
-            l.x1 = static_cast<int>(hl.start.x); l.y1 = static_cast<int>(hl.start.y);
-            l.x2 = static_cast<int>(hl.end.x); l.y2 = static_cast<int>(hl.end.y);
+            l.x1 = static_cast<int>(hl.start.x) + dx;
+            l.y1 = static_cast<int>(hl.start.y) + dy;
+            l.x2 = static_cast<int>(hl.end.x) + dx;
+            l.y2 = static_cast<int>(hl.end.y) + dy;
             r.lines.push_back(l);
         }
         r.status = "hough_line: " + std::to_string(last_.size()) + " lines" +
-                   std::string(roi_.region.enabled ? " (ROI)" : "");
+                   std::string(roi_.enabled ? " (ROI)" : " (full)");
         return r;
     }
-    void reset() override { algo_.reset(); passthrough_.clear(); last_.clear(); }
+    void reset() override {
+        if (algo_) algo_->reset();
+        passthrough_.clear(); roi_events_.clear(); last_.clear();
+    }
 };
 
 /// HoughCircleTracker backend — detected circles as overlay circles.
+///
+/// Complex algorithm (design §4.3.15): the 3D accumulator (a, b, r) is built
+/// at ROI dimensions, NOT sensor dimensions. At sensor scale (e.g. 1280×720)
+/// with max_radius=50 the accumulator would be ~42M cells (168 MB) and
+/// find_peaks would scan every cell per frame — a memory/CPU blowup that
+/// freezes/crashes the GUI. Using the ROI (default 128×128) bounds this to
+/// ~750K cells. Events are cropped to ROI-relative coordinates; detected
+/// circle centers are shifted back by the ROI origin for overlay rendering.
 class HoughCircleBackend final : public AlgoBackend {
-    gui_algo::HoughCircleTracker algo_;
+    int sensor_w_{0}, sensor_h_{0};
+    ProcessRegion roi_;
+    int min_radius_{8};
+    int max_radius_{30};
+    int threshold_{50};
+    Metavision::timestamp decay_us_{100000};
+    std::unique_ptr<gui_algo::HoughCircleTracker> algo_;
     std::vector<Metavision::EventCD> passthrough_;
+    std::vector<gui_algo::Event> roi_events_;
     std::vector<gui_algo::HoughCircle> last_;
-    RoiFilter roi_;
-    std::vector<gui_algo::Event> roi_buf_;
+    /// Throttle: only run find_peaks every kMinProcessIntervalUs to avoid
+    /// CPU saturation. Between runs the last cached result is returned.
+    /// 50ms = 20Hz update, smooth enough for visual tracking.
+    static constexpr Metavision::timestamp kMinProcessIntervalUs = 50000;
+    Metavision::timestamp last_process_t_{0};
 public:
-    HoughCircleBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
+    HoughCircleBackend(int w, int h) : sensor_w_(w), sensor_h_(h) {
+        roi_.compute(sensor_w_, sensor_h_);
+        rebuild();
+    }
+    void rebuild() {
+        const int aw = roi_.enabled ? roi_.rw : sensor_w_;
+        const int ah = roi_.enabled ? roi_.rh : sensor_h_;
+        algo_ = std::make_unique<gui_algo::HoughCircleTracker>(
+            aw, ah, min_radius_, max_radius_, threshold_, decay_us_);
+    }
     void set_param(const std::string& k, const std::string& v) override {
-        if (roi_.set_param(k, v)) return;
-        if (k == "min_radius") algo_.set_min_radius_px(to_i(v));
-        else if (k == "max_radius") algo_.set_max_radius_px(to_i(v));
-        else if (k == "threshold") algo_.set_threshold(to_i(v));
-        else if (k == "accumulator_decay_us")
-            algo_.set_accumulator_decay_us(static_cast<Metavision::timestamp>(to_i(v)));
+        bool need_rebuild = false;
+        if (k == "min_radius") { min_radius_ = to_i(v); need_rebuild = true; }
+        else if (k == "max_radius") { max_radius_ = to_i(v); need_rebuild = true; }
+        else if (k == "threshold") { threshold_ = to_i(v); if (algo_) algo_->set_threshold(threshold_); }
+        else if (k == "accumulator_decay_us") {
+            decay_us_ = static_cast<Metavision::timestamp>(to_i(v));
+            if (algo_) algo_->set_accumulator_decay_us(decay_us_);
+        }
+        else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
+        else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
+        else if (k == "roi_y") { roi_.y = to_i(v); need_rebuild = true; }
+        else if (k == "roi_w") { roi_.w = to_i(v); need_rebuild = true; }
+        else if (k == "roi_h") { roi_.h = to_i(v); need_rebuild = true; }
+        if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
     }
     std::string get_param(const std::string& k) const override {
-        auto r = roi_.get_param(k); if (!r.empty()) return r;
+        if (k == "roi_enabled") return from_b(roi_.enabled);
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         passthrough_.assign(b, e);
-        auto [ev, n] = roi_.apply(as_events(passthrough_.data()), passthrough_.size(), roi_buf_);
-        gui_algo::EventPacket pkt(ev, n);
-        last_ = algo_.process(pkt);
+        // Throttle: skip the expensive process() call if not enough time has
+        // elapsed since the last run. The accumulator still receives events
+        // (accumulate is cheap), but find_peaks (the O(W×H×R) scan) only
+        // runs at ~20Hz. This eliminates the "满屏幕卡顿" lag.
+        const Metavision::timestamp cur_t =
+            passthrough_.empty() ? last_process_t_ : passthrough_.back().t;
+        if (last_process_t_ > 0 && cur_t - last_process_t_ < kMinProcessIntervalUs) {
+            return;  // keep last_ cached result
+        }
+        last_process_t_ = cur_t;
+        if (roi_.enabled && roi_.rw > 0 && roi_.rh > 0) {
+            roi_events_ = crop_to_roi(as_events(passthrough_.data()),
+                                       passthrough_.size(), roi_);
+            gui_algo::EventPacket pkt(roi_events_.data(), roi_events_.size());
+            last_ = algo_->process(pkt);
+        } else {
+            gui_algo::EventPacket pkt(as_events(passthrough_.data()),
+                                      passthrough_.size());
+            last_ = algo_->process(pkt);
+        }
     }
     AlgoResult pull_result() override {
         AlgoResult r;
         r.filtered_events = passthrough_;
+        // Shift ROI-relative centers back to sensor coordinates.
+        const int dx = (roi_.enabled && roi_.rw > 0) ? roi_.x0 : 0;
+        const int dy = (roi_.enabled && roi_.rh > 0) ? roi_.y0 : 0;
         for (const auto& c : last_) {
             OverlayCircle oc;
-            oc.cx = static_cast<int>(c.center.x); oc.cy = static_cast<int>(c.center.y); oc.r = static_cast<int>(c.radius);
+            oc.cx = static_cast<int>(c.center.x) + dx;
+            oc.cy = static_cast<int>(c.center.y) + dy;
+            oc.r = static_cast<int>(c.radius);
             r.circles.push_back(oc);
         }
         r.status = "hough_circle: " + std::to_string(last_.size()) + " circles" +
-                   std::string(roi_.region.enabled ? " (ROI)" : "");
+                   std::string(roi_.enabled ? " (ROI)" : " (full)");
         return r;
     }
-    void reset() override { algo_.reset(); passthrough_.clear(); last_.clear(); }
+    void reset() override {
+        if (algo_) algo_->reset();
+        passthrough_.clear(); roi_events_.clear(); last_.clear();
+    }
 };
 
 /// LineSegmentDetector (ELiSeD) backend — detected segments as overlay lines.
@@ -1140,13 +1277,17 @@ public:
 
 /// ActiveMarker backend — detected markers as overlay circles + text.
 /// Supports ROI (design §5.6.6): processes only ROI events; overlay coords
-/// remain at sensor scale.
+/// remain at sensor scale. Throttled: analyze() only runs every 50ms to
+/// avoid CPU saturation (the per-event process() is cheap, but the
+/// cluster-detection sweep in analyze() is expensive).
 class ActiveMarkerBackend final : public AlgoBackend {
     gui_algo::ActiveMarker algo_;
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
     std::vector<gui_algo::ClusterAnnotation> last_;
+    static constexpr Metavision::timestamp kMinAnalyzeIntervalUs = 50000;
+    Metavision::timestamp last_analyze_t_{0};
 public:
     ActiveMarkerBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
@@ -1163,6 +1304,13 @@ public:
         auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
                                    passthrough_.size(), roi_buf_);
         algo_.process(ev, n);
+        // Throttle the expensive cluster-detection sweep to ~20Hz.
+        const Metavision::timestamp cur_t =
+            passthrough_.empty() ? last_analyze_t_ : passthrough_.back().t;
+        if (last_analyze_t_ > 0 && cur_t - last_analyze_t_ < kMinAnalyzeIntervalUs) {
+            return;  // keep last_ cached result
+        }
+        last_analyze_t_ = cur_t;
         last_ = algo_.analyze();
     }
     AlgoResult pull_result() override {
@@ -1185,13 +1333,16 @@ public:
 };
 
 /// ParticleCounter backend — count as overlay text.
-/// Supports ROI (design §5.6.6): processes only ROI events.
+/// Supports ROI (design §5.6.6): processes only ROI events. Throttled:
+/// detect_and_track() only runs every 50ms to avoid CPU saturation.
 class ParticleCounterBackend final : public AlgoBackend {
     gui_algo::ParticleCounter algo_;
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
     Metavision::timestamp last_t_{0};
+    static constexpr Metavision::timestamp kMinDetectIntervalUs = 50000;
+    Metavision::timestamp last_detect_t_{0};
 public:
     ParticleCounterBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
@@ -1209,6 +1360,11 @@ public:
         auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
                                    passthrough_.size(), roi_buf_);
         algo_.process(ev, n, last_t_);
+        // Throttle the expensive detect_and_track sweep to ~20Hz.
+        if (last_detect_t_ > 0 && last_t_ - last_detect_t_ < kMinDetectIntervalUs) {
+            return;
+        }
+        last_detect_t_ = last_t_;
         algo_.detect_and_track();
     }
     AlgoResult pull_result() override {
@@ -1367,14 +1523,18 @@ public:
 /// XYTVisualizer backend — 3D point cloud data for space_time_display.
 /// Complex algorithm (design §4.3.25): defaults to the center 128×128 ROI to
 /// bound the point-cloud size. Events outside the ROI are dropped.
+///
+/// NOTE: this backend does NOT produce overlay output. The 3D point cloud is
+/// rendered by SpaceTimeDisplay, which owns its own XYTVisualizer instance and
+/// receives events directly from the SDK callback (see install_algo_callback).
+/// This backend exists only so the AlgoWindow can expose ROI/parameters and
+/// reflect the buffer state in its status label.
 class XYTVisualizerBackend final : public AlgoBackend {
     int sensor_w_{0}, sensor_h_{0};
     ProcessRegion roi_;
     gui_algo::XYTVisualizer algo_;
     std::vector<Metavision::EventCD> passthrough_;
     std::vector<gui_algo::Event> roi_events_;
-    std::vector<gui_algo::XYTPoint> last_points_;
-    std::size_t max_points_{50000};
 public:
     XYTVisualizerBackend(int w, int h)
         : sensor_w_(w), sensor_h_(h),
@@ -1387,7 +1547,6 @@ public:
     }
     void set_param(const std::string& k, const std::string& v) override {
         if (k == "time_window_us") algo_.set_time_window_ms(static_cast<float>(to_i(v)) / 1000.0F);
-        else if (k == "max_points") max_points_ = static_cast<std::size_t>(to_i(v));
         else if (k == "roi_enabled") { roi_.enabled = to_b(v); roi_.compute(sensor_w_, sensor_h_); }
         else if (k == "roi_x") { roi_.x = to_i(v); roi_.compute(sensor_w_, sensor_h_); }
         else if (k == "roi_y") { roi_.y = to_i(v); roi_.compute(sensor_w_, sensor_h_); }
@@ -1410,24 +1569,21 @@ public:
         } else {
             algo_.process(as_events(passthrough_.data()), passthrough_.size());
         }
-        last_points_ = algo_.render();
+        // NOTE: do NOT call render() here — the 3D point cloud is rendered by
+        // SpaceTimeDisplay which owns its own XYTVisualizer instance. This
+        // backend only forwards events so the AlgoWindow status reflects the
+        // ROI filter. Generating 50K OverlayPoints here would splatter 2D
+        // points across the main display (wrong) and stall the GUI thread.
     }
     AlgoResult pull_result() override {
         AlgoResult r;
         r.filtered_events = passthrough_;
-        const std::size_t limit = (std::min)(max_points_, last_points_.size());
-        for (std::size_t i = 0; i < limit; ++i) {
-            const auto& pt = last_points_[i];
-            OverlayPoint p;
-            p.x = pt.x; p.y = pt.y;
-            p.strength = static_cast<float>(pt.r) / 255.0F;
-            r.points.push_back(p);
-        }
-        r.status = "xyt: " + std::to_string(last_points_.size()) + " points" +
+        // No overlay/frame: the 3D rendering is handled by SpaceTimeDisplay.
+        r.status = "xyt: " + std::to_string(algo_.size()) + " buffered events" +
                    std::string(roi_.enabled ? " (ROI)" : " (full)");
         return r;
     }
-    void reset() override { algo_.clear(); passthrough_.clear(); roi_events_.clear(); last_points_.clear(); }
+    void reset() override { algo_.clear(); passthrough_.clear(); roi_events_.clear(); }
 };
 
 // ===========================================================================

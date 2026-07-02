@@ -6,8 +6,6 @@
 // (ON = red / OFF = green) or an age gradient (blue → green → red) is
 // provided by algo/cv/xyt_visualizer.h; this widget owns the VBO + GLSL
 // rendering and the orbit camera.
-//
-// Replaces the legacy 2D TemporalPlotWindow (kept for backward compat).
 
 #ifndef GUI_DISPLAY_SPACE_TIME_DISPLAY_H
 #define GUI_DISPLAY_SPACE_TIME_DISPLAY_H
@@ -78,9 +76,12 @@ private:
     int sensor_h_{0};
 
     // Orbit camera.
-    float azimuth_{-58.0f};    ///< degrees
-    float elevation_{8.0f};    ///< degrees
-    float distance_{4.0f};     ///< relative to scene scale
+    float azimuth_{-58.0f};    ///< degrees (matches Lighthouse view_init azim)
+    float elevation_{8.0f};    ///< degrees (matches Lighthouse view_init elev)
+    // Scene bounds are 5x2x3 (matching Lighthouse box aspect (5,3,2) remapped
+    // to OGL (t, 1-y, x)). Half-diagonal ~= 3.08; with 45 deg perspective we
+    // need dist > ~7.4 to fit the whole cube, so default to 8.0.
+    float distance_{8.0f};     ///< relative to scene scale
     bool dragging_{false};
     QPoint last_mouse_;
     bool auto_rotate_{false};

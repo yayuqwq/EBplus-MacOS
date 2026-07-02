@@ -5,6 +5,7 @@
 #include <QGroupBox>
 #include <QLabel>
 #include <QScrollArea>
+#include <QTabWidget>
 #include <QVBoxLayout>
 
 #include "algorithms_panel.h"
@@ -28,29 +29,33 @@ SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter, QWidg
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
 
-    auto* scroll = new QScrollArea(this);
-    scroll->setWidgetResizable(true);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    outer->addWidget(scroll);
+    // 两个页面：基础功能 + 算法模块
+    tabs_ = new QTabWidget(this);
+    tabs_->setTabPosition(QTabWidget::North);
+    outer->addWidget(tabs_);
 
-    auto* host = new QWidget(scroll);
-    auto* layout = new QVBoxLayout(host);
-    layout->setContentsMargins(6, 6, 6, 6);
-    layout->setSpacing(8);
+    // --- Tab 1: 基础功能 (Basic Features) ---
+    auto* basic_scroll = new QScrollArea(tabs_);
+    basic_scroll->setWidgetResizable(true);
+    basic_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto* basic_host = new QWidget(basic_scroll);
+    auto* basic_layout = new QVBoxLayout(basic_host);
+    basic_layout->setContentsMargins(6, 6, 6, 6);
+    basic_layout->setSpacing(8);
 
     auto add_group = [&](const QString& title, QWidget* body, bool enabled = true) {
-        auto* gb = new QGroupBox(title, host);
+        auto* gb = new QGroupBox(title, basic_host);
         auto* gl = new QVBoxLayout(gb);
         gl->setContentsMargins(6, 6, 6, 6);
         gl->addWidget(body);
         gb->setCheckable(false);
         gb->setEnabled(enabled);
-        layout->addWidget(gb);
+        basic_layout->addWidget(gb);
         return gb;
     };
 
     auto add_placeholder = [&](const QString& title, const QString& note) {
-        auto* gb = new QGroupBox(title, host);
+        auto* gb = new QGroupBox(title, basic_host);
         auto* gl = new QVBoxLayout(gb);
         gl->setContentsMargins(6, 6, 6, 6);
         auto* lbl = new QLabel(note, gb);
@@ -58,48 +63,61 @@ SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter, QWidg
         lbl->setStyleSheet("color: #888; font-style: italic;");
         gl->addWidget(lbl);
         gb->setEnabled(false);
-        layout->addWidget(gb);
+        basic_layout->addWidget(gb);
         return gb;
     };
 
-    devices_ = new DevicesPanel(host);
+    devices_ = new DevicesPanel(basic_host);
     add_group(tr("Devices"), devices_);
 
-    information_ = new InformationPanel(host);
+    information_ = new InformationPanel(basic_host);
     add_group(tr("Information"), information_);
 
-    statistics_ = new StatisticsPanel(host);
+    statistics_ = new StatisticsPanel(basic_host);
     add_group(tr("Statistics"), statistics_);
 
-    display_ = new DisplayPanel(host);
+    display_ = new DisplayPanel(basic_host);
     add_group(tr("Display"), display_);
 
     // Phase 2: camera control panels (Bias / ROI / ESP / Trigger).
-    biases_panel_  = new BiasesPanel(host);
+    biases_panel_  = new BiasesPanel(basic_host);
     add_group(tr("Biases"), biases_panel_);
-    roi_     = new RoiPanel(host);
+    roi_     = new RoiPanel(basic_host);
     add_group(tr("ROI"), roi_);
-    esp_     = new EspPanel(host);
+    esp_     = new EspPanel(basic_host);
     add_group(tr("ESP"), esp_);
-    trigger_ = new TriggerPanel(host);
+    trigger_ = new TriggerPanel(basic_host);
     add_group(tr("Trigger"), trigger_);
 
-    // Phase 5: event preprocessing & algorithm selection.
-    preprocessing_ = new PreprocessingPanel(host);
+    // Phase 5: event preprocessing.
+    preprocessing_ = new PreprocessingPanel(basic_host);
     add_group(tr("Preprocessing"), preprocessing_);
 
-    algorithms_ = new AlgorithmsPanel(bridge, host);
-    add_group(tr("Algorithms"), algorithms_, bridge != nullptr);
-
-    file_tools_ = new FileToolsPanel(converter, host);
+    file_tools_ = new FileToolsPanel(converter, basic_host);
     add_group(tr("File Tools"), file_tools_, converter != nullptr);
 
     // Phase 9: calibration — placeholder until CalibrationWizard is installed.
     calibration_group_ = add_placeholder(tr("Calibration"),
                                          tr("Intrinsic calibration wizard — Phase 9."));
 
-    layout->addStretch(1);
-    scroll->setWidget(host);
+    basic_layout->addStretch(1);
+    basic_scroll->setWidget(basic_host);
+    tabs_->addTab(basic_scroll, tr("基础功能"));
+
+    // --- Tab 2: 算法模块 (Algorithm Modules) ---
+    // AlgorithmsPanel already contains the global Algorithm ROI selector at
+    // its top, followed by the scrollable algorithm list. All algorithm
+    // configuration lives here — the Algorithm menu bar is removed from
+    // MainWindow to avoid duplication.
+    auto* algo_scroll = new QScrollArea(tabs_);
+    algo_scroll->setWidgetResizable(true);
+    algo_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    algorithms_ = new AlgorithmsPanel(bridge, algo_scroll);
+    algo_scroll->setWidget(algorithms_);
+    tabs_->addTab(algo_scroll, tr("算法模块"));
+
+    // Default to the basic tab.
+    tabs_->setCurrentIndex(0);
 }
 
 void SettingsPanel::set_calibration_panel(QWidget* panel) {

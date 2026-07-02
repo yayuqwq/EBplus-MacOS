@@ -38,14 +38,11 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/calibration/calibration_wizard.cpp")
     )
 endif()
 
-# Phase 10 — temporal plot / multi-window / layout manager.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/temporal/temporal_plot_window.cpp")
-    list(APPEND GUI_SOURCES
-        temporal/temporal_plot_window.cpp
-        widgets/multi_window_manager.cpp
-        config/layout_manager.cpp
-    )
-endif()
+# Phase 10 — multi-window / layout manager.
+list(APPEND GUI_SOURCES
+    widgets/multi_window_manager.cpp
+    config/layout_manager.cpp
+)
 
 # Phase 11 — jAER-inspired display / widgets (design §1.6).
 # Header-only utility multiline_text.h needs no source entry.

@@ -117,6 +117,22 @@ void FrameAnnotator::draw_points(QImage& img, const std::vector<QPointF>& points
     }
 }
 
+void FrameAnnotator::draw_colored_points(QImage& img,
+                                         const std::vector<std::pair<QPointF, QColor>>& pts,
+                                         double side) {
+    if (img.isNull() || pts.empty()) return;
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing, false);
+    p.setPen(Qt::NoPen);
+    const double s = (side > 0.0) ? side : 1.0;
+    const double half = s * 0.5;
+    for (const auto& [pos, color] : pts) {
+        if (!color.isValid()) continue;
+        p.setBrush(color);
+        p.drawRect(QRectF(pos.x() - half, pos.y() - half, s, s));
+    }
+}
+
 void FrameAnnotator::draw_circles(QImage& img,
                                   const std::vector<std::pair<QPointF, double>>& circles,
                                   const QColor& color) {

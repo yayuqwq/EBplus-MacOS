@@ -1054,11 +1054,15 @@ openEB 未提供光流算法，需自研。结果以箭头/颜色图叠加到主
 
 ✅ 移植自 jAER `HoughLineTracker`（见 1.6.2）。事件驱动增量霍夫直线变换：维护 2D 累加器 (ρ, θ)，逐事件对每个 θ 累加 ρ = x·cos(θ) + y·sin(θ)；累加器按时间常数 `accumulator_decay_us` 指数衰减（事件过期）；寻找局部极大值并经 NMS 抑制后输出直线段（按 θ 斜率将 (ρ,θ) 转为图像满跨线段），按 (θ,ρ) 邻近度最近邻关联持久航迹。
 
+**ROI 处理（关键）**：`HoughLineBackend` 采用 `ProcessRegion` + `crop_to_roi` 模式（非 `RoiFilter`），按 **ROI 尺寸**（非传感器尺寸）构造 `HoughLineTracker`，事件先裁剪到 ROI 相对坐标再投票。检测到的线段端点按 ROI 原点 `(x0, y0)` 反向平移回传感器坐标用于叠加渲染。ROI 变更（坐标/尺寸/启停）触发 `rebuild()` 重建累加器。
+
 **参数与合法范围**：`threshold`：int，`[2, 500]`，默认 `50`；`num_theta_bins`：int，`[8, 360]`，默认 `90`；`num_rho_bins`：int，`[0, 4000]`，默认 `0`（0 = 按图像对角线自动 1px 分辨率）；`accumulator_decay_us`：int，`[1000, 5000000]`，默认 `100000`
 
 #### 4.3.15 🆕 霍夫圆跟踪 (HoughCircleTracker) — 叠加型
 
 ✅ 移植自 jAER `HoughCircleTracker`（见 1.6.2）。事件驱动增量霍夫圆变换：维护 3D 累加器 (a, b, r)，逐事件对每个候选半径 r，在以事件 (x,y) 为中心、半径为 r 的圆上对所有候选圆心 (a, b) 投票（a = x + r·cos(θ), b = y + r·sin(θ)）；累加器按时间常数 `accumulator_decay_us` 指数衰减（事件过期）；在累加器中寻找局部极大值，经跨半径 NMS 抑制后输出圆，并按最近邻关联持久航迹。
+
+**ROI 处理（关键，防崩溃）**：3D 累加器尺寸为 `width*height*num_radii`。若按传感器尺寸（如 1280×720, max_radius=50）构造，累加器将达 ~42M cells (168 MB) 且 `find_peaks` 每帧扫描全部 cells，导致内存爆炸 + GUI 卡死/崩溃。`HoughCircleBackend` 采用 `ProcessRegion` + `crop_to_roi` 模式，按 **ROI 尺寸**（默认 128×128 → ~750K cells）构造算法实例，事件先裁剪到 ROI 相对坐标再投票。检测到的圆心按 ROI 原点 `(x0, y0)` 反向平移回传感器坐标用于叠加渲染。ROI/半径变更触发 `rebuild()` 重建累加器。
 
 **参数与合法范围**：`min_radius_px`：int，`[1, 500]`，默认 `5`；`max_radius_px`：int，`[1, 1000]`，默认 `50`；`threshold`：int，`[2, 500]`，默认 `30`；`accumulator_decay_us`：int，`[1000, 5000000]`，默认 `100000`
 
@@ -1516,16 +1520,38 @@ openEB 未提供光流算法，需自研。结果以箭头/颜色图叠加到主
 2. **使用 `triggered(bool)` 信号**（非 `toggled`）避免程序化 `setChecked` 触发重入
 3. **AlgoWindow**（`gui/widgets/algo_window.h`）：
    - 顶部为滚动参数面板，自动从 `AlgoParamSpec` 生成控件（QSpinBox/QDoubleSpinBox/QComboBox/QLineEdit），ROI 参数分组置顶
-   - 底部为显示区域：Standalone 帧类算法（`time_surface`/`event_to_video`/`isi_analyzer`/`background_mask`）安装 `EventDisplayWidget`；其余算法使用 `QLabel` 显示状态文本
+   - 底部为显示区域：Standalone 帧类算法（`time_surface`/`event_to_video`/`isi_analyzer`/`background_mask`）安装 `EventDisplayWidget` 显示算法输出帧；**自研 Overlay 算法也安装 `EventDisplayWidget`，作为 ROI 放大视图**（见下文）；其余算法使用 `QLabel` 显示状态文本
    - `xyt_visualizer` 额外维护独立的 `SpaceTimeDisplay`（QOpenGLWidget 3D 渲染），AlgoWindow 仅提供参数控制
    - 关闭 AlgoWindow → 触发 `closing` 信号 → `set_enabled(false)` + 菜单 "Enable" 取消勾选
 4. **主显示帧 ROI 叠加**：`process_algo_results()` 中调用 `draw_roi_overlays()`，遍历所有启用的自研算法（`source == "self"`），对每个 `roi_enabled=true` 的算法在主显示帧上绘制黄色矩形框 + 算法名标注
-5. **参数面板**：AlgoWindow 与 Algorithms 面板均可调节参数，参数变更即时同步到 AlgoInstance
+5. **ROI 放大视图**（Overlay 算法）：`process_algo_results()` 的 Overlay 分支在主帧上绘制完算法图元（boxes/lines/points/circles/texts）后，若该算法 `roi_enabled=true` 且其 AlgoWindow 已开，则从已标注的主帧裁剪 ROI 区域（`QImage::copy(QRect)`）并推送到 AlgoWindow 的 `EventDisplayWidget`。该窗口以 ROI 尺寸独立显示"放大后的算法结果"，便于用户在小 ROI 区域内观察细节；ROI 未启用时不推送（保持 `QLabel` 等待状态）。
+6. **参数面板**：AlgoWindow 与 Algorithms 面板均可调节参数，参数变更即时同步到 AlgoInstance
 
 **手动停用方式**：
 - Algorithm 菜单 → 算法子菜单 → 取消勾选 "Enable"
 - 关闭对应 AlgoWindow
 - 取消勾选 "算法ROI"（保留全幅处理）或在 AlgoWindow 中调整 ROI 尺寸为 `0`（全幅）
+
+---
+
+#### 5.6.7 🆕 事件涌入保护（Flood Guard / 背压）
+
+**核心需求**：当事件率瞬时飙升（如 10–100 Mev/s，常见于强光闪烁、相机抖动、bias 失配等场景），慢算法（如 `event_to_video` 的 Chambolle-Pock 重建、`hough_circle` 的 3D 累加器扫描）无法跟上事件速率；若无背压，算法内部缓冲区将无界增长，最终导致 GUI 线程阻塞、内存耗尽或进程崩溃。
+
+**保护机制**（`AlgoInstance`，`gui/algo_bridge/algo_bridge.h`）：
+
+1. **批次硬上限**：`push_events()` 收到一批事件时，若数量 `n > kMaxBatchEvents`（默认 `50000`），仅保留**最近的** `kMaxBatchEvents` 个事件（丢弃旧事件），并递增 `flood_strikes_` 计数。
+2. **连续超限判定**：若某批次 `n ≤ kMaxBatchEvents`，重置 `flood_strikes_ = 0`（偶发尖峰不触发停用）。
+3. **自动停用阈值**：当 `flood_strikes_ ≥ kFloodStrikes`（默认 `4`，即连续 4 批均超限）时，设置 `overloaded_ = true` 并将 `enabled_ = false`，算法实例从此停止处理事件。
+4. **用户重新启用**：用户在 Algorithm 菜单重新勾选 "Enable" 时，`set_enabled(true)` 同时清零 `overloaded_` 与 `flood_strikes_`，算法从干净状态重启。
+
+**GUI 反馈**：
+- `is_overloaded()` 暴露停用原因，`process_algo_results()` 在遍历 live 实例时检测到该状态，于状态栏显示 "auto-disabled: event rate too high (re-enable to retry)"，并在对应 AlgoWindow 的状态标签显示 "AUTO-DISABLED: event flooding detected. Re-enable from the Algorithm menu."
+- 菜单 "Enable" 复选框因 `enabled_=false` 自动取消勾选，与用户手动停用行为一致。
+
+**XYT 缓冲区硬上限**：`XYTVisualizer`（`algo/cv/xyt_visualizer.h`）额外维护 `kMaxBuffer = 200000` 的环形缓冲区硬上限，即使 flood guard 仍允许事件通过，缓冲区超出上限时也会丢弃最旧事件（`pop_front`），防止 3D 点云内存无界增长。
+
+**保护范围**：所有 29 个自研算法均通过 `AlgoInstance` 统一获得 flood guard 保护；OpenEB 内置算法因在 SDK 内部线程处理，不受此机制约束。
 
 ---
 

@@ -28,6 +28,12 @@ void AlgorithmsPanel::build_ui() {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
 
+    // Global Algorithm ROI selector — always visible at the top, above the
+    // scrollable algorithm list. All self-developed algorithms share this ROI
+    // (design §5.6.6). Per-algorithm roi_* params are no longer shown in each
+    // algo's parameter editor; they're controlled exclusively here.
+    build_roi_selector(outer);
+
     auto* scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -100,6 +106,12 @@ void AlgorithmsPanel::build_ui() {
                 return -1;
             };
             for (const auto& p : a->params) {
+                // Skip per-algorithm ROI params — they're controlled by the
+                // global Algorithm ROI selector at the top of the panel.
+                if (p.key == "roi_enabled" || p.key == "roi_x" ||
+                    p.key == "roi_y" || p.key == "roi_w" ||
+                    p.key == "roi_h") continue;
+
                 const QString disp = QString::fromStdString(p.display_name);
                 const std::string param_key = p.key;
                 QWidget* w = nullptr;
@@ -166,9 +178,17 @@ void AlgorithmsPanel::build_ui() {
                     if (inst) {
                         inst->set_enabled(true);
                         live_instances_[algo_name] = inst;
+                        // Apply the current global ROI to this newly-enabled
+                        // instance so it starts with the right region.
+                        apply_global_roi();
                     }
                     emit info_message(tr("Algorithm enabled: %1")
                                           .arg(QString::fromStdString(a->display_name)));
+                    // Request MainWindow to open the AlgoWindow so Standalone
+                    // algorithms have a display and Overlay algorithms get
+                    // their ROI zoom view. Without this the sidebar-enabled
+                    // algorithm produces no visible output.
+                    emit open_algo_window_requested(algo_name);
                 } else {
                     auto it = live_instances_.find(algo_name);
                     if (it != live_instances_.end() && it->second) {
@@ -183,6 +203,68 @@ void AlgorithmsPanel::build_ui() {
 
     layout->addStretch(1);
     scroll->setWidget(host);
+}
+
+void AlgorithmsPanel::build_roi_selector(QVBoxLayout* parent_layout) {
+    auto* gb = new QGroupBox(tr("Algorithm ROI"), this);
+    auto* form = new QFormLayout(gb);
+    form->setContentsMargins(6, 6, 6, 6);
+
+    roi_enabled_cb_ = new QCheckBox(tr("Enabled (center 128×128 default)"), gb);
+    roi_enabled_cb_->setChecked(true);
+    form->addRow(roi_enabled_cb_);
+
+    roi_x_sp_ = new QSpinBox(gb);
+    roi_x_sp_->setRange(-1, 100000);
+    roi_x_sp_->setValue(-1);
+    roi_x_sp_->setSpecialValueText(tr("auto-center"));
+    form->addRow(tr("X"), roi_x_sp_);
+
+    roi_y_sp_ = new QSpinBox(gb);
+    roi_y_sp_->setRange(-1, 100000);
+    roi_y_sp_->setValue(-1);
+    roi_y_sp_->setSpecialValueText(tr("auto-center"));
+    form->addRow(tr("Y"), roi_y_sp_);
+
+    roi_w_sp_ = new QSpinBox(gb);
+    roi_w_sp_->setRange(0, 100000);
+    roi_w_sp_->setValue(128);
+    roi_w_sp_->setSpecialValueText(tr("full"));
+    form->addRow(tr("W"), roi_w_sp_);
+
+    roi_h_sp_ = new QSpinBox(gb);
+    roi_h_sp_->setRange(0, 100000);
+    roi_h_sp_->setValue(128);
+    roi_h_sp_->setSpecialValueText(tr("full"));
+    form->addRow(tr("H"), roi_h_sp_);
+
+    parent_layout->addWidget(gb);
+
+    // Wire up: any change applies the ROI to all live instances.
+    auto apply_now = [this]() { apply_global_roi(); };
+    connect(roi_enabled_cb_, &QCheckBox::toggled, this, apply_now);
+    connect(roi_x_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
+    connect(roi_y_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
+    connect(roi_w_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
+    connect(roi_h_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
+}
+
+void AlgorithmsPanel::apply_global_roi() {
+    const std::string enabled = roi_enabled_cb_->isChecked() ? "true" : "false";
+    const std::string x = std::to_string(roi_x_sp_->value());
+    const std::string y = std::to_string(roi_y_sp_->value());
+    const std::string w = std::to_string(roi_w_sp_->value());
+    const std::string h = std::to_string(roi_h_sp_->value());
+    // Apply to every live instance. Also apply to instances that are created
+    // lazily but not yet enabled (so the ROI is set before the algo starts).
+    for (auto& [name, inst] : live_instances_) {
+        if (!inst) continue;
+        inst->set_param("roi_enabled", enabled);
+        inst->set_param("roi_x", x);
+        inst->set_param("roi_y", y);
+        inst->set_param("roi_w", w);
+        inst->set_param("roi_h", h);
+    }
 }
 
 void AlgorithmsPanel::apply_param(const std::string& algo_name,
