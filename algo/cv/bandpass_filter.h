@@ -41,10 +41,12 @@ public:
     }
 
     /// @brief Filters a scalar rate sample through the cascaded band-pass.
+    /// jAER order: low-pass first, then high-pass (hp(lp(x))). Matches
+    /// algo/common/filter/bandpass.h.
     double process(double x) {
         double y = x;
-        for (auto& hp : hp_) y = hp.process(y);
         for (auto& lp : lp_) y = lp.process(y);
+        for (auto& hp : hp_) y = hp.process(y);
         value_ = y;
         return y;
     }

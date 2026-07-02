@@ -71,7 +71,7 @@ struct E2VIDCropParams {
 
     /// @brief Pads a CV_32FC1 image (HxW) to crop size using reflection.
     /// Uses BORDER_REFLECT_101 to match PyTorch's ReflectionPad2d semantics
-    /// (edge sample is NOT repeated: fedcba|abcdefgh|gfedcba).
+    /// (edge sample is NOT repeated: gfedcb|abcdefgh|gfedcba).
     cv::Mat pad(const cv::Mat& img) const {
         cv::Mat padded;
         cv::copyMakeBorder(img, padded,
@@ -336,10 +336,13 @@ private:
             cv::Mat output(out_h, out_w, CV_32FC1,
                            const_cast<float*>(output_data));
             return output.clone();  // deep copy (Ort owns the buffer)
-        } catch (const Ort::Exception&) {
+        } catch (const Ort::Exception& e) {
             // Inference failure (shape mismatch, recurrent state mismatch, etc.):
-            // fall back to heuristic so the pipeline does not crash.
-            model_loaded_ = false;
+            // fall back to heuristic so the pipeline does not crash. Keep
+            // model_loaded_ true so the next batch can retry; the user must
+            // explicitly call load_model("") to disable the ONNX path.
+            fprintf(stderr, "[e2vid] ONNX inference failed: %s (falling back "
+                    "to heuristic, will retry next batch)\n", e.what());
             prev_states_.clear();
             return infer_heuristic();
         }

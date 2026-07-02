@@ -388,11 +388,11 @@ private:
     float lambda4_{0.2f};
     float lambda5_{0.1f};
     float lambda6_{1.0f};
-    int num_iterations_{30};
+    int num_iterations_{100};
 
     // InteractingMaps parameters.
     float relaxation_step_{0.1f};
-    int im_iterations_{20};
+    int im_iterations_{50};
 
     // Base reconstruction state (used by non-E2VID modes).
     std::vector<double> log_intensity_;

@@ -2,10 +2,10 @@
 //
 // ✅ 移植自 jAER OpticalGyro. Cluster-based camera motion estimation:
 // mass-weighted mean translation from cluster displacements (location -
-// birthLocation), small-angle least-squares rotation (joint solve),
-// IIR low-pass filtering of estimates, and inverse-transform EIS
-// compensation applied to incoming events. Corresponds to design §4.3.23.
-// Header-only.
+// birthLocation), small-angle least-squares rotation (joint solve, gated
+// by rotation_enabled_), IIR low-pass filtering of estimates, and inverse-
+// transform EIS compensation applied to incoming events. Corresponds to
+// design §4.3.23. Header-only.
 
 #ifndef GUI_ALGO_CV_OPTICAL_GYRO_H
 #define GUI_ALGO_CV_OPTICAL_GYRO_H
@@ -39,10 +39,10 @@ struct MotionEstimate {
 ///
 /// ✅ 移植自 jAER OpticalGyro (net.sf.jaer.eventprocessing.tracking).
 /// Maintains an internal cluster tracker, computes mass-weighted mean
-/// translation from cluster displacements (location - birthLocation),
-/// solves a joint small-angle least-squares rotation+translation,
-/// low-pass filters the estimates, and applies the inverse transform
-/// to events for EIS.
+/// translation from cluster displacements (location - birthLocation
+/// + velocityPPt), solves a joint small-angle least-squares
+/// rotation+translation (when rotation_enabled_), low-pass filters the
+/// estimates, and applies the inverse transform to events for EIS.
 class OpticalGyro {
 public:
     OpticalGyro(int width, int height,
@@ -88,6 +88,12 @@ public:
     void set_stabilization_strength(float v) {
         strength_ = clamp_f(v, 0.0f, 1.0f);
     }
+    /// @brief Enables/disables rotation estimation. When disabled (default
+    /// follows jAER opticalGyroRotationEnabled=false), only translation is
+    /// estimated and applied, avoiding ill-conditioned LS solves on pure-
+    /// translation scenes.
+    void set_rotation_enabled(bool v) { rotation_enabled_ = v; }
+    bool rotation_enabled() const { return rotation_enabled_; }
     void set_smoothing_window_ms(float v) {
         smoothing_ms_ = clamp_f(v, 1.0f, 10000.0f);
     }
@@ -97,6 +103,7 @@ public:
         trans_x_filt_ = 0.0f;
         trans_y_filt_ = 0.0f;
         rot_filt_ = 0.0f;
+        rot_for_transform_ = 0.0f;
         last_filter_t_ = 0;
     }
 
@@ -113,6 +120,8 @@ private:
         float birth_y{0.0F};
         float x{0.0F};
         float y{0.0F};
+        float vx{0.0F};  ///< Per-cluster velocity x (px/us), jAER Cluster.velocity
+        float vy{0.0F};  ///< Per-cluster velocity y (px/us), jAER Cluster.velocity
         float mass{0.0F};
         Metavision::timestamp birth_t{0};
         Metavision::timestamp last_t{0};
@@ -143,8 +152,20 @@ private:
         } else {
             GyroCluster& c = clusters_[best];
             const float a = location_mixing_factor_;
+            const float old_x = c.x;
+            const float old_y = c.y;
             c.x = c.x * (1.0F - a) + static_cast<float>(e.x) * a;
             c.y = c.y * (1.0F - a) + static_cast<float>(e.y) * a;
+            // Track per-cluster velocity from location changes (jAER
+            // Cluster.velocity). Low-pass filter the instantaneous velocity
+            // (position delta / dt) so noisy events don't dominate.
+            const float dt = static_cast<float>(e.t - c.last_t);
+            if (dt > 0.0F) {
+                const float inst_vx = (c.x - old_x) / dt;
+                const float inst_vy = (c.y - old_y) / dt;
+                c.vx = c.vx * (1.0F - a) + inst_vx * a;
+                c.vy = c.vy * (1.0F - a) + inst_vy * a;
+            }
             c.mass += 1.0F;
             c.last_t = e.t;
         }
@@ -192,8 +213,17 @@ private:
             if (!is_visible(c, t)) continue;
             const float w = mass_now(c, t);
             weight_sum += w;
-            avgxloc += (c.x - c.birth_x) * w;
-            avgyloc += (c.y - c.birth_y) * w;
+            // velocityPPt: predict the cluster's present position at the
+            // current packet time t from its velocity (jAER velocityPPt =
+            // velocity * (t - lastUpdateT)). Clusters that haven't received
+            // an event recently would otherwise underestimate the
+            // birth→present displacement; extrapolating by velocity * dt
+            // corrects this.
+            const float vpt_dt = static_cast<float>(t - c.last_t);
+            const float vpp_x = c.vx * vpt_dt;
+            const float vpp_y = c.vy * vpt_dt;
+            avgxloc += ((c.x - c.birth_x) + vpp_x) * w;
+            avgyloc += ((c.y - c.birth_y) + vpp_y) * w;
             // Small-angle LS accumulators (centered on sensor midpoint).
             const double ppx = static_cast<double>(c.birth_x - sx2_);
             const double ppy = static_cast<double>(c.birth_y - sy2_);
@@ -222,7 +252,9 @@ private:
 
         // Rotation: joint small-angle LS solve (jAER SmallAngleTransformFinder).
         // Needs ≥3 visible clusters for a non-degenerate solve.
-        if (n_visible >= 3) {
+        // Gated by rotation_enabled_ (jAER opticalGyroRotationEnabled defaults
+        // to false — pure-translation scenes do not benefit from rotation).
+        if (rotation_enabled_ && n_visible >= 3) {
             const double aden = (qy2 + qx2)
                 - ((qy * qy + qx * qx) / static_cast<double>(w_sum));
             if (std::fabs(aden) > 1e-10) {
@@ -237,6 +269,10 @@ private:
                     ((px - qx) + inst_rot * qy) / static_cast<double>(w_sum));
                 inst_ty = static_cast<float>(
                     ((py - qy) - inst_rot * qx) / static_cast<double>(w_sum));
+                // jAER computes cosAngle/sinAngle from the OLD rotationAngle
+                // BEFORE filterTransform updates it (OpticalGyro.java:312-314).
+                // Save the pre-update rot_filt_ for use in apply_eis().
+                rot_for_transform_ = rot_filt_;
             }
         }
 
@@ -252,8 +288,14 @@ private:
     /// p = R(a) * q + T (maps present location q back to birth location p),
     /// matching jAER OpticalGyro.transformEvent.
     void apply_eis(MutableEventPacket& packet) {
-        const float ca = std::cos(rot_filt_ * strength_);
-        const float sa = std::sin(rot_filt_ * strength_);
+        // Use rot_for_transform_ (the OLD rotationAngle, jAER cosAngle/sinAngle)
+        // rather than the just-updated rot_filt_, matching jAER's timing where
+        // cosAngle/sinAngle are computed BEFORE filterTransform updates
+        // rotationAngle (OpticalGyro.java:312-314). Translation uses the new
+        // filtered value, as in jAER (filterTransform updates translation
+        // before transformEvent reads it).
+        const float ca = std::cos(rot_for_transform_ * strength_);
+        const float sa = std::sin(rot_for_transform_ * strength_);
         const float tx = trans_x_filt_ * strength_;
         const float ty = trans_y_filt_ * strength_;
         const float xmax = static_cast<float>(width_ - 1);
@@ -285,6 +327,7 @@ private:
     int height_;
     float strength_;
     float smoothing_ms_;
+    bool rotation_enabled_{false};  // jAER opticalGyroRotationEnabled default
     const float sx2_;  // sensor center x (for centering coordinates)
     const float sy2_;  // sensor center y
 
@@ -292,6 +335,10 @@ private:
     float trans_x_filt_{0.0F};
     float trans_y_filt_{0.0F};
     float rot_filt_{0.0F};    // radians
+    // Rotation angle used for the EIS transform (jAER cosAngle/sinAngle).
+    // Holds the OLD rotationAngle (before the current filterTransform update),
+    // since jAER computes cosAngle/sinAngle BEFORE updating rotationAngle.
+    float rot_for_transform_{0.0F};
     Metavision::timestamp last_filter_t_{0};
 
     // Cluster tracker parameters (jAER RectangularClusterTracker defaults).

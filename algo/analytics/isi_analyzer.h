@@ -113,7 +113,7 @@ public:
         hist_ = HistogramRingBuffer(kRingWindow,
                                     static_cast<std::size_t>(bin_count_),
                                     0.0,
-                                    static_cast<double>(max_isi_us_) / 1000.0);
+                                    static_cast<double>(max_isi_us_));
     }
     int bin_count() const { return bin_count_; }
 
@@ -122,7 +122,7 @@ public:
         hist_ = HistogramRingBuffer(kRingWindow,
                                     static_cast<std::size_t>(bin_count_),
                                     0.0,
-                                    static_cast<double>(max_isi_us_) / 1000.0);
+                                    static_cast<double>(max_isi_us_));
     }
     float max_isi_ms() const {
         return static_cast<float>(max_isi_us_) / 1000.0f;

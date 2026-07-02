@@ -230,18 +230,18 @@ private:
                 return cv::Vec3b(b8(b), b8(g), b8(r));
             }
             case Colormap::Turbo: {
-                // blue -> cyan -> green -> yellow -> red
-                double r = 0.0, g = 0.0, b = 0.0;
-                if (v < 0.25) {
-                    b = 1.0; g = v / 0.25;
-                } else if (v < 0.5) {
-                    b = 1.0 - (v - 0.25) / 0.25; g = 1.0;
-                } else if (v < 0.75) {
-                    g = 1.0; r = (v - 0.5) / 0.25;
-                } else {
-                    r = 1.0; g = 1.0 - (v - 0.75) / 0.25;
-                }
-                return cv::Vec3b(b8(b), b8(g), b8(r));
+                // Turbo perceptually-uniform colormap (Mikhailov 2019).
+                // Built once via cv::applyColorMap(COLORMAP_TURBO) and cached
+                // as a 256-entry LUT, so per-pixel lookup is O(1).
+                static const cv::Mat lut = []() {
+                    cv::Mat linear(1, 256, CV_8UC1);
+                    for (int i = 0; i < 256; ++i) linear.at<uchar>(0, i) = i;
+                    cv::Mat out;
+                    cv::applyColorMap(linear, out, cv::COLORMAP_TURBO);
+                    return out;
+                }();
+                const int idx = static_cast<int>(v * 255.0 + 0.5);
+                return lut.at<cv::Vec3b>(0, std::min(255, std::max(0, idx)));
             }
         }
         return cv::Vec3b(0, 0, 0);

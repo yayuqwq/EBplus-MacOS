@@ -29,9 +29,34 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
+#include <opencv2/imgcodecs.hpp>
 
 #include "algo/common/event.h"
 #include "algo/common/event_packet.h"
+
+// OpenEB SDK — frame generators (design §4.3.2)
+#include <metavision/sdk/core/algorithms/roi_mask_algorithm.h>
+#include <metavision/sdk/core/algorithms/adaptive_rate_events_splitter_algorithm.h>
+#include <metavision/sdk/core/algorithms/events_integration_algorithm.h>
+#include <metavision/sdk/core/algorithms/event_frame_diff_generation_algorithm.h>
+#include <metavision/sdk/core/algorithms/event_frame_histo_generation_algorithm.h>
+#include <metavision/sdk/core/algorithms/time_decay_frame_generation_algorithm.h>
+#include <metavision/sdk/core/algorithms/contrast_map_generation_algorithm.h>
+#include <metavision/sdk/core/algorithms/periodic_frame_generation_algorithm.h>
+#include <metavision/sdk/core/algorithms/on_demand_frame_generation_algorithm.h>
+#include <metavision/sdk/core/algorithms/base_frame_generation_algorithm.h>
+#include <metavision/sdk/base/events/raw_event_frame_diff.h>
+#include <metavision/sdk/base/events/raw_event_frame_histo.h>
+// OpenEB SDK — preprocessors (design §4.3.3)
+#include <metavision/sdk/core/preprocessors/diff_processor.h>
+#include <metavision/sdk/core/preprocessors/histo_processor.h>
+#include <metavision/sdk/core/preprocessors/time_surface_processor.h>
+#include <metavision/sdk/core/preprocessors/event_cube_processor.h>
+#include <metavision/sdk/core/preprocessors/tensor.h>
+// OpenEB SDK — utilities (design §4.3.4)
+#include <metavision/sdk/core/utils/frame_composer.h>
+#include <metavision/sdk/core/utils/rolling_event_buffer.h>
+#include <metavision/sdk/core/utils/mostrecent_timestamp_buffer.h>
 
 // algo/cv
 #include "algo/cv/noise_filter.h"
@@ -328,11 +353,13 @@ public:
         if (roi_.set_param(k, v)) return;
         if (k == "stabilize") algo_.set_stabilization_strength(to_b(v) ? 1.0F : 0.0F);
         else if (k == "smoothing_window_ms") algo_.set_smoothing_window_ms(static_cast<float>(to_d(v)));
+        else if (k == "rotation_enabled") algo_.set_rotation_enabled(to_b(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
         if (k == "stabilize") return from_b(algo_.stabilization_strength() > 0.0F);
         if (k == "smoothing_window_ms") return from_d(algo_.smoothing_window_ms());
+        if (k == "rotation_enabled") return from_b(algo_.rotation_enabled());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -725,6 +752,12 @@ class HoughCircleBackend final : public AlgoBackend {
     int max_radius_{30};
     int threshold_{50};
     Metavision::timestamp decay_us_{100000};
+    // jAER params (persisted so rebuild() preserves them)
+    float decay_{1.0f};
+    int buffer_length_{4000};
+    int nr_max_{1};
+    bool decay_mode_{true};
+    bool loc_depression_{true};
     std::unique_ptr<gui_algo::HoughCircleTracker> algo_;
     std::vector<Metavision::EventCD> passthrough_;
     std::vector<gui_algo::Event> roi_events_;
@@ -743,7 +776,8 @@ public:
         const int aw = roi_.enabled ? roi_.rw : sensor_w_;
         const int ah = roi_.enabled ? roi_.rh : sensor_h_;
         algo_ = std::make_unique<gui_algo::HoughCircleTracker>(
-            aw, ah, min_radius_, max_radius_, threshold_, decay_us_);
+            aw, ah, min_radius_, max_radius_, threshold_, decay_us_,
+            decay_, buffer_length_, nr_max_, decay_mode_, loc_depression_);
     }
     void set_param(const std::string& k, const std::string& v) override {
         bool need_rebuild = false;
@@ -754,6 +788,11 @@ public:
             decay_us_ = static_cast<Metavision::timestamp>(to_i(v));
             if (algo_) algo_->set_accumulator_decay_us(decay_us_);
         }
+        else if (k == "decay") { decay_ = static_cast<float>(to_d(v)); if (algo_) algo_->set_decay(decay_); }
+        else if (k == "buffer_length") { buffer_length_ = to_i(v); if (algo_) algo_->set_buffer_length(buffer_length_); }
+        else if (k == "nr_max") { nr_max_ = to_i(v); if (algo_) algo_->set_nr_max(nr_max_); }
+        else if (k == "decay_mode") { decay_mode_ = to_b(v); if (algo_) algo_->set_decay_mode(decay_mode_); }
+        else if (k == "loc_depression") { loc_depression_ = to_b(v); if (algo_) algo_->set_loc_depression(loc_depression_); }
         else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
         else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
         else if (k == "roi_y") { roi_.y = to_i(v); need_rebuild = true; }
@@ -863,6 +902,18 @@ public:
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
         if (k == "min_events") algo_.set_min_cluster_size(to_i(v));
+        else if (k == "dt") algo_.set_dt(static_cast<float>(to_d(v)));
+        else if (k == "factor") algo_.set_factor(static_cast<float>(to_d(v)));
+        else if (k == "rf_width") algo_.set_rf_width(to_i(v));
+        else if (k == "rf_height") algo_.set_rf_height(to_i(v));
+        else if (k == "tolerance") algo_.set_tolerance(static_cast<float>(to_d(v)));
+        else if (k == "ori") algo_.set_ori(static_cast<float>(to_d(v)));
+        else if (k == "neighbor_thr") algo_.set_neighbor_thr(static_cast<float>(to_d(v)));
+        else if (k == "thr_gradient") algo_.set_thr_gradient(static_cast<float>(to_d(v)));
+        else if (k == "history_factor") algo_.set_history_factor(static_cast<float>(to_d(v)));
+        else if (k == "use_opposite_polarity") algo_.set_use_opposite_polarity(to_b(v));
+        else if (k == "ori_history_enabled") algo_.set_ori_history_enabled(to_b(v));
+        else if (k == "display_length") algo_.set_display_length(to_i(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
@@ -904,6 +955,9 @@ public:
         if (roi_.set_param(k, v)) return;
         if (k == "tau_ms") algo_.set_tau_ms(static_cast<float>(to_d(v)));
         else if (k == "threshold") algo_.set_threshold(static_cast<float>(to_d(v)));
+        else if (k == "receptive_field_size_pixels") algo_.set_receptive_field_size_pixels(to_i(v));
+        else if (k == "initial_potential_percent") algo_.set_initial_potential_percent(static_cast<float>(to_d(v)));
+        else if (k == "jump_after_firing_percent") algo_.set_jump_after_firing_percent(static_cast<float>(to_d(v)));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
@@ -1444,6 +1498,9 @@ public:
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
         if (k == "window_us") algo_.set_trigger_window_us(to_i(v));
+        else if (k == "t0_us") algo_.set_t0(to_i(v));
+        else if (k == "t1_us") algo_.set_t1(to_i(v));
+        else if (k == "trigger_channel") algo_.set_trigger_channel(to_i(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
@@ -1695,6 +1752,7 @@ public:
         if (roi_.set_param(k, v)) return;
         if (k == "learning_rate") algo_.set_learning_window_s(static_cast<float>(to_d(v)));
         else if (k == "threshold") algo_.set_background_rate_threshold_hz(static_cast<float>(to_d(v)));
+        else if (k == "erosion_size") algo_.set_erosion_size(to_i(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
@@ -1808,6 +1866,894 @@ public:
 };
 
 // ===========================================================================
+// OpenEB SDK — frame generators & filters (design §4.3.1 / §4.3.2)
+//
+// These backends wrap the real Metavision SDK algorithm classes. Events are
+// stored in a std::vector<Metavision::EventCD> and the raw pointer is fed to
+// the SDK process_events() (InputIt = Metavision::EventCD*).
+// ===========================================================================
+
+/// RoiMaskAlgorithm backend — propagates events inside a pixel mask.
+/// The SDK operator() accesses the mask via cv::Mat::at<double>, so the mask
+/// is kept in CV_64F to match.
+class RoiMaskBackend final : public AlgoBackend {
+    std::unique_ptr<Metavision::RoiMaskAlgorithm> algo_;
+    std::vector<Metavision::EventCD> buf_;
+    std::vector<Metavision::EventCD> out_;
+    std::string mask_path_;
+public:
+    RoiMaskBackend(int w, int h) {
+        cv::Mat mask = cv::Mat::ones(h, w, CV_64FC1); // all pixels pass
+        algo_ = std::make_unique<Metavision::RoiMaskAlgorithm>(mask);
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        if (k == "mask_path") {
+            mask_path_ = v;
+            if (!v.empty()) {
+                cv::Mat m = cv::imread(v, cv::IMREAD_GRAYSCALE);
+                if (!m.empty()) {
+                    m.convertTo(m, CV_64F);
+                    algo_->set_pixel_mask(m);
+                }
+            }
+        }
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "mask_path") return mask_path_;
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        buf_.assign(b, e);
+        out_.clear();
+        algo_->process_events(buf_.data(), buf_.data() + buf_.size(),
+                              std::back_inserter(out_));
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = out_;
+        r.status = "roi_mask: " + std::to_string(out_.size()) + "/" +
+                   std::to_string(buf_.size()) +
+                   (mask_path_.empty() ? "" : " (" + mask_path_ + ")");
+        return r;
+    }
+    void reset() override { buf_.clear(); out_.clear(); }
+};
+
+/// AdaptiveRateEventsSplitterAlgorithm backend — splits the event stream into
+/// sharp slices. retrieve_events() is called when a slice is ready.
+class AdaptiveRateSplitBackend final : public AlgoBackend {
+    int w_{0}, h_{0};
+    float thr_{5e-4F};
+    int downsample_{2};
+    std::unique_ptr<Metavision::AdaptiveRateEventsSplitterAlgorithm> algo_;
+    std::vector<Metavision::EventCD> buf_;
+    std::vector<Metavision::EventCD> out_;
+    int slices_{0};
+public:
+    AdaptiveRateSplitBackend(int w, int h) : w_(w), h_(h) { rebuild(); }
+    void rebuild() {
+        algo_ = std::make_unique<Metavision::AdaptiveRateEventsSplitterAlgorithm>(
+            h_, w_, thr_, downsample_);
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        bool dirty = false;
+        if (k == "thr_var_per_event") { thr_ = static_cast<float>(to_d(v)); dirty = true; }
+        else if (k == "downsampling_factor") { downsample_ = to_i(v); dirty = true; }
+        if (dirty) rebuild();
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "thr_var_per_event") return from_d(thr_);
+        if (k == "downsampling_factor") return from_i(downsample_);
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        buf_.assign(b, e);
+        if (algo_->process_events(buf_.data(), buf_.data() + buf_.size())) {
+            out_.clear();
+            algo_->retrieve_events(out_);
+            ++slices_;
+        }
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = out_;
+        r.status = "adaptive_rate_split: " + std::to_string(slices_) +
+                   " slices, " + std::to_string(out_.size()) + " ev";
+        return r;
+    }
+    void reset() override {
+        if (algo_) algo_->retrieve_events(out_);
+        buf_.clear(); out_.clear(); slices_ = 0;
+    }
+};
+
+/// EventsIntegrationAlgorithm backend — integrates events into a grayscale
+/// frame. decay_time_us requires reconstruction (no setter).
+class FrameIntegrationBackend final : public AlgoBackend {
+    int w_{0}, h_{0};
+    Metavision::timestamp decay_us_{1000000};
+    std::unique_ptr<Metavision::EventsIntegrationAlgorithm> algo_;
+    std::vector<Metavision::EventCD> passthrough_;
+public:
+    FrameIntegrationBackend(int w, int h) : w_(w), h_(h) { rebuild(); }
+    void rebuild() {
+        algo_ = std::make_unique<Metavision::EventsIntegrationAlgorithm>(
+            static_cast<unsigned>(w_), static_cast<unsigned>(h_), decay_us_);
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        if (k == "decay_time_us") {
+            auto nv = static_cast<Metavision::timestamp>(to_i(v));
+            if (nv != decay_us_) { decay_us_ = nv; rebuild(); }
+        }
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "decay_time_us") return from_i(static_cast<int>(decay_us_));
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        algo_->process_events(passthrough_.data(), passthrough_.data() + passthrough_.size());
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.has_frame = true;
+        algo_->generate(r.frame);
+        r.status = "frame_integration: decay=" + std::to_string(decay_us_) + "us";
+        return r;
+    }
+    void reset() override { if (algo_) algo_->reset(); passthrough_.clear(); }
+};
+
+/// EventFrameDiffGenerationAlgorithm backend — diff event frame (sum of
+/// polarities per pixel). bit_size / allow_rollover require reconstruction.
+class FrameDiffBackend final : public AlgoBackend {
+    int w_{0}, h_{0};
+    unsigned bit_size_{8};
+    bool rollover_{true};
+    std::unique_ptr<Metavision::EventFrameDiffGenerationAlgorithm<Metavision::EventCD*>> algo_;
+    Metavision::RawEventFrameDiff frame_;
+    std::vector<Metavision::EventCD> passthrough_;
+public:
+    FrameDiffBackend(int w, int h) : w_(w), h_(h) { rebuild(); }
+    void rebuild() {
+        algo_ = std::make_unique<Metavision::EventFrameDiffGenerationAlgorithm<Metavision::EventCD*>>(
+            static_cast<unsigned>(w_), static_cast<unsigned>(h_), bit_size_, rollover_);
+        frame_ = Metavision::RawEventFrameDiff(static_cast<unsigned>(h_),
+                                               static_cast<unsigned>(w_), bit_size_);
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        bool dirty = false;
+        if (k == "bit_size") {
+            int nv = to_i(v); if (nv >= 2 && nv <= 8) { bit_size_ = static_cast<unsigned>(nv); dirty = true; }
+        } else if (k == "allow_rollover") { rollover_ = to_b(v); dirty = true; }
+        if (dirty) rebuild();
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "bit_size") return from_i(static_cast<int>(bit_size_));
+        if (k == "allow_rollover") return from_b(rollover_);
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        algo_->process_events(passthrough_.data(), passthrough_.data() + passthrough_.size());
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.has_frame = true;
+        algo_->generate(frame_);
+        const auto& data = frame_.get_data();
+        // int8 diff → CV_8U grayscale centred at 128 (0 = no activity)
+        cv::Mat src(h_, w_, CV_8SC1,
+                    const_cast<int8_t*>(data.data()));
+        src.convertTo(r.frame, CV_8U, 1.0, 128.0);
+        r.status = "frame_diff: " + std::to_string(passthrough_.size()) + " ev";
+        return r;
+    }
+    void reset() override { if (algo_) algo_->reset(); passthrough_.clear(); }
+};
+
+/// EventFrameHistoGenerationAlgorithm backend — histo event frame (separate
+/// neg/pos counts). channel_bit_neg/pos & packed require reconstruction.
+class FrameHistoBackend final : public AlgoBackend {
+    int w_{0}, h_{0};
+    unsigned bit_neg_{4}, bit_pos_{4};
+    bool packed_{false};
+    std::unique_ptr<Metavision::EventFrameHistoGenerationAlgorithm<Metavision::EventCD*>> algo_;
+    Metavision::RawEventFrameHisto frame_;
+    std::vector<Metavision::EventCD> passthrough_;
+public:
+    FrameHistoBackend(int w, int h) : w_(w), h_(h) { rebuild(); }
+    void rebuild() {
+        algo_ = std::make_unique<Metavision::EventFrameHistoGenerationAlgorithm<Metavision::EventCD*>>(
+            static_cast<unsigned>(w_), static_cast<unsigned>(h_), bit_neg_, bit_pos_, packed_);
+        frame_ = Metavision::RawEventFrameHisto(static_cast<unsigned>(h_),
+                                                static_cast<unsigned>(w_),
+                                                bit_neg_, bit_pos_, packed_);
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        bool dirty = false;
+        if (k == "channel_bit_neg") {
+            int nv = to_i(v); if (nv >= 1 && nv <= 7) { bit_neg_ = static_cast<unsigned>(nv); dirty = true; }
+        } else if (k == "channel_bit_pos") {
+            int nv = to_i(v); if (nv >= 1 && nv <= 7) { bit_pos_ = static_cast<unsigned>(nv); dirty = true; }
+        } else if (k == "packed") { packed_ = to_b(v); dirty = true; }
+        if (dirty) rebuild();
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "channel_bit_neg") return from_i(static_cast<int>(bit_neg_));
+        if (k == "channel_bit_pos") return from_i(static_cast<int>(bit_pos_));
+        if (k == "packed") return from_b(packed_);
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        algo_->process_events(passthrough_.data(), passthrough_.data() + passthrough_.size());
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.has_frame = true;
+        algo_->generate(frame_);
+        const auto& data = frame_.get_data();
+        const int channels = packed_ ? 1 : 2;
+        // Build a BGR frame: negative events → blue, positive events → red.
+        r.frame = cv::Mat::zeros(h_, w_, CV_8UC3);
+        if (channels == 2) {
+            const int plane = w_ * h_;
+            for (int y = 0; y < h_; ++y) {
+                for (int x = 0; x < w_; ++x) {
+                    const int idx = y * w_ + x;
+                    r.frame.at<cv::Vec3b>(y, x)[0] = data[idx];          // B = neg
+                    r.frame.at<cv::Vec3b>(y, x)[2] = data[idx + plane];  // R = pos
+                }
+            }
+        } else {
+            cv::Mat src(h_, w_, CV_8UC1, const_cast<uint8_t*>(data.data()));
+            cv::cvtColor(src, r.frame, cv::COLOR_GRAY2BGR);
+        }
+        r.status = "frame_histogram: " + std::to_string(passthrough_.size()) + " ev";
+        return r;
+    }
+    void reset() override { if (algo_) algo_->reset(); passthrough_.clear(); }
+};
+
+/// TimeDecayFrameGenerationAlgorithm backend — time-decay visualization.
+class FrameTimeDecayBackend final : public AlgoBackend {
+    int w_{0}, h_{0};
+    std::unique_ptr<Metavision::TimeDecayFrameGenerationAlgorithm> algo_;
+    std::vector<Metavision::EventCD> passthrough_;
+    Metavision::timestamp decay_us_{100000};
+    int palette_idx_{1}; // Dark
+public:
+    FrameTimeDecayBackend(int w, int h) : w_(w), h_(h) {
+        algo_ = std::make_unique<Metavision::TimeDecayFrameGenerationAlgorithm>(
+            w_, h_, decay_us_, to_palette(palette_idx_));
+    }
+    static Metavision::ColorPalette to_palette(int i) {
+        switch (i) {
+            case 0: return Metavision::ColorPalette::Light;
+            case 2: return Metavision::ColorPalette::CoolWarm;
+            case 3: return Metavision::ColorPalette::Gray;
+            case 1: default: return Metavision::ColorPalette::Dark;
+        }
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        if (k == "exponential_decay_time_us") {
+            decay_us_ = static_cast<Metavision::timestamp>(to_i(v));
+            algo_->set_exponential_decay_time_us(decay_us_);
+        } else if (k == "palette") {
+            palette_idx_ = to_i(v);
+            algo_->set_color_palette(to_palette(palette_idx_));
+        }
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "exponential_decay_time_us") return from_i(static_cast<int>(decay_us_));
+        if (k == "palette") return from_i(palette_idx_);
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        algo_->process_events(passthrough_.data(), passthrough_.data() + passthrough_.size());
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.has_frame = true;
+        algo_->generate(r.frame);
+        r.status = "frame_time_decay: decay=" + std::to_string(decay_us_) + "us";
+        return r;
+    }
+    void reset() override { if (algo_) algo_->reset(); passthrough_.clear(); }
+};
+
+/// ContrastMapGenerationAlgorithm backend — contrast map (log intensity).
+class FrameContrastMapBackend final : public AlgoBackend {
+    int w_{0}, h_{0};
+    float contrast_on_{1.2F};
+    float contrast_off_{-1.0F};
+    std::unique_ptr<Metavision::ContrastMapGenerationAlgorithm> algo_;
+    std::vector<Metavision::EventCD> passthrough_;
+public:
+    FrameContrastMapBackend(int w, int h) : w_(w), h_(h) { rebuild(); }
+    void rebuild() {
+        algo_ = std::make_unique<Metavision::ContrastMapGenerationAlgorithm>(
+            static_cast<unsigned>(w_), static_cast<unsigned>(h_), contrast_on_, contrast_off_);
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        bool dirty = false;
+        if (k == "contrast_on") { contrast_on_ = static_cast<float>(to_d(v)); dirty = true; }
+        else if (k == "contrast_off") { contrast_off_ = static_cast<float>(to_d(v)); dirty = true; }
+        if (dirty) rebuild();
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "contrast_on") return from_d(contrast_on_);
+        if (k == "contrast_off") return from_d(contrast_off_);
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        algo_->process_events(passthrough_.data(), passthrough_.data() + passthrough_.size());
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.has_frame = true;
+        cv::Mat_<float> map;
+        algo_->generate(map);
+        // Normalize float contrast map to CV_8U for display.
+        double mn, mx;
+        cv::minMaxLoc(map, &mn, &mx);
+        double range = (mx - mn > 1e-6) ? (mx - mn) : 1.0;
+        map.convertTo(r.frame, CV_8U, 255.0 / range, -mn * 255.0 / range);
+        cv::cvtColor(r.frame, r.frame, cv::COLOR_GRAY2BGR);
+        r.status = "frame_contrast_map: " + std::to_string(passthrough_.size()) + " ev";
+        return r;
+    }
+    void reset() override { if (algo_) algo_->reset(); passthrough_.clear(); }
+};
+
+/// PeriodicFrameGenerationAlgorithm backend — fixed-fps frame generation via
+/// async callback. The callback stores the latest frame for pull_result().
+class FramePeriodicBackend final : public AlgoBackend {
+    int w_{0}, h_{0};
+    std::unique_ptr<Metavision::PeriodicFrameGenerationAlgorithm> algo_;
+    std::vector<Metavision::EventCD> passthrough_;
+    cv::Mat last_frame_;
+    uint32_t accum_us_{10000};
+    double fps_{30.0};
+public:
+    FramePeriodicBackend(int w, int h) : w_(w), h_(h) {
+        algo_ = std::make_unique<Metavision::PeriodicFrameGenerationAlgorithm>(
+            w_, h_, accum_us_, fps_);
+        algo_->set_output_callback(
+            [this](Metavision::timestamp, cv::Mat& frame) { last_frame_ = frame.clone(); });
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        if (k == "accumulation_time_us") {
+            accum_us_ = static_cast<uint32_t>(to_i(v));
+            algo_->set_accumulation_time_us(accum_us_);
+        } else if (k == "fps") {
+            fps_ = to_d(v);
+            algo_->set_fps(fps_);
+        }
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "accumulation_time_us") return from_i(static_cast<int>(accum_us_));
+        if (k == "fps") return from_d(fps_);
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        algo_->process_events(passthrough_.data(), passthrough_.data() + passthrough_.size());
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        if (!last_frame_.empty()) {
+            r.has_frame = true;
+            r.frame = last_frame_.clone();
+        }
+        r.status = "frame_periodic: " + from_d(fps_) + " fps, accum=" +
+                   std::to_string(accum_us_) + "us";
+        return r;
+    }
+    void reset() override {
+        if (algo_) algo_->reset();
+        passthrough_.clear(); last_frame_.release();
+    }
+};
+
+/// OnDemandFrameGenerationAlgorithm backend — generates a frame at the last
+/// event timestamp on each pull_result().
+class FrameOnDemandBackend final : public AlgoBackend {
+    int w_{0}, h_{0};
+    std::unique_ptr<Metavision::OnDemandFrameGenerationAlgorithm> algo_;
+    std::vector<Metavision::EventCD> passthrough_;
+    uint32_t accum_us_{0};
+    Metavision::timestamp last_ts_{0};
+public:
+    FrameOnDemandBackend(int w, int h) : w_(w), h_(h) {
+        algo_ = std::make_unique<Metavision::OnDemandFrameGenerationAlgorithm>(
+            w_, h_, accum_us_);
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        if (k == "accumulation_time_us") {
+            accum_us_ = static_cast<uint32_t>(to_i(v));
+            algo_->set_accumulation_time_us(accum_us_);
+        }
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "accumulation_time_us") return from_i(static_cast<int>(accum_us_));
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        if (!passthrough_.empty()) last_ts_ = passthrough_.back().t;
+        algo_->process_events(passthrough_.data(), passthrough_.data() + passthrough_.size());
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.has_frame = true;
+        algo_->generate(last_ts_, r.frame);
+        r.status = "frame_on_demand: accum=" + std::to_string(accum_us_) +
+                   "us, ts=" + std::to_string(last_ts_);
+        return r;
+    }
+    void reset() override {
+        if (algo_) algo_->reset();
+        passthrough_.clear(); last_ts_ = 0;
+    }
+};
+
+// ===========================================================================
+// OpenEB SDK — preprocessors (design §4.3.3)
+//
+// Preprocessors fill a Tensor (float). The tensor is accumulated across
+// push_events() calls and reset after each pull_result() so each displayed
+// frame shows activity since the last pull. The Tensor is converted to a
+// cv::Mat for visualization.
+// ===========================================================================
+
+/// DiffProcessor backend — single-channel diff tensor → grayscale frame.
+class PreprocDiffBackend final : public AlgoBackend {
+    int w_{0}, h_{0};
+    float max_incr_{5.0F};
+    float clip_{1.0F};
+    std::unique_ptr<Metavision::DiffProcessor<Metavision::EventCD*>> algo_;
+    Metavision::Tensor tensor_;
+    Metavision::timestamp frame_start_ts_{-1};
+    std::vector<Metavision::EventCD> passthrough_;
+public:
+    PreprocDiffBackend(int w, int h) : w_(w), h_(h) { rebuild(); }
+    void rebuild() {
+        algo_ = std::make_unique<Metavision::DiffProcessor<Metavision::EventCD*>>(
+            w_, h_, max_incr_, clip_);
+        tensor_.create(algo_->get_output_shape(), algo_->get_output_type());
+        tensor_.set_to(0.f);
+        frame_start_ts_ = -1;
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        bool dirty = false;
+        if (k == "max_incr_per_pixel") { max_incr_ = static_cast<float>(to_d(v)); dirty = true; }
+        else if (k == "clip_value_after_normalization") { clip_ = static_cast<float>(to_d(v)); dirty = true; }
+        if (dirty) rebuild();
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "max_incr_per_pixel") return from_d(max_incr_);
+        if (k == "clip_value_after_normalization") return from_d(clip_);
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        if (passthrough_.empty()) return;
+        if (frame_start_ts_ < 0) frame_start_ts_ = passthrough_.front().t;
+        algo_->process_events(frame_start_ts_, passthrough_.data(),
+                              passthrough_.data() + passthrough_.size(), tensor_);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.has_frame = true;
+        const float* d = tensor_.data<float>();
+        // Tensor layout CHW with C=1 → contiguous HxW float plane.
+        cv::Mat src(h_, w_, CV_32F, const_cast<float*>(d));
+        // Values in [-clip, clip] → map to [0, 255] centred at 128.
+        double scale = (clip_ > 0) ? (127.0 / clip_) : 127.0;
+        src.convertTo(r.frame, CV_8U, scale, 128.0);
+        cv::cvtColor(r.frame, r.frame, cv::COLOR_GRAY2BGR);
+        r.status = "preproc_diff: max_incr=" + from_d(max_incr_) + " clip=" + from_d(clip_);
+        // Reset accumulation for the next frame.
+        tensor_.set_to(0.f);
+        frame_start_ts_ = -1;
+        return r;
+    }
+    void reset() override { tensor_.set_to(0.f); frame_start_ts_ = -1; passthrough_.clear(); }
+};
+
+/// HistoProcessor backend — two-channel histogram tensor → BGR frame.
+class PreprocHistoBackend final : public AlgoBackend {
+    int w_{0}, h_{0};
+    float max_incr_{5.0F};
+    float clip_{1.0F};
+    bool use_chw_{true};
+    std::unique_ptr<Metavision::HistoProcessor<Metavision::EventCD*>> algo_;
+    Metavision::Tensor tensor_;
+    Metavision::timestamp frame_start_ts_{-1};
+    std::vector<Metavision::EventCD> passthrough_;
+public:
+    PreprocHistoBackend(int w, int h) : w_(w), h_(h) { rebuild(); }
+    void rebuild() {
+        algo_ = std::make_unique<Metavision::HistoProcessor<Metavision::EventCD*>>(
+            w_, h_, max_incr_, clip_, use_chw_);
+        tensor_.create(algo_->get_output_shape(), algo_->get_output_type());
+        tensor_.set_to(0.f);
+        frame_start_ts_ = -1;
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        bool dirty = false;
+        if (k == "max_incr_per_pixel") { max_incr_ = static_cast<float>(to_d(v)); dirty = true; }
+        else if (k == "clip_value_after_normalization") { clip_ = static_cast<float>(to_d(v)); dirty = true; }
+        else if (k == "use_CHW") { use_chw_ = to_b(v); dirty = true; }
+        if (dirty) rebuild();
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "max_incr_per_pixel") return from_d(max_incr_);
+        if (k == "clip_value_after_normalization") return from_d(clip_);
+        if (k == "use_CHW") return from_b(use_chw_);
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        if (passthrough_.empty()) return;
+        if (frame_start_ts_ < 0) frame_start_ts_ = passthrough_.front().t;
+        algo_->process_events(frame_start_ts_, passthrough_.data(),
+                              passthrough_.data() + passthrough_.size(), tensor_);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.has_frame = true;
+        const float* d = tensor_.data<float>();
+        const int plane = w_ * h_;
+        r.frame = cv::Mat::zeros(h_, w_, CV_8UC3);
+        double scale = (clip_ > 0) ? (255.0 / clip_) : 255.0;
+        // Channel 0 = negative, channel 1 = positive (CHW: c-plane; HWC: interleaved).
+        for (int y = 0; y < h_; ++y) {
+            for (int x = 0; x < w_; ++x) {
+                const int idx = y * w_ + x;
+                float neg, pos;
+                if (use_chw_) { neg = d[idx]; pos = d[idx + plane]; }
+                else { neg = d[idx * 2]; pos = d[idx * 2 + 1]; }
+                r.frame.at<cv::Vec3b>(y, x)[0] = static_cast<uint8_t>(
+                    std::min(255.0, std::max(0.0, neg * scale)));
+                r.frame.at<cv::Vec3b>(y, x)[2] = static_cast<uint8_t>(
+                    std::min(255.0, std::max(0.0, pos * scale)));
+            }
+        }
+        r.status = "preproc_histo: CHW=" + from_b(use_chw_);
+        tensor_.set_to(0.f);
+        frame_start_ts_ = -1;
+        return r;
+    }
+    void reset() override { tensor_.set_to(0.f); frame_start_ts_ = -1; passthrough_.clear(); }
+};
+
+/// TimeSurfaceProcessor backend — most-recent-timestamp buffer → time surface
+/// image. The CHANNELS template parameter (1 or 2) is selected at runtime;
+/// changing it reconstructs the processor.
+class PreprocTimeSurfaceBackend final : public AlgoBackend {
+    int w_{0}, h_{0};
+    int channels_{1};
+    std::unique_ptr<Metavision::TimeSurfaceProcessor<Metavision::EventCD*, 1>> ts1_;
+    std::unique_ptr<Metavision::TimeSurfaceProcessor<Metavision::EventCD*, 2>> ts2_;
+    Metavision::MostRecentTimestampBuffer buf_;
+    std::vector<Metavision::EventCD> passthrough_;
+    Metavision::timestamp last_ts_{0};
+public:
+    PreprocTimeSurfaceBackend(int w, int h) : w_(w), h_(h) {
+        buf_.create(h_, w_, 1);
+        rebuild();
+    }
+    void rebuild() {
+        ts1_.reset();
+        ts2_.reset();
+        buf_.create(h_, w_, channels_);
+        buf_.set_to(0);
+        if (channels_ == 1) ts1_ = std::make_unique<Metavision::TimeSurfaceProcessor<Metavision::EventCD*, 1>>(w_, h_);
+        else ts2_ = std::make_unique<Metavision::TimeSurfaceProcessor<Metavision::EventCD*, 2>>(w_, h_);
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        if (k == "channels") {
+            int c = to_i(v);
+            if (c == 1 || c == 2) { channels_ = c; rebuild(); }
+        }
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "channels") return from_i(channels_);
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        if (passthrough_.empty()) return;
+        last_ts_ = passthrough_.back().t;
+        if (channels_ == 1) ts1_->process_events(passthrough_.data(), passthrough_.data() + passthrough_.size(), buf_);
+        else ts2_->process_events(passthrough_.data(), passthrough_.data() + passthrough_.size(), buf_);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.has_frame = true;
+        // Decay window: 100 ms by default for visualization.
+        const Metavision::timestamp delta_t = 100000;
+        if (channels_ == 2) buf_.generate_img_time_surface(last_ts_, delta_t, r.frame);
+        else buf_.generate_img_time_surface_collapsing_channels(last_ts_, delta_t, r.frame);
+        cv::cvtColor(r.frame, r.frame, cv::COLOR_GRAY2BGR);
+        r.status = "preproc_time_surface: channels=" + from_i(channels_);
+        return r;
+    }
+    void reset() override { buf_.set_to(0); passthrough_.clear(); last_ts_ = 0; }
+};
+
+/// EventCubeProcessor backend — event-cube tensor → grayscale projection.
+class PreprocEventCubeBackend final : public AlgoBackend {
+    int w_{0}, h_{0};
+    int num_bins_{10};
+    Metavision::timestamp delta_t_us_{33000};
+    bool split_polarity_{false};
+    float max_incr_{5.0F};
+    std::unique_ptr<Metavision::EventCubeProcessor<Metavision::EventCD*>> algo_;
+    Metavision::Tensor tensor_;
+    Metavision::timestamp frame_start_ts_{-1};
+    std::vector<Metavision::EventCD> passthrough_;
+public:
+    PreprocEventCubeBackend(int w, int h) : w_(w), h_(h) { rebuild(); }
+    void rebuild() {
+        algo_ = std::make_unique<Metavision::EventCubeProcessor<Metavision::EventCD*>>(
+            delta_t_us_, w_, h_, num_bins_, split_polarity_, max_incr_);
+        tensor_.create(algo_->get_output_shape(), algo_->get_output_type());
+        tensor_.set_to(0.f);
+        frame_start_ts_ = -1;
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        bool dirty = false;
+        if (k == "num_bins") { int n = to_i(v); if (n >= 2 && n <= 20) { num_bins_ = n; dirty = true; } }
+        else if (k == "delta_t_us") { delta_t_us_ = static_cast<Metavision::timestamp>(to_i(v)); dirty = true; }
+        else if (k == "split_polarity") { split_polarity_ = to_b(v); dirty = true; }
+        else if (k == "max_incr_per_pixel") { max_incr_ = static_cast<float>(to_d(v)); dirty = true; }
+        if (dirty) rebuild();
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "num_bins") return from_i(num_bins_);
+        if (k == "delta_t_us") return from_i(static_cast<int>(delta_t_us_));
+        if (k == "split_polarity") return from_b(split_polarity_);
+        if (k == "max_incr_per_pixel") return from_d(max_incr_);
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        if (passthrough_.empty()) return;
+        if (frame_start_ts_ < 0) frame_start_ts_ = passthrough_.front().t;
+        algo_->process_events(frame_start_ts_, passthrough_.data(),
+                              passthrough_.data() + passthrough_.size(), tensor_);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.has_frame = true;
+        const float* d = tensor_.data<float>();
+        const int plane = w_ * h_;
+        const int c = static_cast<int>(tensor_.shape().get_nb_values()) / plane;
+        // Project the cube across channels into a single HxW plane.
+        cv::Mat acc = cv::Mat::zeros(h_, w_, CV_32F);
+        for (int ch = 0; ch < c; ++ch) {
+            for (int y = 0; y < h_; ++y) {
+                for (int x = 0; x < w_; ++x) {
+                    acc.at<float>(y, x) += d[ch * plane + y * w_ + x];
+                }
+            }
+        }
+        double mn, mx;
+        cv::minMaxLoc(acc, &mn, &mx);
+        double range = (mx - mn > 1e-6) ? (mx - mn) : 1.0;
+        acc.convertTo(r.frame, CV_8U, 255.0 / range, -mn * 255.0 / range);
+        cv::cvtColor(r.frame, r.frame, cv::COLOR_GRAY2BGR);
+        r.status = "preproc_event_cube: bins=" + from_i(num_bins_) +
+                   " dt=" + std::to_string(delta_t_us_) + "us";
+        tensor_.set_to(0.f);
+        frame_start_ts_ = -1;
+        return r;
+    }
+    void reset() override { tensor_.set_to(0.f); frame_start_ts_ = -1; passthrough_.clear(); }
+};
+
+/// EventPreprocessorFactory backend — stub. The factory requires a JSON config
+/// parser; until a config_path is provided, this is a pass-through with an
+/// informative status.
+class PreprocFactoryBackend final : public AlgoBackend {
+    std::vector<Metavision::EventCD> passthrough_;
+    std::string config_path_;
+public:
+    PreprocFactoryBackend(int, int) {}
+    void set_param(const std::string& k, const std::string& v) override {
+        if (k == "config_path") config_path_ = v;
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "config_path") return config_path_;
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.status = "preproc_factory: stub — set config_path to load JSON" +
+                   (config_path_.empty() ? "" : " (" + config_path_ + ")");
+        return r;
+    }
+    void reset() override { passthrough_.clear(); }
+};
+
+// ===========================================================================
+// OpenEB SDK — utilities (design §4.3.4)
+//
+// Most utilities are passive containers / recorders with no per-event frame
+// output. They pass events through and report an informative status. The
+// RollingEventBuffer is implemented fully.
+// ===========================================================================
+
+/// FrameComposer backend — passive container (status only).
+class UtilFrameComposerBackend final : public AlgoBackend {
+    std::vector<Metavision::EventCD> passthrough_;
+public:
+    UtilFrameComposerBackend(int, int) {}
+    void set_param(const std::string&, const std::string&) override {}
+    std::string get_param(const std::string&) const override { return {}; }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.status = "frame_composer: ready — use API to add subimages";
+        return r;
+    }
+    void reset() override { passthrough_.clear(); }
+};
+
+/// RollingEventBuffer backend — keeps a rolling window of events (by count or
+/// duration) and passes them through.
+class UtilRollingBufferBackend final : public AlgoBackend {
+    int mode_{0}; // 0=N_EVENTS, 1=N_US
+    Metavision::timestamp delta_ts_{1000000};
+    std::size_t delta_n_{5000};
+    Metavision::RollingEventBuffer<Metavision::EventCD> buf_;
+    std::vector<Metavision::EventCD> passthrough_;
+public:
+    UtilRollingBufferBackend(int, int) {
+        buf_ = Metavision::RollingEventBuffer<Metavision::EventCD>(
+            Metavision::RollingEventBufferConfig::make_n_events(delta_n_));
+    }
+    void rebuild() {
+        if (mode_ == 1)
+            buf_ = Metavision::RollingEventBuffer<Metavision::EventCD>(
+                Metavision::RollingEventBufferConfig::make_n_us(delta_ts_));
+        else
+            buf_ = Metavision::RollingEventBuffer<Metavision::EventCD>(
+                Metavision::RollingEventBufferConfig::make_n_events(delta_n_));
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        if (k == "mode") { mode_ = to_i(v); rebuild(); }
+        else if (k == "delta_n_events") { delta_n_ = static_cast<std::size_t>(to_i(v)); rebuild(); }
+        else if (k == "delta_ts_us") { delta_ts_ = static_cast<Metavision::timestamp>(to_i(v)); rebuild(); }
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "mode") return from_i(mode_);
+        if (k == "delta_n_events") return from_i(static_cast<int>(delta_n_));
+        if (k == "delta_ts_us") return from_i(static_cast<int>(delta_ts_));
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        buf_.insert_events(b, e);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.status = "rolling_buffer: " + std::to_string(buf_.size()) + "/" +
+                   std::to_string(buf_.capacity()) + " ev" +
+                   (mode_ == 1 ? " (N_US)" : " (N_EVENTS)");
+        return r;
+    }
+    void reset() override { buf_.clear(); passthrough_.clear(); }
+};
+
+/// DataSynchronizerFromTriggers backend — stub (complex API).
+class UtilDataSynchronizerBackend final : public AlgoBackend {
+    std::vector<Metavision::EventCD> passthrough_;
+    int period_us_{10000};
+public:
+    UtilDataSynchronizerBackend(int, int) {}
+    void set_param(const std::string& k, const std::string& v) override {
+        if (k == "period_us") period_us_ = to_i(v);
+    }
+    std::string get_param(const std::string& k) const override {
+        if (k == "period_us") return from_i(period_us_);
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.status = "data_synchronizer: ready — period_us=" + std::to_string(period_us_);
+        return r;
+    }
+    void reset() override { passthrough_.clear(); }
+};
+
+/// TimingProfiler backend — stub (singleton, no per-event output).
+class UtilTimingProfilerBackend final : public AlgoBackend {
+    std::vector<Metavision::EventCD> passthrough_;
+public:
+    UtilTimingProfilerBackend(int, int) {}
+    void set_param(const std::string&, const std::string&) override {}
+    std::string get_param(const std::string&) const override { return {}; }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.status = "timing_profiler: active";
+        return r;
+    }
+    void reset() override { passthrough_.clear(); }
+};
+
+/// Rate estimator backend — stub (see Statistics panel).
+class UtilRateEstimatorBackend final : public AlgoBackend {
+    std::vector<Metavision::EventCD> passthrough_;
+public:
+    UtilRateEstimatorBackend(int, int) {}
+    void set_param(const std::string&, const std::string&) override {}
+    std::string get_param(const std::string&) const override { return {}; }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.status = "rate_estimator: see Statistics panel";
+        return r;
+    }
+    void reset() override { passthrough_.clear(); }
+};
+
+/// Video writer backend — stub (use Export menu).
+class UtilVideoWriterBackend final : public AlgoBackend {
+    std::vector<Metavision::EventCD> passthrough_;
+public:
+    UtilVideoWriterBackend(int, int) {}
+    void set_param(const std::string&, const std::string&) override {}
+    std::string get_param(const std::string&) const override { return {}; }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.status = "video_writer: use Export menu";
+        return r;
+    }
+    void reset() override { passthrough_.clear(); }
+};
+
+// ===========================================================================
 // Factory
 // ===========================================================================
 
@@ -1844,6 +2790,30 @@ std::unique_ptr<AlgoBackend> create_algo_backend(const std::string& name,
     if (name == "particle_counter")      return std::make_unique<ParticleCounterBackend>(width, height);
     if (name == "auto_bias")             return std::make_unique<AutoBiasBackend>(width, height);
     if (name == "freq_detector")         return std::make_unique<FreqDetectorBackend>(width, height);
+    // OpenEB SDK — filters
+    if (name == "roi_mask")              return std::make_unique<RoiMaskBackend>(width, height);
+    if (name == "adaptive_rate_split")   return std::make_unique<AdaptiveRateSplitBackend>(width, height);
+    // OpenEB SDK — frame generators
+    if (name == "frame_integration")     return std::make_unique<FrameIntegrationBackend>(width, height);
+    if (name == "frame_diff")            return std::make_unique<FrameDiffBackend>(width, height);
+    if (name == "frame_histogram")       return std::make_unique<FrameHistoBackend>(width, height);
+    if (name == "frame_time_decay")      return std::make_unique<FrameTimeDecayBackend>(width, height);
+    if (name == "frame_contrast_map")    return std::make_unique<FrameContrastMapBackend>(width, height);
+    if (name == "frame_periodic")        return std::make_unique<FramePeriodicBackend>(width, height);
+    if (name == "frame_on_demand")       return std::make_unique<FrameOnDemandBackend>(width, height);
+    // OpenEB SDK — preprocessors
+    if (name == "preproc_diff")          return std::make_unique<PreprocDiffBackend>(width, height);
+    if (name == "preproc_histo")         return std::make_unique<PreprocHistoBackend>(width, height);
+    if (name == "preproc_time_surface")  return std::make_unique<PreprocTimeSurfaceBackend>(width, height);
+    if (name == "preproc_event_cube")    return std::make_unique<PreprocEventCubeBackend>(width, height);
+    if (name == "preproc_factory")       return std::make_unique<PreprocFactoryBackend>(width, height);
+    // OpenEB SDK — utilities
+    if (name == "util_frame_composer")   return std::make_unique<UtilFrameComposerBackend>(width, height);
+    if (name == "util_rolling_buffer")   return std::make_unique<UtilRollingBufferBackend>(width, height);
+    if (name == "util_data_synchronizer") return std::make_unique<UtilDataSynchronizerBackend>(width, height);
+    if (name == "util_timing_profiler")  return std::make_unique<UtilTimingProfilerBackend>(width, height);
+    if (name == "util_rate_estimator")   return std::make_unique<UtilRateEstimatorBackend>(width, height);
+    if (name == "util_video_writer")     return std::make_unique<UtilVideoWriterBackend>(width, height);
     return nullptr;
 }
 

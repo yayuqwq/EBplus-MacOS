@@ -257,6 +257,11 @@ public:
         algo_.process_events(b, e, std::back_inserter(out));
     }
     bool set_param(const std::string& k, const std::string& v) override {
+        if (k == "output_relative_coordinates") {
+            rel_ = (v == "1" || v == "true" || v == "True" || v == "on" || v == "yes");
+            rebuild();
+            return true;
+        }
         int n = 0;
         if (!parse(v, n)) return false;
         if (k == "x0") { x0_ = n; rebuild(); return true; }
@@ -267,8 +272,9 @@ public:
     }
     std::string name() const override { return "roi_filter"; }
 private:
-    void rebuild() { algo_ = Metavision::RoiFilterAlgorithm(x0_, y0_, x1_, y1_); }
+    void rebuild() { algo_ = Metavision::RoiFilterAlgorithm(x0_, y0_, x1_, y1_, rel_); }
     int x0_{0}, y0_{0}, x1_{0}, y1_{0};
+    bool rel_{false};
     Metavision::RoiFilterAlgorithm algo_;
 };
 

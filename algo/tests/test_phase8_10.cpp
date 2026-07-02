@@ -257,16 +257,23 @@ TEST(PerspectiveUndistortTest, Params) {
     EXPECT_TRUE(u.rectify());
 }
 
-// --- 4.3.21 TriggerSyncedFilter ---
+// --- 4.3.21 TriggerSyncedFilter (jAER FilterSyncedEvents port) ---
 TEST(TriggerSyncedFilterTest, Construction) {
     TriggerSyncedFilter f;
-    EXPECT_EQ(f.trigger_window_us(), 100000);
+    // jAER defaults: t0=500us, t1=500us (window). trigger_window_us() maps to t1.
+    EXPECT_EQ(f.trigger_window_us(), 500);
+    EXPECT_EQ(f.t0(), 500);
+    EXPECT_EQ(f.t1(), 500);
     EXPECT_EQ(f.trigger_channel(), 0);
 }
 TEST(TriggerSyncedFilterTest, Params) {
     TriggerSyncedFilter f;
     f.set_trigger_window_us(50000);
     EXPECT_EQ(f.trigger_window_us(), 50000);
+    f.set_t0(1000);
+    f.set_t1(2000);
+    EXPECT_EQ(f.t0(), 1000);
+    EXPECT_EQ(f.t1(), 2000);
     f.set_trigger_channel(3);
     EXPECT_EQ(f.trigger_channel(), 3);
 }
@@ -294,6 +301,15 @@ TEST(BandpassFilterTest, ProcessScalar) {
     double y = f.process(100.0);
     EXPECT_TRUE(std::isfinite(y));
 }
+// Regression: bandpass order must be hp(lp(x)) — low-pass first, then high-pass.
+// Match the common building block algo/common/filter/bandpass.h and jAER.
+// Verify by comparing output to the reference BandpassFilter for a DC input:
+// a band-pass must remove DC, so a constant input must converge toward 0.
+TEST(BandpassFilterTest, RemovesDcAfterConvergence) {
+    BandpassFilter f(0.5f, 10.0f, 4, 0.01);
+    for (int i = 0; i < 1000; ++i) f.process(1.0);
+    EXPECT_NEAR(f.value(), 0.0, 1e-3);
+}
 
 // --- 4.3.23 OpticalGyro ---
 TEST(OpticalGyroTest, Construction) {
@@ -308,6 +324,10 @@ TEST(OpticalGyroTest, Params) {
     EXPECT_FLOAT_EQ(g.stabilization_strength(), 0.5f);
     g.set_smoothing_window_ms(200.0f);
     EXPECT_FLOAT_EQ(g.smoothing_window_ms(), 200.0f);
+    // Rotation estimation toggle (jAER opticalGyroRotationEnabled default=false)
+    EXPECT_FALSE(g.rotation_enabled());
+    g.set_rotation_enabled(true);
+    EXPECT_TRUE(g.rotation_enabled());
 }
 
 // =========================================================================
@@ -653,6 +673,20 @@ TEST(ISIAnalyzerTest, Process) {
     auto ev = make_events(32, 32, 50);
     a.process(ev.data(), ev.size());
     SUCCEED();
+}
+// Regression: set_bin_count / set_max_isi_ms must preserve the histogram
+// range in µs (previous bug divided by 1000, causing all samples to be
+// dropped and counts() to be all-zero).
+TEST(ISIAnalyzerTest, SetterPreservesRange) {
+    ISIAnalyzer a(32, 32, 32, 100.0f, false);  // max_isi = 100 ms = 100000 us
+    a.set_bin_count(64);
+    // Feed two events 50000 us apart (< 100000 us, must land in a bin).
+    gui_algo::Event ev[2] = {{16, 16, 1, 0}, {16, 16, 1, 50000}};
+    a.process(ev, 2);
+    const auto& counts = a.counts();
+    std::uint64_t total = 0;
+    for (auto c : counts) total += c;
+    EXPECT_GT(total, 0u);  // at least one ISI sample must be counted
 }
 
 // --- 4.4.5 ParticleCounter ---

@@ -1,11 +1,21 @@
-// algo/cv/hough_circle_tracker.h — event-driven incremental Hough circle tracking.
+// algo/cv/hough_circle_tracker.h — event-driven Hough circle tracker.
 //
 // ✅ 移植自 jAER HoughCircleTracker (net.sf.jaer.eventprocessing.tracking.
-// HoughCircleTracker)。事件驱动增量霍夫圆变换：维护 3D 累加器 (a, b, r)，其中
-// (a,b) 为圆心、r 为半径；逐事件对每个候选半径 r，在以事件 (x,y) 为中心、半径为 r
-// 的圆上对所有候选圆心 (a, b) 投票（a = x + r·cos(θ), b = y + r·sin(θ)）；累加器按
-// 时间常数 accumulatorDecayUs 指数衰减（事件过期）；在累加器中寻找局部极大值作为
-// 检测圆，并按最近邻关联持久航迹。对应设计 §4.3.15。Header-only.
+// HoughCircleTracker, by Jan Funke / Lorenz Muller). 本实现忠实复刻 jAER 的
+// 算法结构：单固定半径 + 2D 累加器 (width×height) + 非指数衰减
+// 1/(0.0001*decay*dt) + FIFO 事件历史 + 整数椭圆绘制 (8 扇区) + 位置抑制
+// (locDepression) NMS，无持久航迹 ID。对应设计 §4.3.15。Header-only.
+//
+// 与 jAER 的少量差异（为兼容既有 backend/test API 所做，不影响算法语义）：
+//   * jAER 的单一 float 半径 `radius` (默认 0.8px) 在此映射为构造参数
+//     `max_radius_px`（整数像素），即本类使用的固定半径；`min_radius_px`
+//     仅为兼容旧 API 保留，不再参与累加。
+//   * jAER 的 `decay` (无量纲，默认 1.0) 在此作为新增参数 `decay` 保留；
+//     旧参数 `accumulator_decay_us` 仅为兼容旧 API 保留，不再参与衰减计算。
+//   * max_coord 未被任何 above-threshold 检测命中时不输出（jAER 会输出
+//     (0,0)）；避免在 GUI 上画出多余的左上角圆。
+//   * `buffer_length` 下限为 1（jAER 允许 0 但会触发除零）。
+//   * HoughCircle.track_id 恒为 -1（jAER 无持久航迹）。
 
 #ifndef GUI_ALGO_CV_HOUGH_CIRCLE_TRACKER_H
 #define GUI_ALGO_CV_HOUGH_CIRCLE_TRACKER_H
@@ -25,32 +35,61 @@
 
 namespace gui_algo {
 
-/// @brief Detected circle with persistent tracking id.
+/// @brief Detected circle. Ported jAER has no persistent tracks, so
+/// `track_id` is always -1; the field is retained for API compatibility.
 struct HoughCircle {
     cv::Point2f center;
     float radius{0.0f};
-    int track_id{-1};   ///< Persistent track id, -1 if untracked.
+    int track_id{-1};   ///< Always -1 (jAER has no persistent track IDs).
 };
 
-/// @brief Event-driven incremental Hough circle tracker, ported from jAER.
+/// @brief Event-driven Hough circle tracker, ported from jAER.
 ///
-/// Maintains a 3D accumulator (a, b, r) over circle centers and radii. Each
-/// event votes for all centers that could produce it at every candidate radius.
-/// The accumulator decays exponentially over time so old events expire.
+/// Maintains a single fixed-radius 2D accumulator. Each event votes for all
+/// circle centers on the integer ellipse of radius `max_radius_px` around it
+/// (8-sector integer ellipse drawing). The accumulator decays each packet by
+/// the non-exponential factor 1/(0.0001*decay*dt). A FIFO event history is
+/// kept; when `decay_mode` is off, the least recent event's votes are
+/// subtracted. Local maxima above `threshold` are reported, and their
+/// neighborhoods are suppressed via `loc_depression`.
 class HoughCircleTracker {
 public:
+    /// @brief Constructor.
+    /// @param width, height      Accumulator dimensions (pixels).
+    /// @param min_radius_px      Legacy, unused (kept for API compat).
+    /// @param max_radius_px      The single fixed circle radius (jAER `radius`).
+    /// @param threshold          Detection threshold (jAER `threshold`).
+    /// @param accumulator_decay_us Legacy, unused (jAER uses `decay`).
+    /// @param decay              jAER decay coefficient (default 1.0).
+    /// @param buffer_length      FIFO event history length (default 4000).
+    /// @param nr_max             Number of maxima to track (default 1).
+    /// @param decay_mode         If true, apply time-based decay (default true).
+    /// @param loc_depression     If true, suppress detected neighborhoods.
     HoughCircleTracker(int width, int height,
                        int min_radius_px = 5,
                        int max_radius_px = 50,
                        int threshold = 30,
-                       Metavision::timestamp accumulator_decay_us = 100000)
+                       Metavision::timestamp accumulator_decay_us = 100000,
+                       float decay = 1.0f,
+                       int buffer_length = 4000,
+                       int nr_max = 1,
+                       bool decay_mode = true,
+                       bool loc_depression = true)
         : width_(width), height_(height),
           min_radius_px_(min_radius_px),
           max_radius_px_(max_radius_px),
           threshold_(threshold),
-          accumulator_decay_us_(accumulator_decay_us) {
-        if (min_radius_px_ < 1) min_radius_px_ = 1;
-        if (max_radius_px_ < min_radius_px_) max_radius_px_ = min_radius_px_;
+          accumulator_decay_us_(accumulator_decay_us),
+          decay_(decay),
+          buffer_length_(buffer_length),
+          nr_max_(nr_max),
+          decay_mode_(decay_mode),
+          loc_depression_(loc_depression) {
+        if (min_radius_px_ < 0) min_radius_px_ = 0;
+        if (max_radius_px_ < 0) max_radius_px_ = 0;
+        if (buffer_length_ < 1) buffer_length_ = 1;   // jAER allows 0 (div-by-zero)
+        if (nr_max_ < 0) nr_max_ = 0;
+        if (decay_ < 0.0f) decay_ = 0.0f;
         rebuild();
     }
 
@@ -58,17 +97,97 @@ public:
     std::vector<HoughCircle> process(const EventPacket& packet) {
         std::vector<HoughCircle> result;
         if (packet.empty()) return result;
+        if (width_ <= 0 || height_ <= 0) return result;
+
         const Metavision::timestamp cur_t = packet[packet.size() - 1].t;
-        if (last_t_ >= 0 && accumulator_decay_us_ > 0) {
-            const Metavision::timestamp dt = cur_t - last_t_;
-            if (dt > 0) apply_decay(dt);
+
+        // jAER non-exponential decay: factor = 1/(0.0001*decay*dt).
+        if (decay_mode_ && decay_ > 0.0f) {
+            const float dt = static_cast<float>(cur_t - last_t_);
+            if (dt > 0.0f) {
+                const float decay_factor = 1.0f / (0.0001f * decay_ * dt);
+                for (float& v : accum_) v *= decay_factor;
+            }
         }
         last_t_ = cur_t;
+
+        // Reset running maxima for this packet (jAER resets maxValue, keeps
+        // maxCoordinate so the last known position persists across packets).
+        std::fill(max_value_.begin(), max_value_.end(), 0.0f);
+
         for (const Event& e : packet) {
             if (e.x >= width_ || e.y >= height_) continue;
-            accumulate(e.x, e.y);
+            const float weight = 1.0f;  // C++ Event has no WeightedEvent field
+
+            // save event in history
+            event_history_[static_cast<std::size_t>(buffer_index_)] =
+                Coord{static_cast<int>(e.x), static_cast<int>(e.y)};
+
+            // accumulate all possible circle centers for the current event
+            accumulate(static_cast<int>(e.x), static_cast<int>(e.y), weight);
+
+            // advance buffer index
+            buffer_index_ = (buffer_index_ + 1) % buffer_length_;
+
+            // remove the least recent event from hough space (only when decay
+            // is off; otherwise decay handles expiration).
+            if (!decay_mode_) {
+                const Coord& old =
+                    event_history_[static_cast<std::size_t>(buffer_index_)];
+                if (old.x >= 0) accumulate(old.x, old.y, -1.0f);
+            }
         }
-        find_peaks(result);
+
+        // Re-scan the whole accumulator for local maxima above threshold
+        // (overwrites the running maxima found during accumulation).
+        std::fill(max_value_.begin(), max_value_.end(), 0.0f);
+        for (int x = 0; x < width_; ++x) {
+            for (int y = 0; y < height_; ++y) {
+                const float v = accum_[idx(x, y)];
+                for (int k = 0; k < nr_max_; ++k) {
+                    if (v >= max_value_[k] && is_loc_max(x, y)) {
+                        max_value_[k] = v;
+                        if (v > static_cast<float>(threshold_)) {
+                            max_coord_[k].x = x;
+                            max_coord_[k].y = y;
+                        }
+                        k += nr_max_;  // jAER: i += nrMax (break inner loop)
+                    }
+                }
+            }
+        }
+
+        // Output + position suppression (locDepression).
+        for (int k = 0; k < nr_max_; ++k) {
+            const int x = max_coord_[k].x;
+            const int y = max_coord_[k].y;
+            // Skip never-detected slots (jAER emits (0,0); we omit to avoid a
+            // spurious top-left circle in the GUI overlay).
+            if (x < 0 || y < 0) continue;
+
+            if (loc_depression_ &&
+                (x - 1) > 0 && (x + 1) < (width_ - 1) &&
+                (y - 1) > 0 && (y + 1) < (height_ - 1)) {
+                accum_[idx(x, y)]     *= 0.01f;
+                accum_[idx(x, y + 1)] *= 0.1f;
+                accum_[idx(x, y - 1)] *= 0.1f;
+                accum_[idx(x + 1, y)] *= 0.1f;
+                accum_[idx(x - 1, y)] *= 0.1f;
+                accum_[idx(x + 1, y + 1)] *= 0.1f;
+                accum_[idx(x - 1, y + 1)] *= 0.1f;
+                // jAER bug, faithfully ported: [x-1][y-1] is written twice and
+                // [x+1][y-1] is missing.
+                accum_[idx(x - 1, y - 1)] *= 0.1f;
+                accum_[idx(x - 1, y - 1)] *= 0.1f;
+            }
+
+            HoughCircle hc;
+            hc.center = cv::Point2f(static_cast<float>(x),
+                                    static_cast<float>(y));
+            hc.radius = static_cast<float>(max_radius_px_);
+            hc.track_id = -1;  // jAER has no persistent tracks
+            result.push_back(hc);
+        }
         return result;
     }
 
@@ -81,193 +200,290 @@ public:
     Metavision::timestamp accumulator_decay_us() const {
         return accumulator_decay_us_;
     }
+    float decay() const { return decay_; }
+    int buffer_length() const { return buffer_length_; }
+    int nr_max() const { return nr_max_; }
+    bool decay_mode() const { return decay_mode_; }
+    bool loc_depression() const { return loc_depression_; }
+
     void set_min_radius_px(int v) {
-        if (v < 1) v = 1;
-        if (v == min_radius_px_) return;
-        min_radius_px_ = v;
-        if (max_radius_px_ < min_radius_px_) max_radius_px_ = min_radius_px_;
-        rebuild();
+        if (v < 0) v = 0;
+        min_radius_px_ = v;  // legacy, unused
     }
     void set_max_radius_px(int v) {
-        if (v < min_radius_px_) v = min_radius_px_;
+        if (v < 0) v = 0;
         if (v == max_radius_px_) return;
-        max_radius_px_ = v;
+        max_radius_px_ = v;  // this is the active radius (jAER `radius`)
         rebuild();
     }
     void set_threshold(int v) { threshold_ = v; }
     /// @brief Compatibility alias for set_threshold().
     void set_hough_threshold(int v) { threshold_ = v; }
     void set_accumulator_decay_us(Metavision::timestamp v) {
-        accumulator_decay_us_ = v;
+        accumulator_decay_us_ = v;  // legacy, unused
+    }
+    void set_decay(float v) {
+        if (v < 0.0f) v = 0.0f;
+        decay_ = v;
+    }
+    void set_buffer_length(int v) {
+        if (v < 1) v = 1;
+        if (v == buffer_length_) return;
+        buffer_length_ = v;
+        rebuild();
+    }
+    void set_nr_max(int v) {
+        if (v < 0) v = 0;
+        if (v == nr_max_) return;
+        nr_max_ = v;
+        rebuild();
+    }
+    void set_decay_mode(bool v) {
+        if (v != decay_mode_) {
+            decay_mode_ = v;
+            rebuild();  // jAER resetFilter on change
+        }
+    }
+    void set_loc_depression(bool v) {
+        if (v != loc_depression_) {
+            loc_depression_ = v;
+            rebuild();  // jAER resetFilter on change
+        }
     }
 
     void reset() {
         std::fill(accum_.begin(), accum_.end(), 0.0f);
-        last_t_ = -1;
-        tracks_.clear();
-        next_track_id_ = 0;
+        std::fill(event_history_.begin(), event_history_.end(), Coord{-1, -1});
+        buffer_index_ = 0;
+        std::fill(max_value_.begin(), max_value_.end(), 0.0f);
+        std::fill(max_coord_.begin(), max_coord_.end(), Coord{-1, -1});
+        last_t_ = 0;
     }
 
 private:
-    struct Offset { int dx; int dy; };
-    struct Track {
-        int id{-1};
-        cv::Point2f last_center;
-    };
+    struct Coord { int x{-1}; int y{-1}; };
 
     void rebuild() {
-        num_radii_ = max_radius_px_ - min_radius_px_ + 1;
-        if (num_radii_ < 1) num_radii_ = 1;
         accum_.assign(static_cast<std::size_t>(width_) *
-                          static_cast<std::size_t>(height_) *
-                          static_cast<std::size_t>(num_radii_),
+                          static_cast<std::size_t>(height_),
                       0.0f);
-        // Precompute the deduplicated circle outline offsets for each radius:
-        // for an event at (x,y), the candidate centers are (x+dx, y+dy).
-        offsets_.assign(static_cast<std::size_t>(num_radii_), {});
-        constexpr int kAngleSamples = 72;
-        for (int k = 0; k < num_radii_; ++k) {
-            const float r = static_cast<float>(min_radius_px_ + k);
-            std::vector<Offset> tmp;
-            tmp.reserve(kAngleSamples);
-            for (int i = 0; i < kAngleSamples; ++i) {
-                const float a = 2.0f * kPiF * static_cast<float>(i) /
-                                static_cast<float>(kAngleSamples);
-                const Offset o{
-                    static_cast<int>(std::lround(r * std::cos(a))),
-                    static_cast<int>(std::lround(r * std::sin(a)))};
-                tmp.push_back(o);
-            }
-            std::sort(tmp.begin(), tmp.end(), [](const Offset& p, const Offset& q) {
-                return (p.dx != q.dx) ? (p.dx < q.dx) : (p.dy < q.dy);
-            });
-            tmp.erase(std::unique(tmp.begin(), tmp.end(),
-                                  [](const Offset& p, const Offset& q) {
-                                      return p.dx == q.dx && p.dy == q.dy;
-                                  }),
-                      tmp.end());
-            offsets_[static_cast<std::size_t>(k)] = std::move(tmp);
-        }
-        last_t_ = -1;
-        tracks_.clear();
-        next_track_id_ = 0;
+        event_history_.assign(static_cast<std::size_t>(buffer_length_),
+                              Coord{-1, -1});
+        buffer_index_ = 0;
+        max_value_.assign(static_cast<std::size_t>(nr_max_), 0.0f);
+        max_coord_.assign(static_cast<std::size_t>(nr_max_), Coord{-1, -1});
+        last_t_ = 0;
     }
 
-    inline std::size_t idx(int a, int b, int k) const {
-        return (static_cast<std::size_t>(k) * static_cast<std::size_t>(height_) +
-                static_cast<std::size_t>(b)) *
-                   static_cast<std::size_t>(width_) +
-               static_cast<std::size_t>(a);
+    inline std::size_t idx(int x, int y) const {
+        return static_cast<std::size_t>(x) * static_cast<std::size_t>(height_) +
+               static_cast<std::size_t>(y);
     }
 
-    /// @brief Incremental Hough vote: for every candidate radius, splat the
-    /// circle of candidate centers around the event.
-    void accumulate(int x, int y) {
-        for (int k = 0; k < num_radii_; ++k) {
-            for (const Offset& o : offsets_[static_cast<std::size_t>(k)]) {
-                const int a = x + o.dx;
-                const int b = y + o.dy;
-                if (a < 0 || a >= width_ || b < 0 || b >= height_) continue;
-                accum_[idx(a, b, k)] += 1.0f;
-            }
-        }
-    }
-
-    void apply_decay(Metavision::timestamp dt) {
-        const double factor = std::exp(-static_cast<double>(dt) /
-                                       static_cast<double>(accumulator_decay_us_));
-        const float f = static_cast<float>(factor);
-        for (float& v : accum_) v *= f;
-    }
-
-    /// @brief Finds local maxima above threshold, applies non-maximum
-    /// suppression across radii and associates persistent tracks.
-    void find_peaks(std::vector<HoughCircle>& out) {
-        struct Cand { int a; int b; int k; float val; };
-        std::vector<Cand> cands;
-        for (int k = 0; k < num_radii_; ++k) {
-            for (int b = 0; b < height_; ++b) {
-                for (int a = 0; a < width_; ++a) {
-                    const float v = accum_[idx(a, b, k)];
-                    if (v < static_cast<float>(threshold_)) continue;
-                    if (!is_local_max(a, b, k)) continue;
-                    cands.push_back(Cand{a, b, k, v});
+    /// @brief Increase a hough point and update the running maxima (jAER
+    /// increaseHoughPoint).
+    void increase_hough_point(int x, int y, float weight) {
+        if (x < 0 || x >= width_ || y < 0 || y >= height_) return;
+        const std::size_t i = idx(x, y);
+        accum_[i] += weight;
+        for (int k = 0; k < nr_max_; ++k) {
+            if (accum_[i] >= max_value_[k]) {
+                max_value_[k] = accum_[i];
+                if (max_value_[k] > static_cast<float>(threshold_)) {
+                    max_coord_[k].x = x;
+                    max_coord_[k].y = y;
                 }
+                k += nr_max_;  // jAER: i += nrMax (break)
             }
-        }
-        std::sort(cands.begin(), cands.end(),
-                  [](const Cand& x, const Cand& y) { return x.val > y.val; });
-        const float nms = static_cast<float>(min_radius_px_);
-        const float nms2 = nms * nms;
-        for (const Cand& c : cands) {
-            bool ok = true;
-            for (const HoughCircle& h : out) {
-                const float dx = h.center.x - static_cast<float>(c.a);
-                const float dy = h.center.y - static_cast<float>(c.b);
-                if (dx * dx + dy * dy < nms2) { ok = false; break; }
-            }
-            if (!ok) continue;
-            HoughCircle hc;
-            hc.center = cv::Point2f(static_cast<float>(c.a),
-                                    static_cast<float>(c.b));
-            hc.radius = static_cast<float>(min_radius_px_ + c.k);
-            hc.track_id = associate(hc);
-            out.push_back(hc);
-            if (out.size() >= kMaxDetections) break;
         }
     }
 
-    bool is_local_max(int a, int b, int k) const {
-        const float v = accum_[idx(a, b, k)];
-        for (int db = -1; db <= 1; ++db) {
-            for (int da = -1; da <= 1; ++da) {
-                if (da == 0 && db == 0) continue;
-                const int na = a + da;
-                const int nb = b + db;
-                if (na < 0 || na >= width_ || nb < 0 || nb >= height_) continue;
-                if (accum_[idx(na, nb, k)] > v) return false;
-            }
+    /// @brief 8-neighbor local maximum check (jAER islocmax, locMaxRad = 1).
+    bool is_loc_max(int x, int y) const {
+        const int loc_max_rad = 1;
+        if ((x - loc_max_rad) < 0 || (x + loc_max_rad) > (width_ - 1) ||
+            (y - loc_max_rad) < 0 || (y + loc_max_rad) > (height_ - 1)) {
+            return false;
         }
+        const float v = accum_[idx(x, y)];
+        if (v < accum_[idx(x, y + 1)]) return false;
+        if (v < accum_[idx(x, y - 1)]) return false;
+        if (v < accum_[idx(x + 1, y)]) return false;
+        if (v < accum_[idx(x - 1, y)]) return false;
+        if (v < accum_[idx(x + 1, y - 1)]) return false;
+        if (v < accum_[idx(x - 1, y + 1)]) return false;
+        if (v < accum_[idx(x + 1, y + 1)]) return false;
+        if (v < accum_[idx(x - 1, y - 1)]) return false;
         return true;
     }
 
-    int associate(const HoughCircle& hc) {
-        const float tol = static_cast<float>(max_radius_px_) * 2.0f;
-        const float tol2 = tol * tol;
-        int best_id = -1;
-        float best_d2 = tol2;
-        for (std::size_t i = 0; i < tracks_.size(); ++i) {
-            const float dx = tracks_[i].last_center.x - hc.center.x;
-            const float dy = tracks_[i].last_center.y - hc.center.y;
-            const float d2 = dx * dx + dy * dy;
-            if (d2 < best_d2) { best_d2 = d2; best_id = tracks_[i].id; }
-        }
-        if (best_id < 0) {
-            best_id = next_track_id_++;
-            tracks_.push_back(Track{best_id, hc.center});
-        } else {
-            for (auto& tr : tracks_) {
-                if (tr.id == best_id) { tr.last_center = hc.center; break; }
+    /// @brief Fast integer ellipse drawing (jAER accumulate). Draws the
+    /// circle of radius `max_radius_px_` centered at (centerX, centerY) into
+    /// the accumulator, adding `weight` to each outlined cell. Uses only
+    /// integer addition/subtraction. Ellipse eqn: A*x^2 + B*y^2 + C*x*y - 1
+    /// = 0, with A = B = radius^2, C = 0 (a circle).
+    void accumulate(int centerX, int centerY, float weight) {
+        const int aa = max_radius_px_ * max_radius_px_;
+        const int bb = aa;
+        const int twoC = 0;
+
+        int x = 0;
+        int y = static_cast<int>(std::lround(std::sqrt(static_cast<float>(bb))));
+        const int twoaa = 2 * aa;
+        const int twobb = 2 * bb;
+        int dx = (twoaa * y) + (twoC * x);
+        int dy = -((twobb * x) + (twoC * y));
+        int ellipseError = aa * ((y * y) - bb);
+
+        // first sector: (dy/dx > 1) -> y+1 (x+1)
+        while (dy > dx) {
+            increase_hough_point(centerX + x, centerY + y, weight);
+            increase_hough_point(centerX - x, centerY - y, weight);
+            ellipseError = ellipseError + dx + aa;
+            dx = dx + twoaa;
+            dy = dy - twoC;
+            y = y + 1;
+            if ((((2 * ellipseError) - dy) + bb) > 0) {
+                ellipseError = (ellipseError - dy) + bb;
+                dx = dx + twoC;
+                dy = dy - twobb;
+                x = x + 1;
             }
         }
-        return best_id;
+
+        // second sector: (dy/dx > 0) -> x+1 (y+1)
+        while (dy > 0) {
+            increase_hough_point(centerX + x, centerY + y, weight);
+            increase_hough_point(centerX - x, centerY - y, weight);
+            ellipseError = (ellipseError - dy) + bb;
+            dx = dx + twoC;
+            dy = dy - twobb;
+            x = x + 1;
+            if (((2 * ellipseError) + dx + aa) < 0) {
+                ellipseError = ellipseError + dx + aa;
+                dx = dx + twoaa;
+                dy = dy - twoC;
+                y = y + 1;
+            }
+        }
+
+        // third sector: (dy/dx > -1) -> x+1 (y-1)
+        while (dy > -dx) {
+            increase_hough_point(centerX + x, centerY + y, weight);
+            increase_hough_point(centerX - x, centerY - y, weight);
+            ellipseError = (ellipseError - dy) + bb;
+            dx = dx + twoC;
+            dy = dy - twobb;
+            x = x + 1;
+            if ((((2 * ellipseError) - dx) + aa) > 0) {
+                ellipseError = (ellipseError - dx) + aa;
+                dx = dx - twoaa;
+                dy = dy + twoC;
+                y = y - 1;
+            }
+        }
+
+        // fourth sector: (dy/dx < 0) -> y-1 (x+1)
+        while (dx > 0) {
+            increase_hough_point(centerX + x, centerY + y, weight);
+            increase_hough_point(centerX - x, centerY - y, weight);
+            ellipseError = (ellipseError - dx) + aa;
+            dx = dx - twoaa;
+            dy = dy + twoC;
+            y = y - 1;
+            if ((((2 * ellipseError) - dy) + bb) < 0) {
+                ellipseError = (ellipseError - dy) + bb;
+                dx = dx + twoC;
+                dy = dy - twobb;
+                x = x + 1;
+            }
+        }
+
+        // fifth sector (dy/dx > 1) -> y-1 (x-1)
+        while ((dy < dx) && (x > 0)) {
+            increase_hough_point(centerX + x, centerY + y, weight);
+            increase_hough_point(centerX - x, centerY - y, weight);
+            ellipseError = (ellipseError - dx) + aa;
+            dx = dx - twoaa;
+            dy = dy + twoC;
+            y = y - 1;
+            if (((2 * ellipseError) + dy + bb) > 0) {
+                ellipseError = ellipseError + dy + bb;
+                dx = dx - twoC;
+                dy = dy + twobb;
+                x = x - 1;
+            }
+        }
+
+        // sixth sector: (dy/dx > 0) -> x-1 (y-1)
+        while ((dy < 0) && (x > 0)) {
+            increase_hough_point(centerX + x, centerY + y, weight);
+            increase_hough_point(centerX - x, centerY - y, weight);
+            ellipseError = ellipseError + dy + bb;
+            dx = dx - twoC;
+            dy = dy + twobb;
+            x = x - 1;
+            if ((((2 * ellipseError) - dx) + aa) < 0) {
+                ellipseError = (ellipseError - dx) + aa;
+                dx = dx - twoaa;
+                dy = dy + twoC;
+                y = y - 1;
+            }
+        }
+
+        // seventh sector: (dy/dx > -1) -> x-1 (y+1)
+        while ((dy < -dx) && (x > 0)) {
+            increase_hough_point(centerX + x, centerY + y, weight);
+            increase_hough_point(centerX - x, centerY - y, weight);
+            ellipseError = ellipseError + dy + bb;
+            dx = dx - twoC;
+            dy = dy + twobb;
+            x = x - 1;
+            if (((2 * ellipseError) + dx + aa) > 0) {
+                ellipseError = ellipseError + dx + aa;
+                dx = dx + twoaa;
+                dy = dy - twoC;
+                y = y + 1;
+            }
+        }
+
+        // eight sector: (dy/dx < 0) -> y+1 (x-1)
+        while (((dy > 0) && (dx < 0)) && (x > 0)) {
+            increase_hough_point(centerX + x, centerY + y, weight);
+            increase_hough_point(centerX - x, centerY - y, weight);
+            ellipseError = ellipseError + dx + aa;
+            dx = dx + twoaa;
+            dy = dy - twoC;
+            y = y + 1;
+            if (((2 * ellipseError) + dy + bb) < 0) {
+                ellipseError = ellipseError + dy + bb;
+                dx = dx - twoC;
+                dy = dy + twobb;
+                x = x - 1;
+            }
+        }
     }
 
-    static constexpr std::size_t kMaxDetections = 16;
-    static constexpr float kPiF = 3.14159265358979323846f;
-
+    // Parameters ------------------------------------------------------------
     int width_;
     int height_;
-    int min_radius_px_;
-    int max_radius_px_;
+    int min_radius_px_;   ///< Legacy, unused (jAER has a single radius).
+    int max_radius_px_;   ///< The single fixed circle radius (jAER `radius`).
     int threshold_;
-    Metavision::timestamp accumulator_decay_us_;
-    int num_radii_{1};
-    std::vector<float> accum_;
-    std::vector<std::vector<Offset>> offsets_;
-    Metavision::timestamp last_t_{-1};
-    std::vector<Track> tracks_;
-    int next_track_id_{0};
+    Metavision::timestamp accumulator_decay_us_;  ///< Legacy, unused.
+    float decay_;          ///< jAER `decay` (default 1.0).
+    int buffer_length_;    ///< jAER `bufferLength` (default 4000).
+    int nr_max_;           ///< jAER `nrMax` (default 1).
+    bool decay_mode_;      ///< jAER `decayMode` (default true).
+    bool loc_depression_;  ///< jAER `locDepression` (default true).
+
+    // State -----------------------------------------------------------------
+    std::vector<float> accum_;          ///< 2D accumulator (width*height).
+    std::vector<Coord> event_history_;  ///< FIFO event history.
+    int buffer_index_{0};
+    std::vector<float> max_value_;      ///< Running maxima values (size nr_max_).
+    std::vector<Coord> max_coord_;      ///< Running maxima positions (size nr_max_).
+    Metavision::timestamp last_t_{0};   ///< jAER `timeStamp`.
 };
 
 } // namespace gui_algo

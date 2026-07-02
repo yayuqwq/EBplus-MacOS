@@ -1,18 +1,35 @@
 // algo/cv/cluster_lif.h — LIF neuron grid clustering.
 //
-// ✅ 移植自 jAER BlurringTunnelFilter (ch.unizh.ini.jaer.projects.einsteintunnel.
-// sensoryprocessing.BlurringTunnelFilter). 对应设计 §4.3.18。
+// ✅ 移植自 jAER BlurringTunnelFilter (ch.unizh.ini.jaer.projects.
+// einsteintunnel.sensoryprocessing.BlurringTunnelFilter). 对应设计 §4.3.18。
 //
 // jAER 的 BlurringTunnelFilter / NeuronGroup 将同时发放（共燃）的多个 LIF
-// 神经元按连通分量分组成一个簇（NeuronGroup）：每个像素建模为漏电积分触发
-// 神经元，事件使膜电位上升（ON/OFF 不分极性，按 +1 累积）并按时间常数 tau
-// 指数泄漏；当某像素电位越过发放阈值时发放并复位。本 C++ 实现复用底层 LIF
-// 积分器（algo/common/lif_integrator.h，其本身已与 jAER 一致），并在每个
-// 事件包处理完成后，把本包内所有发放像素收集为二值掩码，对其做 8 连通连通
-// 分量标记（迭代 BFS），每个连通分量即一个簇：质心按发放次数加权、记录
-// 像素数 (size)、总发放数 (mass)、外接框；再按最近邻匹配跨包跟踪并估计速度。
-// 输出: vector<LifCluster>，每个含 (track_id, cx, cy, size, mass, vx, vy)。
-// Header-only.
+// 神经元按连通分量分组成一个簇（NeuronGroup）。本实现忠实移植其核心逻辑：
+//
+//   - 粗粒度神经元网格：感受野大小 receptiveFieldSizePixels（默认 8），
+//     半步长 halfReceptiveFieldSizePixels = receptiveFieldSizePixels/2。
+//     神经元 (i,j) 的中心像素 = ((i+1)*half, (j+1)*half)，其感受野覆盖
+//     [i*half, (i+2)*half-1] × [j*half, (j+2)*half-1]。相邻神经元共享
+//     一半感受野区域，提高空间分辨率。网格维度 numOfNeuronsX/Y 按 jAER
+//     initFilter 的公式计算（width%half==0 时 -1）。
+//   - 每个事件驱动 4 个重叠感受野神经元：subIndexX = x/half（==numOfNeuronsX
+//     时减一），subIndexY = y/half（同上），4 个神经元为 (sx,sy)、
+//     (sx,sy-1)、(sx-1,sy)、(sx-1,sy-1)，带边界守卫（与 jAER blurring()
+//     一致）。每个被驱动的神经元按 LIF 积分：膜电位 +1.0 并按 tau 指数
+//     泄漏，越过阈值即发放并部分下降（保留残余电位）。
+//   - 初始膜电位 = initial_potential_percent * threshold / 100（jAER
+//     MPInitialPercnetTh，默认 50% → threshold=15 时为 7.5）。
+//   - 发放后处理 = MP -= max(jump_after_firing_percent * threshold / 100,
+//     1.0)（jAER MPJumpAfterFiringPercentTh，默认 10% → 1.5，下限 1.0）。
+//   - 非单调时间戳：时间回退时 MP=0（与 jAER incrementMP 一致）。
+//
+// 在每个事件包处理完成后，把本包内所有发放神经元收集为二值掩码，对其做
+// 4-连通连通分量标记（迭代 BFS，与 jAER 的 4-邻接 inside/border 分组语义
+// 一致），每个连通分量即一个簇：质心按发放次数加权（神经元中心像素坐标，
+// 对应 jAER NeuronGroup 的 effectiveMP=numSpikes 加权 location）、记录
+// 神经元数 (size)、总发放数 (mass)、外接框；再按最近邻匹配跨包跟踪并
+// 估计速度。输出: vector<LifCluster>，每个含
+// (track_id, cx, cy, size, mass, vx, vy)。Header-only.
 
 #ifndef GUI_ALGO_CV_CLUSTER_LIF_H
 #define GUI_ALGO_CV_CLUSTER_LIF_H
@@ -35,80 +52,102 @@ namespace gui_algo {
 /// @brief A cluster emitted when one or more co-firing LIF neurons form a
 /// connected component (移植自 jAER BlurringTunnelFilter NeuronGroup).
 struct LifCluster {
-    cv::Point2f position;             ///< Mass-weighted centroid (cx, cy).
+    cv::Point2f position;             ///< Mass-weighted centroid (cx, cy) in sensor pixels.
     double potential{0.0};            ///< Membrane potential at firing (== threshold).
     int track_id{-1};                 ///< Persistent track id, -1 if untracked.
-    int size{0};                      ///< Number of distinct firing pixels.
+    int size{0};                      ///< Number of distinct firing neurons.
     int mass{0};                      ///< Total firings summed over the component.
     float vx{0.0F};                   ///< Track velocity x (px/s).
     float vy{0.0F};                   ///< Track velocity y (px/s).
-    cv::Rect bbox;                    ///< Bounding box of the component.
+    cv::Rect bbox;                    ///< Bounding box of firing neuron centres (sensor px).
     Metavision::timestamp last_t{0};  ///< Timestamp of the batch that produced it.
 };
 
-/// @brief LIF neuron grid clustering with connected-component grouping.
+/// @brief LIF neuron grid clustering with connected-component grouping,
+/// faithfully ported from jAER BlurringTunnelFilter.
 class ClusterLIF {
 public:
+    /// @brief Constructs the cluster finder.
+    /// @param width,height Sensor dimensions (pixels).
+    /// @param tau_ms LIF membrane time constant (jAER MPTimeConstantUs, us).
+    /// @param threshold Firing threshold (jAER MPThreshold).
+    /// @param reset_value Post-fire potential when jump_after_firing_percent
+    ///        == 0 (legacy full-reset; ignored when jump > 0).
+    /// @param receptive_field_size_pixels Receptive field side length in
+    ///        sensor pixels (jAER receptiveFieldSizePixels, default 8).
+    /// @param initial_potential_percent Initial MP as percent of threshold
+    ///        (jAER MPInitialPercnetTh, default 50).
+    /// @param jump_after_firing_percent MP drop after firing as percent of
+    ///        threshold (jAER MPJumpAfterFiringPercentTh, default 10).
     ClusterLIF(int width, int height,
-               float tau_ms = 10.0f,
-               float threshold = 1.0f,
-               float reset_value = 0.0f)
+               float tau_ms = 22.0f,
+               float threshold = 15.0f,
+               float reset_value = 0.0f,
+               int receptive_field_size_pixels = 8,
+               float initial_potential_percent = 50.0f,
+               float jump_after_firing_percent = 10.0f)
         : width_(width), height_(height),
           tau_us_(static_cast<Metavision::timestamp>(tau_ms * 1000.0f)),
           threshold_(static_cast<double>(threshold)),
           reset_value_(static_cast<double>(reset_value)),
-          lif_(width, height,
-               static_cast<Metavision::timestamp>(tau_ms * 1000.0f),
-               static_cast<double>(threshold),
-               static_cast<double>(reset_value)),
+          receptive_field_size_pixels_(receptive_field_size_pixels),
+          initial_potential_percent_(static_cast<double>(initial_potential_percent)),
+          jump_after_firing_percent_(static_cast<double>(jump_after_firing_percent)),
+          // Placeholder; rebuild_grid() (called below) reassigns lif_ to the
+          // correctly-sized coarse grid. Constructed with valid args so the
+          // member is initialised before reassignment.
+          lif_(1, 1, tau_us_, threshold_, reset_value_, 1000,
+               static_cast<double>(initial_potential_percent),
+               static_cast<double>(jump_after_firing_percent)),
           track_tol_px_(10.0f),
-          stale_us_(1000000),
-          fire_mask_(static_cast<std::size_t>(width) * height, 0),
-          fire_count_(static_cast<std::size_t>(width) * height, 0) {}
+          stale_us_(1000000) {
+        rebuild_grid();
+    }
 
-    /// @brief Processes an event packet and returns one cluster per connected
-    /// component of co-firing LIF neurons (移植自 jAER BlurringTunnelFilter).
+    /// @brief Processes an event packet and returns one cluster per
+    /// 4-connected component of co-firing LIF neurons (移植自 jAER
+    /// BlurringTunnelFilter).
     std::vector<LifCluster> process(const EventPacket& packet) {
         std::vector<LifCluster> result;
         if (packet.empty()) return result;
+        if (num_neurons_x_ <= 0 || num_neurons_y_ <= 0) return result;
 
-        // 1) Drive the LIF integrator and collect firing pixels into a binary
-        //    mask (+ per-pixel firing count, used as the centroid/mass weight,
-        //    mirroring jAER's effectiveMP = numSpikes weighting).
+        // 1) Drive the LIF integrator: route each event to its 4 overlapping
+        //    receptive-field neurons (jAER blurring), collecting firing
+        //    neurons into a binary mask + per-neuron firing count (used as
+        //    the centroid/mass weight, mirroring jAER's
+        //    effectiveMP = numSpikes weighting in NeuronGroup.add).
         std::fill(fire_mask_.begin(), fire_mask_.end(), uint8_t(0));
         std::fill(fire_count_.begin(), fire_count_.end(), 0);
         Metavision::timestamp batch_t = 0;
         for (const Event& e : packet) {
             if (e.x >= width_ || e.y >= height_) continue;
-            const bool fired = lif_.add_event(e.x, e.y, e.p, e.t);
             if (e.t > batch_t) batch_t = e.t;
-            if (fired) {
-                const std::size_t idx =
-                    static_cast<std::size_t>(e.y) * width_ + e.x;
-                fire_mask_[idx] = 1;
-                ++fire_count_[idx];
-            }
+            route_event(e);
         }
 
-        // 2) Connected-component labelling (8-connectivity, iterative BFS with
-        //    an explicit stack — no recursion, sensor-sized grids are fine).
-        const std::size_t n = static_cast<std::size_t>(width_) * height_;
+        // 2) Connected-component labelling (4-connectivity, iterative BFS
+        //    with an explicit stack — jAER uses strict 4-neighbour
+        //    inside/border grouping; we use the equivalent 4-CC).
+        const std::size_t n = static_cast<std::size_t>(num_neurons_x_) *
+                              num_neurons_y_;
         std::vector<int> label(n, -1);
         struct Comp {
-            double sx{0.0};   // sum(x * weight)
-            double sy{0.0};   // sum(y * weight)
+            double sx{0.0};   // sum(centre_x * weight)
+            double sy{0.0};   // sum(centre_y * weight)
             double sm{0.0};   // sum(weight) == total firings (mass)
-            int size{0};      // distinct pixels
+            int size{0};      // distinct neurons
             int minx{0}, miny{0}, maxx{0}, maxy{0};
         };
         std::vector<Comp> comps;
         std::vector<std::size_t> stack;
         stack.reserve(n);
-        static const int dx[8] = {-1, 1, 0, 0, -1, -1, 1, 1};
-        static const int dy[8] = {0, 0, -1, 1, -1, 1, -1, 1};
-        const std::size_t w = static_cast<std::size_t>(width_);
-        const int wi = width_;
-        const int hi = height_;
+        // 4-connectivity neighbours (up/down/left/right) — jAER style.
+        static const int dx[4] = {-1, 1, 0, 0};
+        static const int dy[4] = {0, 0, -1, 1};
+        const std::size_t w = static_cast<std::size_t>(num_neurons_x_);
+        const int wi = num_neurons_x_;
+        const int hi = num_neurons_y_;
         for (int y = 0; y < hi; ++y) {
             for (int x = 0; x < wi; ++x) {
                 const std::size_t idx = static_cast<std::size_t>(y) * w + x;
@@ -116,7 +155,10 @@ public:
                 const int cid = static_cast<int>(comps.size());
                 comps.emplace_back();
                 Comp& c = comps.back();
-                c.minx = x; c.maxx = x; c.miny = y; c.maxy = y;
+                const int px0 = neuron_centre_x(x);
+                const int py0 = neuron_centre_y(y);
+                c.minx = px0; c.maxx = px0;
+                c.miny = py0; c.maxy = py0;
                 stack.clear();
                 stack.push_back(idx);
                 label[idx] = cid;
@@ -125,16 +167,18 @@ public:
                     stack.pop_back();
                     const int cx = static_cast<int>(cur % w);
                     const int cy = static_cast<int>(cur / w);
+                    const int px = neuron_centre_x(cx);
+                    const int py = neuron_centre_y(cy);
                     const double wt = static_cast<double>(fire_count_[cur]);
-                    c.sx += static_cast<double>(cx) * wt;
-                    c.sy += static_cast<double>(cy) * wt;
+                    c.sx += static_cast<double>(px) * wt;
+                    c.sy += static_cast<double>(py) * wt;
                     c.sm += wt;
                     ++c.size;
-                    if (cx < c.minx) c.minx = cx;
-                    if (cx > c.maxx) c.maxx = cx;
-                    if (cy < c.miny) c.miny = cy;
-                    if (cy > c.maxy) c.maxy = cy;
-                    for (int k = 0; k < 8; ++k) {
+                    if (px < c.minx) c.minx = px;
+                    if (px > c.maxx) c.maxx = px;
+                    if (py < c.miny) c.miny = py;
+                    if (py > c.maxy) c.maxy = py;
+                    for (int k = 0; k < 4; ++k) {
                         const int nx = cx + dx[k];
                         const int ny = cy + dy[k];
                         if (nx < 0 || ny < 0 || nx >= wi || ny >= hi) continue;
@@ -176,6 +220,18 @@ public:
     }
     float threshold() const { return static_cast<float>(threshold_); }
     float reset_value() const { return static_cast<float>(reset_value_); }
+    int receptive_field_size_pixels() const {
+        return receptive_field_size_pixels_;
+    }
+    float initial_potential_percent() const {
+        return static_cast<float>(initial_potential_percent_);
+    }
+    float jump_after_firing_percent() const {
+        return static_cast<float>(jump_after_firing_percent_);
+    }
+    int num_neurons_x() const { return num_neurons_x_; }
+    int num_neurons_y() const { return num_neurons_y_; }
+
     void set_tau_ms(float v) {
         tau_us_ = static_cast<Metavision::timestamp>(v * 1000.0f);
         lif_.set_tau_us(tau_us_);
@@ -185,8 +241,25 @@ public:
         lif_.set_threshold(threshold_);
     }
     void set_reset_value(float v) { reset_value_ = static_cast<double>(v); }
+    void set_initial_potential_percent(float v) {
+        initial_potential_percent_ = static_cast<double>(v);
+        lif_.set_initial_potential_percent(initial_potential_percent_);
+    }
+    void set_jump_after_firing_percent(float v) {
+        jump_after_firing_percent_ = static_cast<double>(v);
+        lif_.set_jump_after_firing_percent(jump_after_firing_percent_);
+    }
+    /// @brief Changes the receptive field size and rebuilds the neuron grid
+    /// (jAER setReceptiveFieldSizePixels → initFilter). All neuron state is
+    /// lost; tracks are preserved.
+    void set_receptive_field_size_pixels(int v) {
+        if (v == receptive_field_size_pixels_) return;
+        receptive_field_size_pixels_ = v;
+        rebuild_grid();
+    }
 
-    /// @brief Returns the membrane-potential grid (CV_32F-compatible layout).
+    /// @brief Returns the membrane-potential grid of the coarse neuron array
+    /// (size = num_neurons_x() * num_neurons_y(), CV_32F-compatible layout).
     const std::vector<double>& potential_grid() const {
         return lif_.potential_grid();
     }
@@ -207,6 +280,90 @@ private:
         float vx{0.0F};
         float vy{0.0F};
     };
+
+    /// @brief (Re)builds the coarse neuron grid from the sensor dimensions and
+    /// the current receptive_field_size_pixels_ (jAER initFilter). Sizes the
+    /// LifIntegrator, fire_mask_, and fire_count_ to the new grid.
+    void rebuild_grid() {
+        if (receptive_field_size_pixels_ < 2) {
+            receptive_field_size_pixels_ = 2;
+        }
+        half_rf_ = receptive_field_size_pixels_ / 2;
+
+        // jAER initFilter neuron-count formula: when the sensor size divides
+        // evenly by half_rf, subtract one (the last cell has no neuron
+        // beyond the boundary); otherwise floor-divide.
+        if (width_ % half_rf_ == 0) {
+            num_neurons_x_ = width_ / half_rf_ - 1;
+        } else {
+            num_neurons_x_ = width_ / half_rf_;
+        }
+        if (height_ % half_rf_ == 0) {
+            num_neurons_y_ = height_ / half_rf_ - 1;
+        } else {
+            num_neurons_y_ = height_ / half_rf_;
+        }
+        if (num_neurons_x_ < 1) num_neurons_x_ = 1;
+        if (num_neurons_y_ < 1) num_neurons_y_ = 1;
+
+        // Reassign the integrator to the new coarse-grid dimensions. The
+        // LifIntegrator is trivially copy/move-assignable (POD + vectors).
+        lif_ = LifIntegrator(num_neurons_x_, num_neurons_y_,
+                             tau_us_, threshold_, reset_value_,
+                             1000,
+                             initial_potential_percent_,
+                             jump_after_firing_percent_);
+        const std::size_t n = static_cast<std::size_t>(num_neurons_x_) *
+                              num_neurons_y_;
+        fire_mask_.assign(n, 0);
+        fire_count_.assign(n, 0);
+    }
+
+    /// @brief Routes an event to its 4 overlapping receptive-field neurons
+    /// (jAER blurring): each addressed neuron receives +1.0 via the LIF
+    /// integrator. Firing neurons are flagged in fire_mask_ and their
+    /// per-packet spike count accumulated in fire_count_.
+    void route_event(const Event& e) {
+        // subIndexX/Y locate the 2×2 neuron block whose RFs cover (x,y).
+        int sx = e.x / half_rf_;
+        if (sx == num_neurons_x_) --sx;
+        int sy = e.y / half_rf_;
+        if (sy == num_neurons_y_) --sy;
+        if (sx < 0) sx = 0;
+        if (sy < 0) sy = 0;
+
+        // 4 overlapping RF neurons with jAER boundary guards.
+        if (sx != num_neurons_x_ && sy != num_neurons_y_) {
+            feed_neuron(sx, sy, e);
+        }
+        if (sx != num_neurons_x_ && sy != 0) {
+            feed_neuron(sx, sy - 1, e);
+        }
+        if (sx != 0 && sy != num_neurons_y_) {
+            feed_neuron(sx - 1, sy, e);
+        }
+        if (sy != 0 && sx != 0) {
+            feed_neuron(sx - 1, sy - 1, e);
+        }
+    }
+
+    /// @brief Drives a single neuron with the event and records any spike.
+    void feed_neuron(int nx, int ny, const Event& e) {
+        const bool fired = lif_.add_event(
+            static_cast<std::uint16_t>(nx),
+            static_cast<std::uint16_t>(ny),
+            e.p, e.t);
+        if (fired) {
+            const std::size_t idx =
+                static_cast<std::size_t>(ny) * num_neurons_x_ + nx;
+            fire_mask_[idx] = 1;
+            ++fire_count_[idx];
+        }
+    }
+
+    /// @brief Neuron (i,j) centre in sensor pixels (jAER: (i+1)*half_rf).
+    int neuron_centre_x(int i) const { return (i + 1) * half_rf_; }
+    int neuron_centre_y(int j) const { return (j + 1) * half_rf_; }
 
     void prune_tracks(Metavision::timestamp now) {
         if (tracks_.size() <= 1) return;
@@ -262,6 +419,12 @@ private:
     Metavision::timestamp tau_us_;
     double threshold_;
     double reset_value_;
+    int receptive_field_size_pixels_;
+    int half_rf_{0};
+    int num_neurons_x_{0};
+    int num_neurons_y_{0};
+    double initial_potential_percent_;
+    double jump_after_firing_percent_;
     LifIntegrator lif_;
     float track_tol_px_;
     Metavision::timestamp stale_us_;

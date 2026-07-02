@@ -331,28 +331,33 @@ void AlgoBridge::register_openeb_frame_modes() {
 
     add({"frame_diff", "Diff Frame", "openeb_frame", "openeb",
          AlgoDisplayMode::Replace,
-         {pint("accumulation_time_us", "Accumulation (us)", "33000", "1000", "1000000")}});
+         {pint("bit_size", "Bit size", "8", "2", "8"),
+          pbool("allow_rollover", "Allow rollover", "true")}});
 
     add({"frame_histogram", "Histogram Frame", "openeb_frame", "openeb",
          AlgoDisplayMode::Replace,
-         {pint("accumulation_time_us", "Accumulation (us)", "33000", "1000", "1000000")}});
+         {pint("channel_bit_neg", "Neg bits", "4", "1", "7"),
+          pint("channel_bit_pos", "Pos bits", "4", "1", "7"),
+          pbool("packed", "Packed", "false")}});
 
     add({"frame_time_decay", "Time Decay Frame", "openeb_frame", "openeb",
          AlgoDisplayMode::Replace,
-         {pint("exponential_decay_time_us", "Decay (us)", "100000", "10000", "10000000")}});
+         {pint("exponential_decay_time_us", "Decay (us)", "100000", "10000", "10000000"),
+          penum("palette", "Palette", "1", {"0=Light", "1=Dark", "2=CoolWarm", "3=Gray"})}});
 
     add({"frame_contrast_map", "Contrast Map", "openeb_frame", "openeb",
          AlgoDisplayMode::Replace,
-         {pint("accumulation_time_us", "Accumulation (us)", "33000", "1000", "1000000")}});
+         {pfloat("contrast_on", "Contrast ON", "1.2", "0.1", "10"),
+          pfloat("contrast_off", "Contrast OFF", "-1", "-10", "0")}});
 
     add({"frame_periodic", "Periodic Frame", "openeb_frame", "openeb",
          AlgoDisplayMode::Replace,
-         {pint("period_us", "Period (us)", "33000", "1000", "1000000")}});
+         {pint("accumulation_time_us", "Accumulation (us)", "10000", "1000", "1000000"),
+          pfloat("fps", "FPS", "30", "0", "120")}});
 
     add({"frame_on_demand", "On-Demand Frame", "openeb_frame", "openeb",
          AlgoDisplayMode::Replace,
-         {penum("trigger", "Trigger strategy", "N_EVENTS",
-                {"N_EVENTS", "N_US", "MIXED"})}});
+         {pint("accumulation_time_us", "Accumulation (us)", "0", "0", "10000000")}});
 }
 
 // ---------------------------------------------------------------------------
@@ -369,12 +374,14 @@ void AlgoBridge::register_openeb_preprocessors() {
 
     add({"preproc_diff", "Diff Preprocessor", "openeb_preproc", "openeb",
          AlgoDisplayMode::Passive,
-         {pint("accumulation_time_us", "Accumulation (us)", "33000", "1000", "1000000")}});
+         {pfloat("max_incr_per_pixel", "Max incr/px", "5", "0.1", "100"),
+          pfloat("clip_value_after_normalization", "Clip value", "1", "0.1", "10")}});
 
     add({"preproc_histo", "Histo Preprocessor", "openeb_preproc", "openeb",
          AlgoDisplayMode::Passive,
-         {pint("max_events_per_pixel", "Max events/px", "5", "1", "255"),
-          pint("accumulation_time_us", "Accumulation (us)", "33000", "1000", "1000000")}});
+         {pfloat("max_incr_per_pixel", "Max incr/px", "5", "0.1", "100"),
+          pfloat("clip_value_after_normalization", "Clip value", "1", "0.1", "10"),
+          pbool("use_CHW", "Use CHW", "true")}});
 
     add({"preproc_hw_diff", "Hardware Diff", "openeb_preproc", "openeb",
          AlgoDisplayMode::Passive,
@@ -385,12 +392,15 @@ void AlgoBridge::register_openeb_preprocessors() {
 
     add({"preproc_time_surface", "Time Surface Processor", "openeb_preproc", "openeb",
          AlgoDisplayMode::Passive,
+         // 'channels' triggers backend reconstruction (1→merge, 2→split)
          {penum("channels", "Channels", "1", {"1=merged", "2=split"})}});
 
     add({"preproc_event_cube", "Event Cube", "openeb_preproc", "openeb",
          AlgoDisplayMode::Passive,
          {pint("num_bins", "Num bins", "10", "2", "20"),
-          pint("accumulation_time_us", "Accumulation (us)", "33000", "1000", "1000000")}});
+          pint("delta_t_us", "Delta t (us)", "33000", "1000", "1000000"),
+          pbool("split_polarity", "Split polarity", "false"),
+          pfloat("max_incr_per_pixel", "Max incr/px", "5", "0.1", "100")}});
 
     add({"preproc_factory", "Preprocessor Factory", "openeb_preproc", "openeb",
          AlgoDisplayMode::Passive,
@@ -414,11 +424,15 @@ void AlgoBridge::register_openeb_utils() {
     add({"util_frame_composer", "Frame Composer", "openeb_util", "openeb",
          AlgoDisplayMode::Passive, {}});
     add({"util_rolling_buffer", "Rolling Buffer", "openeb_util", "openeb",
-         AlgoDisplayMode::Passive, {}});
+         AlgoDisplayMode::Passive,
+         {penum("mode", "Mode", "0", {"0=N_EVENTS", "1=N_US"}),
+          pint("delta_n_events", "N events", "5000", "1", "1000000"),
+          pint("delta_ts_us", "Delta t (us)", "1000000", "1000", "60000000")}});
     add({"util_video_writer", "Video Writer", "openeb_util", "openeb",
          AlgoDisplayMode::Passive, {}});
     add({"util_data_synchronizer", "Data Synchronizer", "openeb_util", "openeb",
-         AlgoDisplayMode::Passive, {}});
+         AlgoDisplayMode::Passive,
+         {pint("period_us", "Period (us)", "10000", "1000", "1000000000")}});
     add({"util_timing_profiler", "Timing Profiler", "openeb_util", "openeb",
          AlgoDisplayMode::Passive, {}});
 }
@@ -560,6 +574,7 @@ void AlgoBridge::register_self_cv() {
     add({"optical_gyro", "EIS (Optical Gyro)", "cv", "self",
          AlgoDisplayMode::Passive,
          {pbool("stabilize", "Stabilize", "true"),
+          pbool("rotation_enabled", "Rotation estimation", "false"),
           pfloat("smoothing_window_ms", "Smoothing window (ms)", "100", "10", "1000")}});
 
     // §4.3.24 Ultra Slow Motion
