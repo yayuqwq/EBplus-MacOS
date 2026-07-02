@@ -7,6 +7,7 @@ set(GUI_SOURCES
     app/file_converter.cpp
     app/frame_pipeline.cpp
     app/statistics_controller.cpp
+    app/theme_controller.cpp
     algo_bridge/algo_bridge.cpp
     algo_bridge/algo_backend.cpp
     algo_bridge/filter_chain.cpp

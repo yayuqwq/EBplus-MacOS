@@ -123,14 +123,14 @@ const gui_algo::Event* as_events(const Metavision::EventCD* p) {
 
 /// @brief Processing region (ROI) for complex algorithms.
 /// Design §4.4.2 / §4.3.25-27: complex algorithms default to the center
-/// 128×128 region to bound computational cost. The user can adjust the
+/// 256×256 region to bound computational cost. The user can adjust the
 /// region or disable the ROI via the Algorithms panel.
 struct ProcessRegion {
     bool enabled{true};
     int x{-1};   ///< -1 = auto-center on sensor
     int y{-1};
-    int w{128};  ///< 0 = full sensor width
-    int h{128};  ///< 0 = full sensor height
+    int w{256};  ///< 0 = full sensor width
+    int h{256};  ///< 0 = full sensor height
 
     // Computed bounds (valid after compute() is called)
     int x0{0}, y0{0}, x1{0}, y1{0};  ///< [x0,x1) × [y0,y1)

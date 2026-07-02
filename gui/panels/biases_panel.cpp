@@ -5,11 +5,12 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
-#include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSlider>
 #include <QString>
+// QScrollArea no longer needed — the BiasesPanel is hosted directly inside the
+// Basic tab's outer scroll area, so an inner scroll is redundant.
 
 #include <metavision/hal/facilities/i_ll_biases.h>
 
@@ -27,17 +28,17 @@ BiasesPanel::BiasesPanel(QWidget* parent) : QWidget(parent) {
     hint_label_->setStyleSheet("color: #888; font-style: italic;");
     outer->addWidget(hint_label_);
 
-    auto* scroll = new QScrollArea(this);
-    scroll->setWidgetResizable(true);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    outer->addWidget(scroll, 1);
-
-    container_ = new QWidget(scroll);
+    // No inner QScrollArea — the BiasesPanel is already hosted inside the
+    // Basic tab's outer scroll area, so an inner scroll would just produce
+    // a tiny viewport with its own scrollbar (the user explicitly asked to
+    // see all bias rows at once). Using a plain layout lets the outer scroll
+    // handle overflow naturally and gives every row its full height.
+    container_ = new QWidget(this);
     rows_layout_ = new QVBoxLayout(container_);
     rows_layout_->setContentsMargins(4, 4, 4, 4);
     rows_layout_->setSpacing(4);
     rows_layout_->addStretch(1);
-    scroll->setWidget(container_);
+    outer->addWidget(container_, 1);
 
     container_->setEnabled(false);
 }

@@ -69,11 +69,17 @@ MainWindow::MainWindow(QWidget* parent)
       playback_(nullptr),
       exporter_(nullptr),
       file_converter_(nullptr) {
-    setWindowTitle(tr("GUI for openEB"));
+    setWindowTitle(QStringLiteral("EB plus"));
     resize(1280, 720);
 
     display_ = new EventDisplayWidget(this);
     setCentralWidget(display_);
+
+    // Theme controller must be attached before the menu is built (so the
+    // Theme menu actions reflect the persisted choice) and before the
+    // SettingsPanel is built. The controller also persists settings via
+    // QSettings.
+    theme_.set_target(this);
 
     settings_ = new SettingsPanel(&algo_bridge_, &file_converter_, this);
     settings_dock_ = new QDockWidget(tr("Settings"), this);
@@ -184,6 +190,12 @@ void MainWindow::closeEvent(QCloseEvent* event) {
 
 void MainWindow::build_menus() {
     auto* mb = menuBar();
+    // The native menu bar (GNOME global menu, macOS screen menu) does not
+    // respect Qt stylesheets, so the theme cannot recolor it. Force the
+    // in-process Qt menu bar so the theme stylesheet applies to the menu
+    // bar and its dropdowns — this keeps the top bar consistent with the
+    // selected background color and text color.
+    mb->setNativeMenuBar(false);
 
     // File
     auto* m_file = mb->addMenu(tr("&File"));
@@ -265,6 +277,13 @@ void MainWindow::build_menus() {
                           if (isFullScreen()) showNormal();
                           else showFullScreen();
                       }, QKeySequence("F11"));
+
+    // Theme — background color + light/dark mode. Moved here from the
+    // sidebar so the controls are at the top of the window where appearance
+    // settings are typically found. The controller builds its own submenu
+    // with radio actions for each color and mode.
+    auto* m_theme = mb->addMenu(tr("&Theme"));
+    theme_.build_menu(m_theme);
 
     // Camera — only display-interaction controls and presets that are NOT
     // in the sidebar's Devices panel. Connect/Disconnect/Refresh live in
@@ -1026,8 +1045,8 @@ void MainWindow::process_algo_results(QImage& frame) {
                 }
                 int rx = parse_int(inst->get_param("roi_x"), -1);
                 int ry = parse_int(inst->get_param("roi_y"), -1);
-                int rw = parse_int(inst->get_param("roi_w"), 128);
-                int rh = parse_int(inst->get_param("roi_h"), 128);
+                int rw = parse_int(inst->get_param("roi_w"), 256);
+                int rh = parse_int(inst->get_param("roi_h"), 256);
                 int aw = (rw <= 0) ? sw : std::min(rw, sw);
                 int ah = (rh <= 0) ? sh : std::min(rh, sh);
                 int ax = (rx < 0) ? (sw - aw) / 2
@@ -1036,11 +1055,18 @@ void MainWindow::process_algo_results(QImage& frame) {
                                   : std::min(std::max(0, ry), sh - ah);
                 auto wit = algo_windows_.find(inst->info().name);
                 if (wit != algo_windows_.end() && wit.value()) {
-                    if (auto* disp = wit.value()->frame_display()) {
+                    // Use QPointer so the lambda safely no-ops if the
+                    // AlgoWindow's display widget is destroyed between
+                    // scheduling and execution (e.g. user closes/undocks the
+                    // dock while a frame is in flight). Without this the raw
+                    // pointer would dangle and crash on dereference.
+                    QPointer<EventDisplayWidget> disp = wit.value()->frame_display();
+                    if (disp) {
                         QRect roi_rect(ax, ay, aw, ah);
                         QImage zoom = frame.copy(roi_rect);
-                        QMetaObject::invokeMethod(disp,
-                            "set_frame", Qt::QueuedConnection, Q_ARG(QImage, zoom));
+                        QMetaObject::invokeMethod(this, [disp, zoom]() {
+                            if (disp) disp->set_frame(zoom);
+                        }, Qt::QueuedConnection);
                     }
                 }
             }
@@ -1066,10 +1092,15 @@ void MainWindow::process_algo_results(QImage& frame) {
             if (wit != algo_windows_.end() && wit.value()) {
                 QPointer<AlgoWindow> w = wit.value();
                 if (r.has_frame && !r.frame.empty()) {
-                    if (auto* disp = w->frame_display()) {
+                    // QPointer protects against the dock being closed/undocked
+                    // (and its display widget destroyed) between scheduling
+                    // and execution of the queued call.
+                    QPointer<EventDisplayWidget> disp = w->frame_display();
+                    if (disp) {
                         QImage q = mat_to_qimage(r.frame);
-                        QMetaObject::invokeMethod(disp,
-                            "set_frame", Qt::QueuedConnection, Q_ARG(QImage, q));
+                        QMetaObject::invokeMethod(this, [disp, q]() {
+                            if (disp) disp->set_frame(q);
+                        }, Qt::QueuedConnection);
                     }
                 }
                 if (!r.status.empty()) {
@@ -1120,8 +1151,8 @@ void MainWindow::draw_roi_overlays(QImage& frame) {
         if (en != "true" && en != "1") continue;
         const int rx = parse(inst->get_param("roi_x"), -1);
         const int ry = parse(inst->get_param("roi_y"), -1);
-        const int rw = parse(inst->get_param("roi_w"), 128);
-        const int rh = parse(inst->get_param("roi_h"), 128);
+        const int rw = parse(inst->get_param("roi_w"), 256);
+        const int rh = parse(inst->get_param("roi_h"), 256);
         // Compute bounds (mirrors ProcessRegion::compute).
         const int aw = (rw <= 0) ? sensor_w : std::min(rw, sensor_w);
         const int ah = (rh <= 0) ? sensor_h : std::min(rh, sensor_h);

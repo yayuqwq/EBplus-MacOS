@@ -34,6 +34,7 @@
 #include "algo_bridge/algo_bridge.h"
 #include "app/camera_controller.h"
 #include "app/file_converter.h"
+#include "app/theme_controller.h"
 #include "config/config_manager.h"
 #include "config/layout_manager.h"
 #include "display/event_display_widget.h"
@@ -214,6 +215,10 @@ private:
     /// display frame so the user can see which region is being processed.
     /// Called from process_algo_results().
     void draw_roi_overlays(QImage& frame);
+
+    /// Application theme controller (background color + light/dark mode).
+    /// Owned by MainWindow; the SettingsPanel sidebar exposes its UI.
+    ThemeController theme_;
 };
 
 } // namespace gui

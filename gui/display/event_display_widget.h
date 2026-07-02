@@ -62,6 +62,18 @@ protected:
     void mouseReleaseEvent(QMouseEvent* event) override;
 
 private:
+    /// @brief Called via QOpenGLContext::aboutToBeDestroyed to free GPU
+    /// resources (texture / shader / VAO) before the context is torn down.
+    ///
+    /// When the containing QDockWidget is dragged out to become a floating
+    /// window, Qt reparents the QOpenGLWidget and recreates its underlying
+    /// OpenGL context. Without this cleanup the old context's resources
+    /// would be freed by the unique_ptr destructors while the NEW context
+    /// is current — which crashes inside the GL driver. By freeing them
+    /// explicitly while the OLD context is still current, we avoid the
+    /// use-after-free that caused the segfault on dock drag-out.
+    void cleanup_gl();
+
     void draw_letterboxed(int widget_w, int widget_h, int img_w, int img_h);
     /// @brief Computes the letterboxed viewport rect in logical (widget)
     /// pixels for the currently displayed frame.

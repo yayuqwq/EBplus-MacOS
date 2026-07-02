@@ -65,6 +65,25 @@ EventDisplayWidget::~EventDisplayWidget() {
 void EventDisplayWidget::initializeGL() {
     initializeOpenGLFunctions();
 
+    // When this widget is reparented (e.g. its containing QDockWidget is
+    // dragged out to become a floating window), Qt destroys the old OpenGL
+    // context and creates a new one. We must free the GPU resources that
+    // belong to the old context BEFORE it is destroyed, otherwise the
+    // unique_ptr destructors would run later with the new (or no) context
+    // current, crashing inside the GL driver. UniqueConnection ensures we
+    // don't accumulate duplicate connections across multiple reparents.
+    connect(context(), &QOpenGLContext::aboutToBeDestroyed,
+            this, &EventDisplayWidget::cleanup_gl, Qt::UniqueConnection);
+
+    // If we were reparented, initializeGL() is called again for the new
+    // context. Discard any stale resource wrappers from the old context —
+    // their underlying GL objects are already gone (freed in cleanup_gl).
+    // Resetting before recreating prevents the unique_ptr assignment from
+    // trying to delete objects on the wrong context.
+    texture_.reset();
+    vao_.reset();
+    program_.reset();
+
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
     program_ = std::make_unique<QOpenGLShaderProgram>();
@@ -89,6 +108,17 @@ void EventDisplayWidget::resizeGL(int w, int h) {
     if (overlay_label_) {
         overlay_label_->setGeometry(0, 0, w, h);
     }
+}
+
+void EventDisplayWidget::cleanup_gl() {
+    // Called by QOpenGLContext::aboutToBeDestroyed. The context is still
+    // valid at this point, so makeCurrent() succeeds and the GL delete
+    // calls inside the unique_ptr destructors target the correct context.
+    makeCurrent();
+    texture_.reset();
+    vao_.reset();
+    program_.reset();
+    doneCurrent();
 }
 
 void EventDisplayWidget::paintGL() {
@@ -172,7 +202,7 @@ QImage EventDisplayWidget::current_frame() const {
 
 void EventDisplayWidget::draw_letterboxed(int widget_w, int widget_h,
                                           int img_w, int img_h) {
-    if (img_w <= 0 || img_h <= 0) {
+    if (img_w <= 0 || img_h <= 0 || !texture_ || !program_) {
         return;
     }
     const float img_aspect = static_cast<float>(img_w) / img_h;

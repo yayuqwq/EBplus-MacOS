@@ -207,21 +207,44 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
         [this](const Metavision::CameraException& e) {
             // Reaching end-of-file is a normal stop condition for playback.
             const QString msg = QString::fromUtf8(e.what());
+
+            // Evt3 "NonMonotonicTimeHigh" is a transient HAL-layer warning
+            // that occurs ~50% of the time when starting Gen3.x cameras.
+            // The timestamp high bits momentarily go backwards, but the
+            // camera keeps streaming and the frame pipeline handles the
+            // timestamp gap gracefully. Stopping the camera on this error
+            // (the previous behavior) made the camera fail half the time.
+            // Treat it as a non-fatal warning and keep the stream running.
+            const bool is_evt3_time_glitch =
+                msg.contains(QStringLiteral("NonMonotonicTimeHigh"), Qt::CaseInsensitive) ||
+                msg.contains(QStringLiteral("Evt3 protocol violation"), Qt::CaseInsensitive);
+
             if (is_file_) {
                 emit runtime_warning(tr("Playback ended: %1").arg(msg));
+                // File EOF → stop as before.
+                QMetaObject::invokeMethod(this, [this]() {
+                    if (!camera_) return;
+                    if (camera_->is_running()) {
+                        try { camera_->stop(); } catch (...) {}
+                    }
+                    emit stopped();
+                }, Qt::QueuedConnection);
+            } else if (is_evt3_time_glitch) {
+                // Live camera + transient Evt3 timestamp glitch: do NOT
+                // stop the stream. Emit a warning so the user knows
+                // something happened, but keep running.
+                emit runtime_warning(tr("Transient camera timestamp glitch (ignored): %1").arg(msg));
             } else {
+                // Live camera + genuine error: stop and report.
                 emit error(msg);
+                QMetaObject::invokeMethod(this, [this]() {
+                    if (!camera_) return;
+                    if (camera_->is_running()) {
+                        try { camera_->stop(); } catch (...) {}
+                    }
+                    emit stopped();
+                }, Qt::QueuedConnection);
             }
-            // Calling camera_->stop() from within this callback can deadlock
-            // (the SDK dispatches this on the same thread that stop() would
-            // join). Defer to the GUI thread.
-            QMetaObject::invokeMethod(this, [this]() {
-                if (!camera_) return;  // already disconnected via teardown()
-                if (camera_->is_running()) {
-                    try { camera_->stop(); } catch (...) {}
-                }
-                emit stopped();
-            }, Qt::QueuedConnection);
         });
 
     // Status change callback.

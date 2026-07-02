@@ -171,6 +171,29 @@ void AlgorithmsPanel::build_ui() {
             connect(cb, &QCheckBox::toggled, this, [this, params_host, cb, a, algo_name](bool on) {
                 params_host->setVisible(on);
                 if (on) {
+                    // Algorithm mutex (design §5.6.6 — exclusive mode): only
+                    // one algorithm may be enabled at a time. Uncheck every
+                    // other checkbox (with signals blocked so we don't
+                    // re-enter this handler) and disable its live instance.
+                    // The AlgoWindow for the previously-enabled algorithm is
+                    // closed by MainWindow via the algorithm_toggled signal
+                    // emitted below for each disabled algo.
+                    for (auto& [other_name, other_cb] : checkboxes_) {
+                        if (other_name == algo_name) continue;
+                        if (!other_cb || !other_cb->isChecked()) continue;
+                        QSignalBlocker b(other_cb);
+                        other_cb->setChecked(false);
+                        // Hide the other algo's parameter editor.
+                        // (The editor is the row immediately following the
+                        // checkbox in the same QFormLayout; we can find it
+                        // by re-using the params_host pattern: just hide via
+                        // the live_instances_ map's enable flag.)
+                        auto it = live_instances_.find(other_name);
+                        if (it != live_instances_.end() && it->second) {
+                            it->second->set_enabled(false);
+                        }
+                        emit algorithm_toggled(QString::fromStdString(other_name), false);
+                    }
                     // Reuse the live instance if one already exists (e.g. the
                     // user edited a parameter before enabling). create() would
                     // discard those parameters by building a fresh instance.
@@ -210,7 +233,7 @@ void AlgorithmsPanel::build_roi_selector(QVBoxLayout* parent_layout) {
     auto* form = new QFormLayout(gb);
     form->setContentsMargins(6, 6, 6, 6);
 
-    roi_enabled_cb_ = new QCheckBox(tr("Enabled (center 128×128 default)"), gb);
+    roi_enabled_cb_ = new QCheckBox(tr("Enabled (center 256×256 default)"), gb);
     roi_enabled_cb_->setChecked(true);
     form->addRow(roi_enabled_cb_);
 
@@ -228,13 +251,13 @@ void AlgorithmsPanel::build_roi_selector(QVBoxLayout* parent_layout) {
 
     roi_w_sp_ = new QSpinBox(gb);
     roi_w_sp_->setRange(0, 100000);
-    roi_w_sp_->setValue(128);
+    roi_w_sp_->setValue(256);
     roi_w_sp_->setSpecialValueText(tr("full"));
     form->addRow(tr("W"), roi_w_sp_);
 
     roi_h_sp_ = new QSpinBox(gb);
     roi_h_sp_->setRange(0, 100000);
-    roi_h_sp_->setValue(128);
+    roi_h_sp_->setValue(256);
     roi_h_sp_->setSpecialValueText(tr("full"));
     form->addRow(tr("H"), roi_h_sp_);
 
@@ -295,6 +318,24 @@ void AlgorithmsPanel::set_algo_enabled(const std::string& name, bool on) {
     // causing sync loops with the Algorithm menu / AlgoWindow).
     QSignalBlocker b(it->second);
     it->second->setChecked(on);
+
+    // Algorithm mutex: when turning an algo on programmatically (e.g. from
+    // on_open_algo_window), uncheck every other algo so only one is live at
+    // a time. The toggled-handler path enforces mutex itself; this covers
+    // the programmatic path.
+    if (on) {
+        for (auto& [other_name, other_cb] : checkboxes_) {
+            if (other_name == name) continue;
+            if (!other_cb || !other_cb->isChecked()) continue;
+            QSignalBlocker ob(other_cb);
+            other_cb->setChecked(false);
+            auto oi = live_instances_.find(other_name);
+            if (oi != live_instances_.end() && oi->second) {
+                oi->second->set_enabled(false);
+            }
+            emit algorithm_toggled(QString::fromStdString(other_name), false);
+        }
+    }
 }
 
 } // namespace gui

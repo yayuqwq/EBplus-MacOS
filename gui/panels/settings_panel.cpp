@@ -24,7 +24,8 @@
 
 namespace gui {
 
-SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter, QWidget* parent)
+SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter,
+                             QWidget* parent)
     : QWidget(parent) {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
@@ -102,9 +103,9 @@ SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter, QWidg
 
     basic_layout->addStretch(1);
     basic_scroll->setWidget(basic_host);
-    tabs_->addTab(basic_scroll, tr("基础功能"));
+    tabs_->addTab(basic_scroll, tr("Basic"));
 
-    // --- Tab 2: 算法模块 (Algorithm Modules) ---
+    // --- Tab 2: Algorithms ---
     // AlgorithmsPanel already contains the global Algorithm ROI selector at
     // its top, followed by the scrollable algorithm list. All algorithm
     // configuration lives here — the Algorithm menu bar is removed from
@@ -114,7 +115,7 @@ SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter, QWidg
     algo_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     algorithms_ = new AlgorithmsPanel(bridge, algo_scroll);
     algo_scroll->setWidget(algorithms_);
-    tabs_->addTab(algo_scroll, tr("算法模块"));
+    tabs_->addTab(algo_scroll, tr("Algorithms"));
 
     // Default to the basic tab.
     tabs_->setCurrentIndex(0);
