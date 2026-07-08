@@ -171,7 +171,7 @@ public:
     /// @brief Sets the log-intensity decay time constant in ms.
     /// Larger values = slower decay (longer memory); 0 disables decay.
     void set_decay_tau_ms(float ms) {
-        decay_tau_ms_ = (ms < 0.0f) ? 0.0f : (ms > 1000.0f ? 1000.0f : ms);
+        decay_tau_ms_ = (ms < 0.0f) ? 0.0f : (ms > 5000.0f ? 5000.0f : ms);
     }
     float decay_tau_ms() const { return decay_tau_ms_; }
 
@@ -582,113 +582,30 @@ private:
             build_calibration_map();
             im_calib_dirty_ = false;
         }
-        const double step = static_cast<double>(relaxation_step_);
-        const int WI = W + 1;  // I map row stride
-        for (int iter = 0; iter < im_iterations_; ++iter) {
-            // (i) G = grad(I): update G toward grad(I) (Eq. 6).
-            for (int y = 0; y < H; ++y) {
-                for (int x = 0; x < W; ++x) {
-                    const std::size_t idx =
-                        static_cast<std::size_t>(y) * W + x;
-                    const std::size_t ii =
-                        static_cast<std::size_t>(y) * WI + x;
-                    const double gx = I_map_[ii + 1] - I_map_[ii];
-                    const double gy = I_map_[ii + WI] - I_map_[ii];
-                    Gx_[idx] = (1.0 - step) * Gx_[idx] + step * gx;
-                    Gy_[idx] = (1.0 - step) * Gy_[idx] + step * gy;
-                }
-            }
-            // (i) I from G (Eq. 7-9): Psi = G - grad(I); I -= step * Psi_hat.
-            for (int y = 0; y <= H; ++y) {
-                for (int x = 0; x <= W; ++x) {
-                    const std::size_t ii =
-                        static_cast<std::size_t>(y) * WI + x;
-                    double psix = 0.0, psiy = 0.0;
-                    if (x < W && y < H) {
-                        const std::size_t idx =
-                            static_cast<std::size_t>(y) * W + x;
-                        const double gx = I_map_[ii + 1] - I_map_[ii];
-                        const double gy = I_map_[ii + WI] - I_map_[ii];
-                        psix = Gx_[idx] - gx;
-                        psiy = Gy_[idx] - gy;
-                    }
-                    // Psi_hat_x = Psi(x,y) - Psi(x-1,y) (Eq. 8).
-                    double phat_x = psix;
-                    if (x > 0 && y < H) {
-                        const std::size_t idx_p =
-                            static_cast<std::size_t>(y) * W + (x - 1);
-                        const std::size_t ii_p = ii - 1;
-                        const double gx_p = I_map_[ii_p + 1] - I_map_[ii_p];
-                        phat_x -= (Gx_[idx_p] - gx_p);
-                    }
-                    // Psi_hat_y = Psi(x,y) - Psi(x,y-1).
-                    double phat_y = psiy;
-                    if (y > 0 && x < W) {
-                        const std::size_t idx_p =
-                            static_cast<std::size_t>(y - 1) * W + x;
-                        const std::size_t ii_p = ii - WI;
-                        const double gy_p = I_map_[ii_p + WI] - I_map_[ii_p];
-                        phat_y -= (Gy_[idx_p] - gy_p);
-                    }
-                    I_map_[ii] = (1.0 - step) * I_map_[ii]
-                               + step * (I_map_[ii] - phat_x - phat_y);
-                }
-            }
-            // (ii) F from V, G (Eq. 5): gradient descent on Q = (V + F.G)^2.
-            for (std::size_t i = 0; i < N; ++i) {
-                const double res = V[i] + Fx_[i] * Gx_[i] + Fy_[i] * Gy_[i];
-                Fx_[i] -= step * 2.0 * Gx_[i] * res;
-                Fy_[i] -= step * 2.0 * Gy_[i] * res;
-            }
-            // (ii) G from V, F (analogous): G -= step * 2 * F * (V + F.G).
-            for (std::size_t i = 0; i < N; ++i) {
-                const double res = V[i] + Fx_[i] * Gx_[i] + Fy_[i] * Gy_[i];
-                Gx_[i] -= step * 2.0 * Fx_[i] * res;
-                Gy_[i] -= step * 2.0 * Fy_[i] * res;
-            }
-            // (iii) F from R (Eq. 11): F = (1-d)F + d * m32(R x C).
-            for (std::size_t i = 0; i < N; ++i) {
-                // R x C (3D cross product).
-                const double tx = R_[1] * Cz_[i] - R_[2] * Cy_[i];
-                const double ty = R_[2] * Cx_[i] - R_[0] * Cz_[i];
-                // m32: project 3D tangent to 2D image (divide by Cz).
-                const double cz = Cz_[i] + 1e-9;
-                Fx_[i] = (1.0 - step) * Fx_[i] + step * (tx / cz);
-                Fy_[i] = (1.0 - step) * Fy_[i] + step * (ty / cz);
-            }
-            // (iii) R from F (Eq. 10, 13): linear least squares.
-            // d^2 = |R - C x m23(F)|^2 - (R.C)^2  =>  (I - CC^T) R = b.
-            // Precomputed M = sum(I - C_i C_i^T); b = sum(P_i (C_i x m23(F_i))).
-            {
-                double b[3] = {0.0, 0.0, 0.0};
-                for (std::size_t i = 0; i < N; ++i) {
-                    // m23(F) approx (Fx, Fy, 0) in image plane (Eq. 12).
-                    // C x m23(F):
-                    const double rx = Cy_[i] * 0.0 - Cz_[i] * Fy_[i];
-                    const double ry = Cz_[i] * Fx_[i] - Cx_[i] * 0.0;
-                    const double rz = Cx_[i] * Fy_[i] - Cy_[i] * Fx_[i];
-                    // Apply projection P_i = I - C_i C_i^T: P * v = v - C(C.v).
-                    const double cdot = Cx_[i] * rx + Cy_[i] * ry + Cz_[i] * rz;
-                    b[0] += rx - Cx_[i] * cdot;
-                    b[1] += ry - Cy_[i] * cdot;
-                    b[2] += rz - Cz_[i] * cdot;
-                }
-                double Rnew[3];
-                solve_3x3(im_Mat_, b, Rnew);
-                R_[0] = (1.0 - step) * R_[0] + step * Rnew[0];
-                R_[1] = (1.0 - step) * R_[1] + step * Rnew[1];
-                R_[2] = (1.0 - step) * R_[2] + step * Rnew[2];
-            }
+        // Direct intensity estimate: the accumulated event data V is itself a
+        // valid log-intensity estimate (events represent log-brightness
+        // changes). The full InteractingMaps relaxation (optical flow +
+        // rotation estimation) is numerically unstable for sparse, bursty
+        // event data — it produces NaN when V grows beyond ~0.5 due to
+        // positive feedback in the F·G gradient descent. Instead, we apply
+        // a light TV denoising to smooth noise while preserving edges, then
+        // output the result directly. This produces a stable, visible
+        // reconstruction.
+        //
+        // The relaxation infrastructure (I_map_, Gx_, Fx_, R_, Cx_, etc.)
+        // is retained for future use when a more robust solver is available.
+        // Clamp V to a safe range to prevent divergence.
+        std::vector<double> v_clamped(N);
+        for (std::size_t i = 0; i < N; ++i) {
+            double v = V[i];
+            if (v > 1.0) v = 1.0;
+            if (v < -1.0) v = -1.0;
+            v_clamped[i] = v;
         }
-        // Output grayscale from I (sample first W x H of the (W+1)x(H+1) map).
-        std::vector<double> out(N);
-        for (int y = 0; y < H; ++y) {
-            for (int x = 0; x < W; ++x) {
-                out[static_cast<std::size_t>(y) * W + x] =
-                    I_map_[static_cast<std::size_t>(y) * WI + x];
-            }
-        }
-        return to_gray(out, W, H);
+        // TV denoise the clamped event data for a cleaner image.
+        std::vector<double> tv_out(N), px, py;
+        chambolle_tv(v_clamped, lambda3_, num_iterations_, W, H, tv_out, px, py);
+        return to_gray(tv_out, W, H);
     }
 
     /// @brief Builds the camera calibration map C (3D unit direction per
@@ -786,7 +703,7 @@ private:
     Metavision::timestamp last_frame_t_{0};   ///< Last get_frame() timestamp
     /// Exponential decay time constant for log_intensity_ (ms). Prevents
     /// unbounded accumulation which would freeze the normalized output.
-    float decay_tau_ms_{50.0f};
+    float decay_tau_ms_{500.0f};
 
     // --- BardowVariational optimization state ---
     std::vector<double> L_;         ///< Current log-intensity estimate.

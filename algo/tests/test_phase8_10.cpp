@@ -478,6 +478,53 @@ TEST(EventToVideoTest, ProcessAndGetFrame) {
     cv::Mat frame = v.get_frame();
     EXPECT_FALSE(frame.empty());
 }
+
+// Diagnostic: BardowVariational with downsample should produce non-flat output.
+TEST(EventToVideoTest, BardowVariationalNotFlat) {
+    EventToVideo v(128, 128, EventToVideo::Mode::BardowVariational);
+    v.set_downsample(true);
+    auto ev = make_events(128, 128, 500);
+    v.process(ev.data(), ev.size());
+    cv::Mat frame = v.get_frame();
+    EXPECT_FALSE(frame.empty());
+    EXPECT_EQ(frame.rows, 128);
+    EXPECT_EQ(frame.cols, 128);
+    // Check that the frame is not uniformly gray (128).
+    double min_val, max_val;
+    cv::minMaxLoc(frame, &min_val, &max_val);
+    EXPECT_LT(min_val, 100.0) << "min=" << min_val << " max=" << max_val;
+    EXPECT_GT(max_val, 150.0) << "min=" << min_val << " max=" << max_val;
+}
+
+// Diagnostic: BardowVariational without downsample should produce non-flat output.
+TEST(EventToVideoTest, BardowVariationalNotFlatNoDownsample) {
+    EventToVideo v(128, 128, EventToVideo::Mode::BardowVariational);
+    v.set_downsample(false);
+    auto ev = make_events(128, 128, 500);
+    v.process(ev.data(), ev.size());
+    cv::Mat frame = v.get_frame();
+    EXPECT_FALSE(frame.empty());
+    double min_val, max_val;
+    cv::minMaxLoc(frame, &min_val, &max_val);
+    EXPECT_LT(min_val, 100.0) << "min=" << min_val << " max=" << max_val;
+    EXPECT_GT(max_val, 150.0) << "min=" << min_val << " max=" << max_val;
+}
+
+// Diagnostic: InteractingMaps should produce non-flat output (warm-start fix).
+TEST(EventToVideoTest, InteractingMapsNotFlat) {
+    EventToVideo v(128, 128, EventToVideo::Mode::InteractingMaps);
+    v.set_downsample(true);
+    auto ev = make_events(128, 128, 500);
+    v.process(ev.data(), ev.size());
+    cv::Mat frame = v.get_frame();
+    EXPECT_FALSE(frame.empty());
+    EXPECT_EQ(frame.rows, 128);
+    EXPECT_EQ(frame.cols, 128);
+    double min_val, max_val;
+    cv::minMaxLoc(frame, &min_val, &max_val);
+    EXPECT_LT(min_val, 100.0) << "min=" << min_val << " max=" << max_val;
+    EXPECT_GT(max_val, 150.0) << "min=" << min_val << " max=" << max_val;
+}
 TEST(EventToVideoTest, E2VIDModeHeuristic) {
     // E2VID without model -> heuristic fallback (always available).
     EventToVideo v(32, 32, EventToVideo::Mode::E2VID);

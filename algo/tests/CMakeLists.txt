@@ -56,3 +56,16 @@ target_link_libraries(test_phase8_10 PRIVATE
 target_compile_options(test_phase8_10 PRIVATE -Wall -Wextra -Werror)
 
 gtest_discover_tests(test_phase8_10)
+
+# Standalone diagnostic: feed .raw events to EventToVideo and report stats.
+add_executable(test_raw_e2v
+    test_raw_e2v.cpp
+)
+target_link_libraries(test_raw_e2v PRIVATE
+    gui_algo
+    MetavisionSDK::base
+    MetavisionSDK::core
+    MetavisionSDK::stream
+    ${OpenCV_LIBS}
+)
+

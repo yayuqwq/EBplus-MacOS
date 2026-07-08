@@ -1294,6 +1294,7 @@ class EventToVideoBackend final : public AlgoBackend {
     int num_iterations_{100};
     float lambda1_{0.02F}, lambda2_{0.05F}, lambda3_{0.02F};
     float lambda4_{0.2F}, lambda5_{0.1F}, lambda6_{1.0F};
+    float decay_tau_ms_{500.0F};
     // InteractingMaps params.
     float relaxation_step_{0.1F};
     int im_iterations_{50};
@@ -1329,6 +1330,7 @@ public:
         algo_->set_lambda4(lambda4_);
         algo_->set_lambda5(lambda5_);
         algo_->set_lambda6(lambda6_);
+        algo_->set_decay_tau_ms(decay_tau_ms_);
         // InteractingMaps
         algo_->set_relaxation_step(relaxation_step_);
         algo_->set_im_iterations(im_iterations_);
@@ -1380,6 +1382,8 @@ public:
             lambda5_ = static_cast<float>(to_d(v)); if (algo_) algo_->set_lambda5(lambda5_);
         } else if (k == "lambda6") {
             lambda6_ = static_cast<float>(to_d(v)); if (algo_) algo_->set_lambda6(lambda6_);
+        } else if (k == "decay_tau_ms") {
+            decay_tau_ms_ = static_cast<float>(to_d(v)); if (algo_) algo_->set_decay_tau_ms(decay_tau_ms_);
         } else if (k == "relaxation_step") {
             relaxation_step_ = static_cast<float>(to_d(v));
             if (algo_) algo_->set_relaxation_step(relaxation_step_);
@@ -1439,6 +1443,7 @@ public:
         if (k == "lambda4") return from_d(lambda4_);
         if (k == "lambda5") return from_d(lambda5_);
         if (k == "lambda6") return from_d(lambda6_);
+        if (k == "decay_tau_ms") return from_d(decay_tau_ms_);
         if (k == "relaxation_step") return from_d(relaxation_step_);
         if (k == "im_iterations") return from_i(im_iterations_);
         if (k == "fov_deg") return from_d(fov_deg_);
