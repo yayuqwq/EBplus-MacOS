@@ -73,6 +73,43 @@
 - 运行时参数持久化（保存/加载到 JSON）
 - 线程安全的算法实例管理
 
+### 事件→灰度重建（Event-to-Video）
+提供三种重建模式，**默认 E2VID**（深度学习）：
+- **E2VID**（DL，默认）：从 [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid) 完整移植，ONNX Runtime 多线程 CPU 推理。默认 128×128 ROI + 24fps + 1/4 下采样（64×64 推理 → 上采样回 128×128）。无模型时自动回退到启发式重建
+- **BardowVariational**（非 DL，简化版）：对数亮度图 Chambolle 投影 TV-L1 去噪（仅用 `lambda1`，未含论文的光流联合估计）
+- **InteractingMaps**（非 DL，简化版）：对数亮度图迭代拉普拉斯松弛（未含论文的六图互连和光流/旋转估计）
+
+#### E2VID 部署方法（一次性，约 5 分钟）
+
+```bash
+# 1. 下载 ONNX Runtime 1.19.2（Linux x64 CPU）到 third_party/
+cd /path/to/GUI-for-openEB
+mkdir -p third_party/onnxruntime && cd third_party/onnxruntime
+wget https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/onnxruntime-linux-x64-1.19.2.tgz
+tar xzf onnxruntime-linux-x64-1.19.2.tgz --strip-components=1
+cd ../..
+
+# 2. 创建 Python 转换环境
+python3 -m venv .venv && . .venv/bin/activate
+pip install torch --index-url https://download.pytorch.org/whl/cpu onnx onnxscript onnxruntime numpy
+deactivate
+
+# 3. 下载 PyTorch 预训练权重（约 41 MB）
+wget -P models/ http://rpg.ifi.uzh.ch/data/E2VID/models/E2VID_lightweight.pth.tar
+
+# 4. 转换为 ONNX（生成 models/e2vid_lightweight.onnx）
+. .venv/bin/activate && python models/convert_to_onnx.py && deactivate
+
+# 5. 重新编译（CMake 自动检测 ONNX Runtime）
+cmake --build build -- -j$(nproc)
+```
+
+完成后启动 EBplus，启用 **Algorithm → Event → Video** 即默认 E2VID 模式。GUI 暴露可调参数：模型路径、auto-HDR、下采样开关、锐化强度、双边滤波。
+
+> **无 ONNX Runtime 时**：E2VID 自动回退到启发式模式（体素网格求和 + Sigmoid）。BardowVariational 和 InteractingMaps 模式无需任何额外依赖，但均为简化实现。
+
+详见 [doc/design.md §4.4.2](doc/design.md)。
+
 ---
 
 ## 快速开始

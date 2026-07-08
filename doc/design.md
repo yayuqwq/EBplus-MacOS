@@ -1203,14 +1203,14 @@ openEB 未提供光流算法，需自研。结果以箭头/颜色图叠加到主
 
 | 模式 | 算法方案 | 参考文献 | 外部依赖 |
 |------|----------|----------|----------|
-| **InteractingMaps**（非 DL） | 六张互连图（强度 I、梯度 G、时变 V、光流 F、标定 C、旋转 R）交替松弛迭代至全局一致。输出灰度图 + 光流 + 旋转估计。仅适用旋转相机/静态场景 | [Interacting Maps for Fast Visual Interpretation](file:///home/justin/GUI_for_openEB/GUI-for-openEB/ref/Interacting_maps_for_fast_visual_interpretation.pdf)（Cook et al. 2011 IJCNN） | 无（需预计算相机标定图 C） |
-| **BardowVariational**（非 DL，默认） | 滑动窗口变分优化：TV-L1 正则联合估计连续速度场 u 与对数亮度 L，事件数据项 + 无事件死区约束 + 先验图保持，Chambolle-Pock 原始-对偶求解。支持任意 6-DOF 运动 | [Simultaneous Optical Flow and Intensity Estimation from an Event Camera](file:///home/justin/GUI_for_openEB/GUI-for-openEB/ref/Simultaneous_Optical_Flow_and_Intensity_Estimation_from_TQEb.pdf)（Bardow et al. 2016 CVPR） | 无 |
-| **E2VID**（DL，可选） | E2VID / UNet-Recurrent 神经网络推理，从事件流重建灰度帧。已从 [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid) 移植：事件体素网格 → ONNX Runtime 推理（含 UNetRecurrent 状态管理）→ Unsharp Mask → 强度重缩放（auto-HDR）→ 裁剪 → 双边滤波。无模型时自动回退到启发式重建（体素求和 + Sigmoid） | [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid) | ONNX Runtime（可选） |
+| **InteractingMaps**（非 DL） | **简化实现**：对事件累积的对数亮度图做迭代拉普拉斯松弛（邻域加权平均），产生平滑的灰度重建。论文完整方法涉及六张互连图（强度 I、梯度 G、时变 V、光流 F、标定 C、旋转 R）交替松弛，输出灰度图 + 光流 + 旋转估计，仅适用旋转相机/静态场景——当前实现未包含光流/旋转估计和标定图互连 | [Interacting Maps for Fast Visual Interpretation](file:///home/justin/GUI_for_openEB/GUI-for-openEB/ref/Interacting_maps_for_fast_visual_interpretation.pdf)（Cook et al. 2011 IJCNN） | 无 |
+| **BardowVariational**（非 DL，默认） | **简化实现**：对事件累积的对数亮度图做 Chambolle 投影 TV-L1 去噪（仅使用 `lambda1` 作为 TV 正则化权重），产生边缘保持的灰度重建。论文完整方法联合估计连续速度场 u（光流）与对数亮度 L，使用 `lambda1`-`lambda6` 六个正则化权重（数据项 / TV 正则 / 速度先验 / 光流一致性 / 先验图保持 / 死区约束），支持任意 6-DOF 运动——当前实现未包含光流估计和 `lambda2`-`lambda6` | [Simultaneous Optical Flow and Intensity Estimation from an Event Camera](file:///home/justin/GUI_for_openEB/GUI-for-openEB/ref/Simultaneous_Optical_Flow_and_Intensity_Estimation_from_TQEb.pdf)（Bardow et al. 2016 CVPR） | 无 |
+| **E2VID**（DL，可选，默认） | E2VID / UNet-Recurrent 神经网络推理，从事件流重建灰度帧。已从 [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid) 完整移植：事件体素网格 → ONNX Runtime 推理（含 UNetRecurrent 状态管理）→ Unsharp Mask → 强度重缩放（auto-HDR）→ 裁剪 → 双边滤波。无模型时自动回退到启发式重建（体素求和 + Sigmoid） | [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid) | ONNX Runtime（可选） |
 
 **子模块**：
-- `interacting_maps`（非 DL）：事件分箱 → V 图 → I/G/F/R 交替松弛 → 灰度帧 + 光流
-- `bardow_variational`（非 DL，默认）：滑动窗口 → 事件时空体素 → TV-L1 变分求解（Chambolle-Pock）→ 对数亮度 → 灰度帧 + 密集光流
-- `e2vid/`（DL，可选）：子目录，包含 `e2vid_inference.h`（ONNX Runtime 推理 + 启发式回退 + UNetRecurrent 状态管理）、`event_voxel_grid.h`（事件→体素网格，双线性时间插值）、`intensity_rescaler.h`（auto-HDR 强度重缩放）、`unsharp_mask.h`（Unsharp Mask + 双边滤波）
+- `interacting_maps`（非 DL）：事件累积 → 对数亮度图 → 拉普拉斯松弛（邻域加权平均）→ 灰度帧。**简化实现**：未包含论文的六图互连（I/G/V/F/C/R）和光流/旋转估计
+- `bardow_variational`（非 DL，默认）：事件累积 → 对数亮度图 → Chambolle 投影 TV-L1 去噪 → 灰度帧。**简化实现**：仅使用 `lambda1`（TV 正则化权重），未包含论文的光流联合估计和 `lambda2`-`lambda6`
+- `e2vid/`（DL，默认）：子目录，包含 `e2vid_inference.h`（ONNX Runtime 推理 + 启发式回退 + UNetRecurrent 状态管理）、`event_voxel_grid.h`（事件→体素网格，双线性时间插值）、`intensity_rescaler.h`（auto-HDR 强度重缩放）、`unsharp_mask.h`（Unsharp Mask + 双边滤波）。已从 [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid) 完整移植
 
 **参数与合法范围**（GUI 按当前 `mode` 仅显示对应模式的可调参数，由 `AlgoParamSpec::mode_filter` 控制行可见性）：
 - `mode`：枚举（BardowVariational / InteractingMaps / E2VID），默认 `E2VID`（通用参数，始终可见）
@@ -1751,7 +1751,7 @@ RAW/HDF5 文件
 ### Phase 10：分析模块 (algo/analytics/ 7 个)
 借鉴 jAER `DvsFramer`、`particlecounter`、`freq_analyzer` 等：
 - [x] 4.4.1 主动标记跟踪（滑动窗口聚类 + 事件数颜色映射）
-- [x] 4.4.2 事件→灰度图像重建（非 DL：BardowVariational 默认 / InteractingMaps / DL：E2VID 已移植，含 ONNX Runtime 推理 + 启发式回退）
+- [x] 4.4.2 事件→灰度图像重建（非 DL：BardowVariational 简化版 / InteractingMaps 简化版 / DL：E2VID 已移植且为默认模式，含 ONNX Runtime 推理 + 启发式回退）
 - [x] 4.4.3 光流评估（EPE/PE/角度误差）
 - [x] 4.4.4 ISI 直方图分析
 - [x] 4.4.5 通用颗粒计数器

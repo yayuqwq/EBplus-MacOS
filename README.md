@@ -77,11 +77,46 @@ That's it. The launcher handles Wayland compatibility, HAL plugin paths, and Ope
 | **Motion** | Optical flow (HSV visualization), motion detection |
 | **Detection** | Blob detector, Hough circle, particle counter |
 | **Tracking** | KLT tracker, active marker tracking |
-| **Reconstruction** | Event-to-video (BarrowVariational, InteractingMaps, E2VID) |
+| **Reconstruction** | Event-to-video (E2VID default, BardowVariational, InteractingMaps) |
 | **Analytics** | Frequency detector, flow statistics, ISI analyzer |
 | **Calibration** | Intrinsic (chessboard), extrinsic |
 
 Algorithms are **mutually exclusive** — enabling one disables the previous. Each algorithm supports a **global ROI** (default: center 256×256) to bound computational cost.
+
+#### E2VID Neural Network Reconstruction (Default Mode)
+
+The Event-to-Video algorithm defaults to **E2VID** — a deep-learning model that reconstructs grayscale images from raw event streams. It is ported from [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid) and runs via ONNX Runtime (CPU, multi-threaded).
+
+**Setup** (one-time, ~5 minutes):
+
+```bash
+# 1. Download ONNX Runtime 1.19.2 (Linux x64 CPU) into third_party/
+cd /path/to/GUI-for-openEB
+mkdir -p third_party/onnxruntime && cd third_party/onnxruntime
+wget https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/onnxruntime-linux-x64-1.19.2.tgz
+tar xzf onnxruntime-linux-x64-1.19.2.tgz --strip-components=1
+cd ../..
+
+# 2. Create Python venv for model conversion
+python3 -m venv .venv && . .venv/bin/activate
+pip install torch --index-url https://download.pytorch.org/whl/cpu onnx onnxscript onnxruntime numpy
+deactivate
+
+# 3. Download pre-trained PyTorch weights (~41 MB)
+wget -P models/ http://rpg.ifi.uzh.ch/data/E2VID/models/E2VID_lightweight.pth.tar
+
+# 4. Convert to ONNX (produces models/e2vid_lightweight.onnx)
+. .venv/bin/activate && python models/convert_to_onnx.py && deactivate
+
+# 5. Rebuild (CMake auto-detects ONNX Runtime)
+cmake --build build -- -j$(nproc)
+```
+
+After setup, launch EBplus and enable **Algorithm → Event → Video** — it defaults to E2VID mode with 128×128 ROI, 24 fps, and 1/4 downsample (64×64 inference → upsampled to 128×128). The GUI exposes toggleable parameters (model path, auto-HDR, downsample, unsharp mask, bilateral filter).
+
+> **Without ONNX Runtime**: E2VID falls back to a heuristic mode (voxel-grid sum + sigmoid). BardowVariational and InteractingMaps modes work without any setup but are simplified implementations (TV-L1 denoising / Laplacian relaxation respectively, without the full paper's optical-flow estimation).
+
+See [doc/design.md §4.4.2](doc/design.md) for full algorithm specifications.
 
 ### Theming
 - **5 background colors**: Gray, Green, Yellow, Pink, Blue (default)
