@@ -98,6 +98,11 @@ public:
         smoothing_ms_ = clamp_f(v, 1.0f, 10000.0f);
     }
 
+    /// @brief Sensor width (px) — used by backends for overlay rendering.
+    int width() const { return width_; }
+    /// @brief Sensor height (px) — used by backends for overlay rendering.
+    int height() const { return height_; }
+
     void reset() {
         clusters_.clear();
         trans_x_filt_ = 0.0f;

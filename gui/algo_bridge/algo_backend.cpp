@@ -99,6 +99,9 @@ namespace gui {
 
 namespace {
 
+// Pi as float (kPiF is not available in all OpenCV versions).
+constexpr float kPiF = 3.14159265358979323846F;
+
 // ---- string ↔ value helpers -----------------------------------------------
 
 int to_i(const std::string& s, int def = 0) {
@@ -251,22 +254,87 @@ public:
     }
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
+        // General
         if (k == "mode") {
             int m = to_i(v);
             if (m >= 0 && m <= 7) algo_.set_mode(static_cast<gui_algo::NoiseFilter::Mode>(m));
-        } else if (k == "correlation_time_s") algo_.set_correlation_time_s(to_d(v));
+        }
+        // STCF (mode 1)
+        else if (k == "correlation_time_s") algo_.set_correlation_time_s(to_d(v));
         else if (k == "min_neighbors") algo_.set_min_neighbors(to_i(v));
+        else if (k == "require_polarity_match") algo_.set_require_polarity_match(to_b(v));
+        else if (k == "allow_coincidence") algo_.set_allow_coincidence(to_b(v));
+        // BAF (mode 0)
         else if (k == "baf_dt_us") algo_.set_baf_dt_us(to_i(v));
+        else if (k == "baf_subsample_by") algo_.set_baf_subsample_by(to_i(v));
+        // Refractory (mode 2)
         else if (k == "refractory_us") algo_.set_refractory_period_us(to_i(v));
+        // DWF (mode 3)
+        else if (k == "dwf_window_length") algo_.set_dwf_window_length(to_i(v));
+        else if (k == "dwf_dist_threshold") algo_.set_dwf_dist_threshold(to_i(v));
+        else if (k == "dwf_min_correlated") algo_.set_dwf_min_correlated(to_i(v));
+        else if (k == "dwf_double_mode") algo_.set_dwf_double_mode(to_b(v));
+        // AgePolarity (mode 4)
+        else if (k == "agep_tau_us") algo_.set_tau_us(to_i(v));
+        else if (k == "age_threshold") algo_.set_age_threshold(to_d(v));
+        else if (k == "agep_radius") algo_.set_agep_radius(to_i(v));
+        // Harmonic (mode 5)
+        else if (k == "line_freq_hz") algo_.set_line_freq(to_i(v) == 60 ? gui_algo::NoiseFilter::LineFreq::Hz60 : gui_algo::NoiseFilter::LineFreq::Hz50);
+        else if (k == "notch_q") algo_.set_notch_q(to_d(v));
+        else if (k == "harmonic_threshold") algo_.set_harmonic_threshold(to_d(v));
+        // Repetitious (mode 6)
+        else if (k == "rep_period_us") algo_.set_period_us(to_i(v));
+        else if (k == "rep_tolerance_us") algo_.set_tolerance_us(to_i(v));
+        else if (k == "rep_ratio_shorter") algo_.set_ratio_shorter(to_i(v));
+        else if (k == "rep_ratio_longer") algo_.set_ratio_longer(to_i(v));
+        else if (k == "rep_min_dt_to_store_us") algo_.set_min_dt_to_store_us(to_i(v));
+        // SpatialBP (mode 7)
+        else if (k == "sbp_center_radius_px") algo_.set_center_radius_px(to_i(v));
+        else if (k == "sbp_surround_radius_px") algo_.set_surround_radius_px(to_i(v));
+        else if (k == "sbp_dt_surround_us") algo_.set_dt_surround_us(to_i(v));
+        // Cross-mode flags
         else if (k == "filter_hot_pixels") algo_.set_filter_hot_pixels(to_b(v));
         else if (k == "adaptive_correlation_time") algo_.set_adaptive_correlation_time(to_b(v));
-        else if (k == "line_freq_hz") algo_.set_line_freq(to_i(v) == 60 ? gui_algo::NoiseFilter::LineFreq::Hz60 : gui_algo::NoiseFilter::LineFreq::Hz50);
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
+        // STCF
         if (k == "correlation_time_s") return from_d(algo_.correlation_time_s());
         if (k == "min_neighbors") return from_i(algo_.min_neighbors());
+        if (k == "require_polarity_match") return from_b(algo_.require_polarity_match());
+        if (k == "allow_coincidence") return from_b(algo_.allow_coincidence());
+        // BAF
+        if (k == "baf_dt_us") return from_i(algo_.baf_dt_us());
+        if (k == "baf_subsample_by") return from_i(algo_.baf_subsample_by());
+        // Refractory
+        if (k == "refractory_us") return from_i(algo_.refractory_period_us());
+        // DWF
+        if (k == "dwf_window_length") return from_i(algo_.dwf_window_length());
+        if (k == "dwf_dist_threshold") return from_i(algo_.dwf_dist_threshold());
+        if (k == "dwf_min_correlated") return from_i(algo_.dwf_min_correlated());
+        if (k == "dwf_double_mode") return from_b(algo_.dwf_double_mode());
+        // AgePolarity
+        if (k == "agep_tau_us") return from_i(algo_.tau_us());
+        if (k == "age_threshold") return from_d(algo_.age_threshold());
+        if (k == "agep_radius") return from_i(algo_.agep_radius());
+        // Harmonic
+        if (k == "line_freq_hz") return from_i(algo_.line_freq_hz());
+        if (k == "notch_q") return from_d(algo_.notch_q());
+        if (k == "harmonic_threshold") return from_d(algo_.harmonic_threshold());
+        // Repetitious
+        if (k == "rep_period_us") return from_i(algo_.period_us());
+        if (k == "rep_tolerance_us") return from_i(algo_.tolerance_us());
+        if (k == "rep_ratio_shorter") return from_i(algo_.ratio_shorter());
+        if (k == "rep_ratio_longer") return from_i(algo_.ratio_longer());
+        if (k == "rep_min_dt_to_store_us") return from_i(algo_.min_dt_to_store_us());
+        // SpatialBP
+        if (k == "sbp_center_radius_px") return from_i(algo_.center_radius_px());
+        if (k == "sbp_surround_radius_px") return from_i(algo_.surround_radius_px());
+        if (k == "sbp_dt_surround_us") return from_i(algo_.dt_surround_us());
+        // Cross-mode
         if (k == "filter_hot_pixels") return from_b(algo_.filter_hot_pixels());
+        if (k == "adaptive_correlation_time") return from_b(algo_.adaptive_correlation_time());
+        if (k == "mode") return from_i(static_cast<int>(algo_.mode()));
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -288,7 +356,8 @@ public:
     AlgoResult pull_result() override {
         AlgoResult r;
         r.filtered_events.assign(buf_.data(), buf_.data() + last_kept_);
-        r.status = "noise_filter: kept " + std::to_string(last_kept_) + "/" +
+        r.status = "noise_filter[" + std::to_string(static_cast<int>(algo_.mode())) +
+                   "]: kept " + std::to_string(last_kept_) + "/" +
                    std::to_string(buf_.size()) + " (" + std::to_string(last_rate_ * 100) + "%)" +
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
@@ -381,8 +450,37 @@ public:
         AlgoResult r;
         r.filtered_events = buf_;
         const auto m = algo_.smoothed_motion();
+        // Translation vector (jAER OpticalGyro.drawVector):
+        // arrow from chip center showing cumulative shift.
+        const int cx = algo_.width() / 2;
+        const int cy = algo_.height() / 2;
+        const float scale = 5.0F;  // px/px for visibility
+        OverlayLine tl;
+        tl.x1 = cx; tl.y1 = cy;
+        tl.x2 = cx + static_cast<int>(m.dx * scale);
+        tl.y2 = cy + static_cast<int>(m.dy * scale);
+        r.lines.push_back(tl);
+        // Rotation indicator (jAER rotationAngle): an arc segment.
+        if (std::fabs(m.dtheta) > 1e-3F) {
+            const int R = 50;
+            const float a0 = -static_cast<float>(kPiF) * 0.25F;
+            const float a1 = a0 + m.dtheta * static_cast<float>(kPiF) / 180.0F * 2.0F;
+            OverlayLine rl;
+            rl.x1 = cx + static_cast<int>(std::cos(a0) * R);
+            rl.y1 = cy + static_cast<int>(std::sin(a0) * R);
+            rl.x2 = cx + static_cast<int>(std::cos(a1) * R);
+            rl.y2 = cy + static_cast<int>(std::sin(a1) * R);
+            r.lines.push_back(rl);
+        }
+        // Motion text overlay.
+        OverlayText t;
+        t.x = 10; t.y = 20;
+        t.text = "EIS trans=(" + std::to_string(static_cast<int>(m.dx)) + "," +
+                  std::to_string(static_cast<int>(m.dy)) + ") rot=" +
+                  std::to_string(static_cast<int>(m.dtheta)) + "deg";
+        r.texts.push_back(t);
         r.status = "EIS: shift=(" + std::to_string(m.dx) + "," +
-                   std::to_string(m.dy) + ")" +
+                   std::to_string(m.dy) + ") rot=" + std::to_string(m.dtheta) + "deg" +
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
@@ -434,7 +532,7 @@ public:
 // Group B: Overlay detectors (process events, produce overlay data)
 // ===========================================================================
 
-/// ObjectTracker backend — tracked objects as overlay boxes.
+/// ObjectTracker backend — tracked objects as overlay boxes + trajectories.
 class ObjectTrackerBackend final : public AlgoBackend {
     gui_algo::ObjectTracker algo_;
     std::vector<Metavision::EventCD> passthrough_;
@@ -453,10 +551,22 @@ public:
         else if (k == "min_cluster_events") algo_.set_min_cluster_events(to_i(v));
         else if (k == "max_lost_age_s") algo_.set_max_lost_age_s(to_d(v));
         else if (k == "enable_velocity_prediction") algo_.set_enable_velocity_prediction(to_b(v));
+        else if (k == "location_mixing_factor") algo_.set_location_mixing_factor(static_cast<float>(to_d(v)));
+        else if (k == "predictive_velocity_factor") algo_.set_predictive_velocity_factor(static_cast<float>(to_d(v)));
+        else if (k == "mass_decay_tau_us") algo_.set_mass_decay_tau_us(to_i(v));
+        else if (k == "threshold_mass_for_visible") algo_.set_threshold_mass_for_visible(static_cast<float>(to_d(v)));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
         if (k == "cluster_size_px") return from_i(algo_.cluster_size_px());
+        if (k == "cluster_time_us") return from_i(algo_.cluster_time_us());
+        if (k == "min_cluster_events") return from_i(algo_.min_cluster_events());
+        if (k == "max_lost_age_s") return from_d(algo_.max_lost_age_s());
+        if (k == "enable_velocity_prediction") return from_b(algo_.enable_velocity_prediction());
+        if (k == "location_mixing_factor") return from_d(algo_.location_mixing_factor());
+        if (k == "predictive_velocity_factor") return from_d(algo_.predictive_velocity_factor());
+        if (k == "mass_decay_tau_us") return from_i(algo_.mass_decay_tau_us());
+        if (k == "threshold_mass_for_visible") return from_d(algo_.threshold_mass_for_visible());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -475,6 +585,25 @@ public:
             box.w = o.bbox.width; box.h = o.bbox.height;
             box.id = o.id;
             r.boxes.push_back(box);
+            // Velocity arrow (jAER Cluster.drawVelocityVector).
+            OverlayLine v;
+            v.x1 = static_cast<int>(o.x);
+            v.y1 = static_cast<int>(o.y);
+            // Scale velocity (px/s) to a visible length (assume 30ms window).
+            v.x2 = v.x1 + static_cast<int>(o.vx * 0.03F);
+            v.y2 = v.y1 + static_cast<int>(o.vy * 0.03F);
+            r.lines.push_back(v);
+            // Trajectory (jAER ClusterPath).
+            if (!o.trajectory.empty()) {
+                OverlayTrajectory tr;
+                tr.id = o.id;
+                tr.points.reserve(o.trajectory.size());
+                for (const auto& p : o.trajectory) {
+                    tr.points.emplace_back(static_cast<int>(p.x),
+                                            static_cast<int>(p.y));
+                }
+                r.trajectories.push_back(tr);
+            }
             OverlayText t;
             t.x = o.bbox.x; t.y = o.bbox.y > 12 ? o.bbox.y - 12 : 0;
             t.text = "#" + std::to_string(o.id) + " v=(" +
@@ -584,9 +713,14 @@ public:
             int m = to_i(v);
             if (m >= 0 && m <= 3) algo_.set_mode(static_cast<gui_algo::SparseOpticalFlow::Mode>(m));
         } else if (k == "search_radius") algo_.set_search_radius_px(to_i(v));
+        else if (k == "time_window_us") algo_.set_time_window_us(to_i(v));
+        else if (k == "cluster_ema_alpha") algo_.set_cluster_ema_alpha(static_cast<float>(to_d(v)));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
+        if (k == "search_radius") return from_i(algo_.search_radius_px());
+        if (k == "time_window_us") return from_i(algo_.time_window_us());
+        if (k == "cluster_ema_alpha") return from_d(algo_.cluster_ema_alpha());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -688,6 +822,9 @@ public:
             decay_us_ = static_cast<Metavision::timestamp>(to_i(v));
             if (algo_) algo_->set_accumulator_decay_us(decay_us_);
         }
+        else if (k == "hough_decay_factor") {
+            if (algo_) algo_->set_hough_decay_factor(static_cast<float>(to_d(v)));
+        }
         else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
         else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
         else if (k == "roi_y") { roi_.y = to_i(v); need_rebuild = true; }
@@ -697,6 +834,10 @@ public:
     }
     std::string get_param(const std::string& k) const override {
         if (k == "roi_enabled") return from_b(roi_.enabled);
+        if (k == "threshold" && algo_) return from_i(algo_->threshold());
+        if (k == "num_theta_bins" && algo_) return from_i(algo_->num_theta_bins());
+        if (k == "num_rho_bins" && algo_) return from_i(algo_->num_rho_bins());
+        if (k == "hough_decay_factor" && algo_) return from_d(algo_->hough_decay_factor());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -725,6 +866,25 @@ public:
             l.x2 = static_cast<int>(hl.end.x) + dx;
             l.y2 = static_cast<int>(hl.end.y) + dy;
             r.lines.push_back(l);
+        }
+        // Aux frame: Hough θ-ρ accumulator (jAER HoughLineTracker GL render).
+        if (algo_) {
+            const auto& accum = algo_->accum();
+            const int nt = algo_->num_theta_bins();
+            const int nr = algo_->num_rho_bins();
+            if (nt > 0 && nr > 0 && static_cast<int>(accum.size()) == nt * nr) {
+                cv::Mat hough(nt, nr, CV_32F, const_cast<float*>(accum.data()));
+                double mn, mx;
+                cv::minMaxLoc(hough, &mn, &mx);
+                cv::Mat vis;
+                if (mx > mn) {
+                    hough.convertTo(vis, CV_8U, 255.0 / (mx - mn), -mn * 255.0 / (mx - mn));
+                } else {
+                    vis = cv::Mat::zeros(nt, nr, CV_8U);
+                }
+                cv::applyColorMap(vis, r.aux_frame, cv::COLORMAP_JET);
+                r.has_aux_frame = true;
+            }
         }
         r.status = "hough_line: " + std::to_string(last_.size()) + " lines" +
                    std::string(roi_.enabled ? " (ROI)" : " (full)");
@@ -802,6 +962,14 @@ public:
     }
     std::string get_param(const std::string& k) const override {
         if (k == "roi_enabled") return from_b(roi_.enabled);
+        if (k == "min_radius") return from_i(min_radius_);
+        if (k == "max_radius") return from_i(max_radius_);
+        if (k == "threshold") return from_i(threshold_);
+        if (k == "decay" && algo_) return from_d(algo_->decay());
+        if (k == "buffer_length" && algo_) return from_i(algo_->buffer_length());
+        if (k == "nr_max" && algo_) return from_i(algo_->nr_max());
+        if (k == "decay_mode" && algo_) return from_b(algo_->decay_mode());
+        if (k == "loc_depression" && algo_) return from_b(algo_->loc_depression());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -839,6 +1007,26 @@ public:
             oc.cy = static_cast<int>(c.center.y) + dy;
             oc.r = static_cast<int>(c.radius);
             r.circles.push_back(oc);
+        }
+        // Aux frame: per-pixel Hough accumulator (jAER HoughCircleTracker GL).
+        if (algo_) {
+            const auto& accum = algo_->accum();
+            const int aw = (roi_.enabled && roi_.rw > 0) ? roi_.rw : sensor_w_;
+            const int ah = (roi_.enabled && roi_.rh > 0) ? roi_.rh : sensor_h_;
+            if (aw > 0 && ah > 0 &&
+                static_cast<int>(accum.size()) == aw * ah) {
+                cv::Mat hough(ah, aw, CV_32F, const_cast<float*>(accum.data()));
+                double mn, mx;
+                cv::minMaxLoc(hough, &mn, &mx);
+                cv::Mat vis;
+                if (mx > mn) {
+                    hough.convertTo(vis, CV_8U, 255.0 / (mx - mn), -mn * 255.0 / (mx - mn));
+                } else {
+                    vis = cv::Mat::zeros(ah, aw, CV_8U);
+                }
+                cv::applyColorMap(vis, r.aux_frame, cv::COLORMAP_JET);
+                r.has_aux_frame = true;
+            }
         }
         r.status = "hough_circle: " + std::to_string(last_.size()) + " circles" +
                    std::string(roi_.enabled ? " (ROI)" : " (full)");
@@ -1736,30 +1924,79 @@ class OrientationFilterBackend final : public AlgoBackend {
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
+    std::vector<int> last_orientations_;  // per-event orientation labels
     int hist_[gui_algo::OrientationFilter::kNumOrientations]{};
 public:
     OrientationFilterBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
         if (k == "tau_us") algo_.set_time_window_us(to_i(v));
+        else if (k == "min_neighbors") algo_.set_min_neighbors(to_i(v));
+        else if (k == "min_dt_threshold_us") algo_.set_min_dt_threshold_us(to_i(v));
+        else if (k == "multi_ori_output") algo_.set_multi_ori_output(to_b(v));
+        else if (k == "use_average_dt") algo_.set_use_average_dt(to_b(v));
+        else if (k == "ori_history_enabled") algo_.set_ori_history_enabled(to_b(v));
+        else if (k == "pass_all_events") algo_.set_pass_all_events(to_b(v));
+        else if (k == "dt_reject_threshold_us") algo_.set_dt_reject_threshold_us(to_i(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
+        if (k == "tau_us") return from_i(algo_.time_window_us());
+        if (k == "min_neighbors") return from_i(algo_.min_neighbors());
+        if (k == "min_dt_threshold_us") return from_i(algo_.min_dt_threshold_us());
+        if (k == "multi_ori_output") return from_b(algo_.multi_ori_output());
+        if (k == "use_average_dt") return from_b(algo_.use_average_dt());
+        if (k == "ori_history_enabled") return from_b(algo_.ori_history_enabled());
+        if (k == "pass_all_events") return from_b(algo_.pass_all_events());
+        if (k == "dt_reject_threshold_us") return from_i(algo_.dt_reject_threshold_us());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         passthrough_.assign(b, e);
         auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
                                    passthrough_.size(), roi_buf_);
-        std::vector<int> out;
-        algo_.process(ev, n, out);
-        for (int v : out) {
-            if (v >= 0 && v < gui_algo::OrientationFilter::kNumOrientations) ++hist_[v];
+        last_orientations_.resize(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            last_orientations_[i] = algo_.classify(ev[i]);
+            if (last_orientations_[i] >= 0 &&
+                last_orientations_[i] < gui_algo::OrientationFilter::kNumOrientations) {
+                ++hist_[last_orientations_[i]];
+            }
         }
     }
     AlgoResult pull_result() override {
         AlgoResult r;
         r.filtered_events = passthrough_;
+        // Per-event colored events (jAER DvsOrientationEvent coloring).
+        r.colored_events.reserve(last_orientations_.size());
+        for (std::size_t i = 0; i < last_orientations_.size() && i < passthrough_.size(); ++i) {
+            const int ori = last_orientations_[i];
+            if (ori < 0) continue;
+            const cv::Vec3b c = algo_.color(ori);
+            ColoredEvent ce;
+            ce.event = passthrough_[i];
+            ce.r = c[2]; ce.g = c[1]; ce.b = c[0];  // BGR -> RGB
+            r.colored_events.push_back(ce);
+        }
+        // Global orientation vector (from chip center, jAER computeGlobalOriVector).
+        {
+            float gx = 0, gy = 0;
+            for (int i = 0; i < gui_algo::OrientationFilter::kNumOrientations; ++i) {
+                const float angle = i * kPiF * 0.25F;
+                gx += std::cos(angle) * static_cast<float>(hist_[i]);
+                gy += std::sin(angle) * static_cast<float>(hist_[i]);
+            }
+            const int cx = algo_.width() / 2;
+            const int cy = algo_.height() / 2;
+            const float scale = 0.02F;
+            OverlayLine gl;
+            gl.x1 = cx - static_cast<int>(gx * scale);
+            gl.y1 = cy - static_cast<int>(gy * scale);
+            gl.x2 = cx + static_cast<int>(gx * scale);
+            gl.y2 = cy + static_cast<int>(gy * scale);
+            r.lines.push_back(gl);
+        }
+        // Histogram text + legend.
         OverlayText t;
         t.x = 10; t.y = 20;
         t.text = "orient: 0=" + std::to_string(hist_[0]) +
@@ -1767,11 +2004,12 @@ public:
                  " 90=" + std::to_string(hist_[2]) +
                  " 135=" + std::to_string(hist_[3]);
         r.texts.push_back(t);
-        r.status = "orient_filter: histogram updated" +
+        r.status = "orient_filter: " + std::to_string(r.colored_events.size()) +
+                   " colored events" +
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
-    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); std::fill(hist_, hist_ + 4, 0); }
+    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); last_orientations_.clear(); std::fill(hist_, hist_ + 4, 0); }
 };
 
 /// DirectionSelectiveFilter backend — direction histogram as overlay text.
@@ -1781,6 +2019,7 @@ class DirectionSelectiveBackend final : public AlgoBackend {
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
+    std::vector<int> last_dirs_;  // per-event direction labels
 public:
     DirectionSelectiveBackend(int w, int h) : algo_(w, h) {
         roi_.init(w, h);
@@ -1789,21 +2028,75 @@ public:
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
         if (k == "tau_us") algo_.set_time_window_us(to_i(v));
+        else if (k == "min_dt_us") algo_.set_min_dt_us(to_i(v));
+        else if (k == "search_distance") algo_.set_search_distance(to_i(v));
+        else if (k == "tau_low_ms") algo_.set_tau_low_ms(to_i(v));
+        else if (k == "enable_global_mode") algo_.set_enable_global_mode(to_b(v));
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
+        if (k == "tau_us") return from_i(algo_.time_window_us());
+        if (k == "min_dt_us") return from_i(algo_.min_dt_us());
+        if (k == "search_distance") return from_i(algo_.search_distance());
+        if (k == "tau_low_ms") return from_i(algo_.tau_low_ms());
+        if (k == "enable_global_mode") return from_b(algo_.enable_global_mode());
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         passthrough_.assign(b, e);
         auto [ev, n] = roi_.apply(as_events(passthrough_.data()),
                                    passthrough_.size(), roi_buf_);
-        std::vector<int> out;
-        algo_.process(ev, n, out);
+        last_dirs_.resize(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            last_dirs_[i] = algo_.classify(ev[i]);
+        }
     }
     AlgoResult pull_result() override {
         AlgoResult r;
         r.filtered_events = passthrough_;
+        // Per-event colored events (jAER DirEvent coloring, 8 colors).
+        // 8-direction palette: 0=E red, 1=NE orange, 2=N yellow, 3=NW green,
+        // 4=W cyan, 5=SW blue, 6=S magenta, 7=SE white.
+        static const std::uint8_t pal[8][3] = {
+            {255, 0, 0}, {255, 165, 0}, {255, 255, 0}, {0, 255, 0},
+            {0, 255, 255}, {0, 0, 255}, {255, 0, 255}, {255, 255, 255}};
+        r.colored_events.reserve(last_dirs_.size());
+        for (std::size_t i = 0; i < last_dirs_.size() && i < passthrough_.size(); ++i) {
+            const int d = last_dirs_[i];
+            if (d < 0 || d >= 8) continue;
+            ColoredEvent ce;
+            ce.event = passthrough_[i];
+            ce.r = pal[d][0]; ce.g = pal[d][1]; ce.b = pal[d][2];
+            r.colored_events.push_back(ce);
+        }
+        // Global motion vectors (jAER translation/rotation/expansion).
+        // Translation arrow from chip center scaled for visibility.
+        const int cx = algo_.width() / 2;
+        const int cy = algo_.height() / 2;
+        const auto tr = algo_.translation();
+        const float tlen = std::hypot(tr.x, tr.y);
+        if (tlen > 1.0F) {
+            const float scale = 50.0F / std::max(1.0F, tlen);
+            OverlayLine tl;
+            tl.x1 = cx; tl.y1 = cy;
+            tl.x2 = cx + static_cast<int>(tr.x * scale);
+            tl.y2 = cy + static_cast<int>(tr.y * scale);
+            r.lines.push_back(tl);
+        }
+        // Rotation indicator: an arc-like pair of segments at chip center.
+        const float rot = algo_.rotation();
+        if (std::fabs(rot) > 1e-3F) {
+            const int R = 40;
+            const float a0 = 0.0F;
+            const float a1 = rot * 0.5F;
+            OverlayLine rl;
+            rl.x1 = cx + static_cast<int>(std::cos(a0) * R);
+            rl.y1 = cy + static_cast<int>(std::sin(a0) * R);
+            rl.x2 = cx + static_cast<int>(std::cos(a1) * R);
+            rl.y2 = cy + static_cast<int>(std::sin(a1) * R);
+            r.lines.push_back(rl);
+        }
+        // Direction histogram text.
         const auto& hist = algo_.global_histogram();
         OverlayText t;
         t.x = 10; t.y = 40;
@@ -1812,12 +2105,21 @@ public:
             t.text += std::to_string(i * 45) + "=" + std::to_string(hist[i]) + " ";
         }
         r.texts.push_back(t);
+        // Motion text overlay.
+        OverlayText mt;
+        mt.x = 10; mt.y = 60;
+        mt.text = "trans=(" + std::to_string(static_cast<int>(tr.x)) + "," +
+                  std::to_string(static_cast<int>(tr.y)) + ") rot=" +
+                  std::to_string(static_cast<int>(rot * 180.0F / static_cast<float>(kPiF))) +
+                  " exp=" + std::to_string(algo_.expansion());
+        r.texts.push_back(mt);
         const int dom = algo_.global_direction();
         r.status = "dir_selective: dominant=" + std::to_string(dom) +
+                   " colored=" + std::to_string(r.colored_events.size()) +
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
-    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); }
+    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); last_dirs_.clear(); }
 };
 
 /// BackgroundMaskFilter backend — produces background mask frame.

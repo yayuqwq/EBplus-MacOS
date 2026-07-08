@@ -1,14 +1,13 @@
 // algo/cv/orientation_filter.h — 4-orientation edge labelling from time surfaces.
 //
-// Inspired by jAER AbstractOrientationFilter (design §4.3.7). For each event a
-// 3x3 neighbourhood timestamp matrix is gathered (same polarity only); the
-// freshness-weighted position covariance yields a principal eigenvector whose
-// angle is quantised to one of 4 orientations (0/45/90/135 deg). A
-// per-orientation temporal coincidence gate (jAER minDtThresholdUs) suppresses
-// events whose along-orientation neighbours are too old, and a
-// polarity-separated (two-channel) time surface avoids ON/OFF contamination.
-// Output is an orientation index per event plus a colour for pseudo-colour
-// rendering. Header-only.
+// Faithful port of jAER SimpleOrientationFilter / AbstractOrientationFilter
+// (design §4.3.7). For each event the lastTimesMap is updated first, then for
+// each of 4 orientations the delta-times along the receptive-field offsets are
+// gathered (same polarity only). The average (or max) dt per orientation is
+// computed with outlier rejection; a WTA selects the minimum-dt orientation.
+// An orientation is emitted only if its dt is below minDtThresholdUs. An
+// optional oriHistory map provides temporal smoothing. Output is an orientation
+// index per event plus a colour for pseudo-colour rendering. Header-only.
 
 #ifndef GUI_ALGO_CV_ORIENTATION_FILTER_H
 #define GUI_ALGO_CV_ORIENTATION_FILTER_H
@@ -32,6 +31,7 @@
 namespace gui_algo {
 
 /// @brief Quantises event edges into 4 orientations from a local time surface.
+/// Faithful port of jAER SimpleOrientationFilter (min-dt WTA method).
 class OrientationFilter {
 public:
     enum class ColorMap { Fixed4, HSV };
@@ -45,7 +45,9 @@ public:
     OrientationFilter(int width, int height)
         : width_(width), height_(height),
           surface_(static_cast<std::size_t>(2) * static_cast<std::size_t>(width)
-                       * static_cast<std::size_t>(height), 0) {}
+                       * static_cast<std::size_t>(height), 0),
+          ori_history_(static_cast<std::size_t>(width)
+                           * static_cast<std::size_t>(height), 0) {}
 
     void set_time_window_us(int v) { time_window_us_ = clamp_i(v, 1000, 50000); }
     void set_min_neighbors(int v) { min_neighbors_ = clamp_i(v, 1, 8); }
@@ -54,15 +56,29 @@ public:
     /// per-orientation aggregate delta-time is below this (us). Default 100000.
     void set_min_dt_threshold_us(int v) { min_dt_threshold_us_ = clamp_i(v, 1, 1000000); }
     /// @brief multi-ori output (jAER multiOriOutputEnabled). false = WTA
-    /// (winner-take-all, PCA orientation gated by coincidence); true = emit the
-    /// best-coincidence orientation (jAER-style min-dt selection).
+    /// (only the best orientation per event); true = emit all orientations
+    /// that pass the coincidence gate.
     void set_multi_ori_output(bool v) { multi_ori_output_ = v; }
+    /// @brief jAER useAverageDtEnabled: true = average dt, false = max dt.
+    void set_use_average_dt(bool v) { use_average_dt_ = v; }
+    /// @brief jAER oriHistoryEnabled: temporal smoothing of orientation labels.
+    void set_ori_history_enabled(bool v) { ori_history_enabled_ = v; }
+    /// @brief jAER passAllEvents: if true, events with no valid orientation
+    /// are still passed through (with orientation = -1).
+    void set_pass_all_events(bool v) { pass_all_events_ = v; }
+    /// @brief jAER dtRejectThreshold: delta-times above this are rejected as
+    /// outliers when computing per-orientation average/max dt.
+    void set_dt_reject_threshold_us(int v) { dt_reject_threshold_us_ = clamp_i(v, 1, 10000000); }
 
     int time_window_us() const { return time_window_us_; }
     int min_neighbors() const { return min_neighbors_; }
     ColorMap color_map() const { return color_map_; }
     int min_dt_threshold_us() const { return min_dt_threshold_us_; }
     bool multi_ori_output() const { return multi_ori_output_; }
+    bool use_average_dt() const { return use_average_dt_; }
+    bool ori_history_enabled() const { return ori_history_enabled_; }
+    bool pass_all_events() const { return pass_all_events_; }
+    int dt_reject_threshold_us() const { return dt_reject_threshold_us_; }
     int width() const { return width_; }
     int height() const { return height_; }
 
@@ -70,13 +86,124 @@ public:
     /// @return Orientation index in [0,3] or -1 if too few recent neighbours or
     /// the per-orientation coincidence gate fails.
     int classify(const Event& e) {
-        int orient = -1;
-        if (e.x < width_ && e.y < height_) {
-            orient = compute_orientation(e);
-            const int pol = e.p ? 1 : 0;
-            surface_[idx_of(e.x, e.y, pol)] = e.t;
+        if (e.x >= width_ || e.y >= height_) return -1;
+        const int pol = e.p ? 1 : 0;
+
+        // jAER L135: update lastTimesMap BEFORE computing orientation.
+        surface_[idx_of(e.x, e.y, pol)] = e.t;
+
+        // For each orientation, gather delta-times along the RF offsets.
+        // jAER L143-157.
+        std::array<Metavision::timestamp, kNumOrientations> oridts;
+        std::array<Metavision::timestamp, kNumOrientations> ori_decide_helper;
+        oridts.fill(std::numeric_limits<Metavision::timestamp>::max());
+        ori_decide_helper.fill(std::numeric_limits<Metavision::timestamp>::max());
+
+        for (int ori = 0; ori < kNumOrientations; ++ori) {
+            const int bdx = kBaseDx[ori];
+            const int bdy = kBaseDy[ori];
+            std::array<Metavision::timestamp, kRfSize> dts{};
+            int count = 0;
+            for (int s = -kRfLength; s <= kRfLength; ++s) {
+                if (s == 0) continue;
+                const int idx = (s + kRfLength) - (s > 0 ? 1 : 0); // compact index
+                const int nx = e.x + s * bdx;
+                const int ny = e.y + s * bdy;
+                if (nx < 0 || nx >= width_ || ny < 0 || ny >= height_) {
+                    dts[idx < kRfSize ? idx : 0] = std::numeric_limits<Metavision::timestamp>::max();
+                    continue;
+                }
+                const Metavision::timestamp lt = surface_[idx_of(nx, ny, pol)];
+                if (lt == 0) {
+                    dts[idx < kRfSize ? idx : 0] = std::numeric_limits<Metavision::timestamp>::max();
+                    continue;
+                }
+                dts[idx < kRfSize ? idx : 0] = e.t - lt;
+                ++count;
+            }
+
+            if (use_average_dt_) {
+                // jAER L160-191: average dt with outlier rejection + variance.
+                Metavision::timestamp sum = 0;
+                int valid = 0;
+                for (int i = 0; i < kRfSize; ++i) {
+                    const Metavision::timestamp dt = dts[i];
+                    if (dt < 0 || dt > dt_reject_threshold_us_) continue;
+                    sum += dt;
+                    ++valid;
+                }
+                if (valid > 0) {
+                    oridts[ori] = sum / valid;
+                    // Variance estimator (jAER oriDecideHelper).
+                    double var = 0.0;
+                    for (int i = 0; i < kRfSize; ++i) {
+                        const Metavision::timestamp dt = dts[i];
+                        if (dt < 0 || dt > dt_reject_threshold_us_) continue;
+                        const double diff = static_cast<double>(dt) - static_cast<double>(oridts[ori]);
+                        var += diff * diff;
+                    }
+                    var /= static_cast<double>(valid);
+                    ori_decide_helper[ori] = static_cast<Metavision::timestamp>(var);
+                }
+            } else {
+                // jAER L193-218: max dt with outlier rejection.
+                Metavision::timestamp maxdt = std::numeric_limits<Metavision::timestamp>::min();
+                Metavision::timestamp second_max = std::numeric_limits<Metavision::timestamp>::min();
+                for (int i = 0; i < kRfSize; ++i) {
+                    const Metavision::timestamp dt = dts[i];
+                    if (dt < 0 || dt > dt_reject_threshold_us_) continue;
+                    if (dt > maxdt) {
+                        second_max = maxdt;
+                        maxdt = dt;
+                    } else if (dt > second_max) {
+                        second_max = dt;
+                    }
+                }
+                if (maxdt > std::numeric_limits<Metavision::timestamp>::min()) {
+                    oridts[ori] = maxdt;
+                    ori_decide_helper[ori] = second_max;
+                }
+            }
         }
-        return orient;
+
+        // jAER L220-254: WTA — find the orientation with the minimum dt.
+        // Ties are broken by the decideHelper (variance or second-max).
+        Metavision::timestamp mindt = static_cast<Metavision::timestamp>(min_dt_threshold_us_);
+        Metavision::timestamp decide_helper = 0;
+        int dir = -1;
+        for (int ori = 0; ori < kNumOrientations; ++ori) {
+            if (oridts[ori] < mindt) {
+                mindt = oridts[ori];
+                decide_helper = ori_decide_helper[ori];
+                dir = ori;
+            } else if (oridts[ori] == mindt) {
+                if (ori_decide_helper[ori] <= decide_helper) {
+                    mindt = oridts[ori];
+                    dir = ori;
+                }
+            }
+        }
+
+        if (dir == -1) {
+            // jAER L256-258: no good orientation found.
+            return pass_all_events_ ? -1 : -1;
+        }
+
+        // jAER L260-275: oriHistory temporal smoothing.
+        if (ori_history_enabled_) {
+            const std::size_t hidx = static_cast<std::size_t>(e.y) * width_ + e.x;
+            const int hist = ori_history_[hidx];
+            // IIR smooth: move history towards current orientation.
+            // jAER uses oriHistoryMixingFactor (default 0.25).
+            const float mix = ori_history_mixing_factor_;
+            const float smoothed = hist * (1.0F - mix) + static_cast<float>(dir) * mix;
+            int smoothed_ori = static_cast<int>(std::round(smoothed)) % kNumOrientations;
+            if (smoothed_ori < 0) smoothed_ori += kNumOrientations;
+            ori_history_[hidx] = smoothed_ori;
+            return smoothed_ori;
+        }
+
+        return dir;
     }
 
     /// @brief Classifies a batch; fills @p out (resized to @p count).
@@ -111,7 +238,10 @@ public:
         return palette[orient];
     }
 
-    void reset() { std::fill(surface_.begin(), surface_.end(), 0); }
+    void reset() {
+        std::fill(surface_.begin(), surface_.end(), 0);
+        std::fill(ori_history_.begin(), ori_history_.end(), 0);
+    }
 
 private:
     static int clamp_i(int v, int lo, int hi) {
@@ -125,108 +255,14 @@ private:
              + static_cast<std::size_t>(y) * width_ + x;
     }
 
+    /// RF size = 2 * kRfLength (offsets at s = -3,-2,-1,1,2,3).
+    static constexpr int kRfSize = 2 * kRfLength;
+
     /// @brief Per-orientation along-direction unit offsets (jAER baseOffsets).
     /// ori 0 = horizontal (1,0), 1 = 45 deg (1,1), 2 = vertical (0,1),
     /// 3 = 135 deg (-1,1).
     static constexpr int kBaseDx[kNumOrientations] = {1, 1, 0, -1};
     static constexpr int kBaseDy[kNumOrientations] = {0, 1, 1, 1};
-
-    int compute_orientation(const Event& e) const {
-        const double win = static_cast<double>(time_window_us_);
-        const int pol = e.p ? 1 : 0;
-
-        // --- PCA over the 3x3 same-polarity neighbourhood (self-developed) ---
-        // The centre pixel's own previous timestamp is excluded from the
-        // correlation (it is not a neighbour).
-        double sx = 0.0, sy = 0.0, sxx = 0.0, syy = 0.0, sxy = 0.0, wsum = 0.0;
-        int recent = 0;
-        for (int dy = -1; dy <= 1; ++dy) {
-            const int ny = e.y + dy;
-            if (ny < 0 || ny >= height_) continue;
-            for (int dx = -1; dx <= 1; ++dx) {
-                if (dx == 0 && dy == 0) continue;  // exclude centre
-                const int nx = e.x + dx;
-                if (nx < 0 || nx >= width_) continue;
-                const Metavision::timestamp lt = surface_[idx_of(nx, ny, pol)];
-                if (lt == 0) continue;
-                const double diff = static_cast<double>(e.t - lt);
-                if (diff < 0.0 || diff > win) continue;
-                const double w = 1.0 - diff / win;     // freshness weight
-                const double px = static_cast<double>(nx);
-                const double py = static_cast<double>(ny);
-                sx += w * px;
-                sy += w * py;
-                sxx += w * px * px;
-                syy += w * py * py;
-                sxy += w * px * py;
-                wsum += w;
-                ++recent;
-            }
-        }
-        int pca_orient = -1;
-        if (recent >= min_neighbors_ && wsum > 0.0) {
-            // Weighted covariance of positions (principal-axis orientation).
-            const double cxx = sxx / wsum - (sx / wsum) * (sx / wsum);
-            const double cyy = syy / wsum - (sy / wsum) * (sy / wsum);
-            const double cxy = sxy / wsum - (sx / wsum) * (sy / wsum);
-            double theta = 0.5 * std::atan2(2.0 * cxy, cxx - cyy); // [-pi/2, pi/2]
-            if (theta < 0.0) theta += CV_PI;                       // [0, pi)
-            const double deg = theta * 180.0 / CV_PI;
-            int q = static_cast<int>(std::floor(deg / 45.0 + 0.5));
-            if (q >= kNumOrientations) q = 0;
-            pca_orient = q;
-        }
-
-        // --- jAER per-orientation coincidence gate (same polarity) ---
-        // oridts[ori] = average delta-time over the along-orientation RF
-        // offsets (length kRfLength, width 0). Delta times outside
-        // [0, dtRejectThreshold] are rejected as outliers.
-        const Metavision::timestamp dt_reject =
-            static_cast<Metavision::timestamp>(min_dt_threshold_us_) * 5;
-        const Metavision::timestamp dt_inf =
-            std::numeric_limits<Metavision::timestamp>::max();
-        std::array<Metavision::timestamp, kNumOrientations> oridts{
-            dt_inf, dt_inf, dt_inf, dt_inf};
-        for (int ori = 0; ori < kNumOrientations; ++ori) {
-            const int bdx = kBaseDx[ori];
-            const int bdy = kBaseDy[ori];
-            Metavision::timestamp sum = 0;
-            int count = 0;
-            for (int s = -kRfLength; s <= kRfLength; ++s) {
-                if (s == 0) continue;  // exclude centre
-                const int nx = e.x + s * bdx;
-                const int ny = e.y + s * bdy;
-                if (nx < 0 || nx >= width_ || ny < 0 || ny >= height_) continue;
-                const Metavision::timestamp lt = surface_[idx_of(nx, ny, pol)];
-                if (lt == 0) continue;
-                const Metavision::timestamp dt = e.t - lt;
-                if (dt < 0 || dt > dt_reject) continue;
-                sum += dt;
-                ++count;
-            }
-            if (count > 0) oridts[ori] = sum / count;
-        }
-
-        // WTA / coincidence gate: find the orientation with the minimum
-        // aggregate dt. If none is below min_dt_threshold_us_, suppress.
-        int best_ori = -1;
-        Metavision::timestamp best_dt = dt_inf;
-        for (int ori = 0; ori < kNumOrientations; ++ori) {
-            if (oridts[ori] < best_dt) {
-                best_dt = oridts[ori];
-                best_ori = ori;
-            }
-        }
-        if (best_ori < 0 || best_dt >= min_dt_threshold_us_) return -1;
-
-        if (multi_ori_output_) {
-            // jAER multi-ori: emit the best-coincidence orientation.
-            return best_ori;
-        }
-        // WTA: emit the self-developed PCA orientation; it is gated by the
-        // global coincidence requirement (some orientation is coincident).
-        return pca_orient;
-    }
 
     static cv::Vec3b hsv_to_bgr(int h, int s, int v) {
         // OpenCV uses BGR; convert 8-bit HSV.
@@ -245,9 +281,16 @@ private:
     int min_neighbors_{2};
     int min_dt_threshold_us_{100000};  // jAER minDtThresholdUs
     bool multi_ori_output_{false};     // jAER multiOriOutputEnabled
+    bool use_average_dt_{true};        // jAER useAverageDtEnabled (default true)
+    bool ori_history_enabled_{false};  // jAER oriHistoryEnabled
+    bool pass_all_events_{false};      // jAER passAllEvents
+    int dt_reject_threshold_us_{200000};  // jAER dtRejectThreshold (us)
+    float ori_history_mixing_factor_{0.25F};  // jAER oriHistoryMixingFactor
     ColorMap color_map_{ColorMap::Fixed4};
     // Polarity-separated time surface: 2 * width * height, channel = polarity.
     std::vector<Metavision::timestamp> surface_;
+    // Per-pixel orientation history for temporal smoothing.
+    std::vector<int> ori_history_;
 };
 
 } // namespace gui_algo

@@ -462,13 +462,42 @@ void AlgoBridge::register_self_cv() {
          AlgoDisplayMode::Passive,
          {penum("mode", "Mode", "1", {"0=BAF", "1=STCF", "2=Refractory",
            "3=DWF", "4=AgePolarity", "5=Harmonic", "6=Repetitious", "7=SpatialBP"}),
-          pfloat("correlation_time_s", "Correlation time (s)", "0.005", "0.001", "0.1"),
-          pint("min_neighbors", "Min neighbors", "2", "1", "8"),
+          // STCF (mode 1)
+          pfloat("correlation_time_s", "STCF corr time (s)", "0.005", "0.001", "0.1"),
+          pint("min_neighbors", "STCF min neighbors", "2", "1", "8"),
+          pbool("require_polarity_match", "STCF polarity match", "false"),
+          pbool("allow_coincidence", "STCF allow coincidence", "false"),
+          // BAF (mode 0)
           pint("baf_dt_us", "BAF dt (us)", "1000", "1000", "100000"),
+          pint("baf_subsample_by", "BAF subsample by", "0", "0", "4"),
+          // Refractory (mode 2)
           pint("refractory_us", "Refractory (us)", "1000", "100", "100000"),
+          // DWF (mode 3)
+          pint("dwf_window_length", "DWF window length", "2", "1", "100"),
+          pint("dwf_dist_threshold", "DWF dist threshold", "2", "1", "1024"),
+          pint("dwf_min_correlated", "DWF min correlated", "2", "1", "8"),
+          pbool("dwf_double_mode", "DWF double mode", "false"),
+          // AgePolarity (mode 4)
+          pint("agep_tau_us", "AgePol tau (us)", "3000", "1000", "100000"),
+          pfloat("age_threshold", "AgePol threshold", "2.0", "0.0", "8.0"),
+          pint("agep_radius", "AgePol radius", "2", "1", "5"),
+          // Harmonic (mode 5)
+          penum("line_freq_hz", "Harmonic line freq (Hz)", "50", {"50", "60"}),
+          pfloat("notch_q", "Harmonic notch Q", "5.0", "0.1", "100.0"),
+          pfloat("harmonic_threshold", "Harmonic threshold", "0.1", "0.0", "1.0"),
+          // Repetitious (mode 6)
+          pint("rep_period_us", "Rep period (us)", "5000", "1000", "1000000"),
+          pint("rep_tolerance_us", "Rep tolerance (us)", "1000", "100", "10000"),
+          pint("rep_ratio_shorter", "Rep ratio shorter", "10", "1", "100"),
+          pint("rep_ratio_longer", "Rep ratio longer", "10", "1", "100"),
+          pint("rep_min_dt_to_store_us", "Rep min dt store (us)", "1000", "0", "1000000"),
+          // SpatialBP (mode 7)
+          pint("sbp_center_radius_px", "SBP center radius", "2", "1", "10"),
+          pint("sbp_surround_radius_px", "SBP surround radius", "10", "5", "30"),
+          pint("sbp_dt_surround_us", "SBP dt surround (us)", "10000", "100", "1000000"),
+          // Cross-mode flags
           pbool("filter_hot_pixels", "Filter hot pixels", "false"),
-          pbool("adaptive_correlation_time", "Adaptive corr time", "false"),
-          penum("line_freq_hz", "Line freq (Hz)", "50", {"50", "60"})}});
+          pbool("adaptive_correlation_time", "Adaptive corr time", "false")}});
 
     // §4.3.6 Hot Pixel Filter
     add({"hot_pixel_filter", "Hot Pixel Filter", "cv", "self",
@@ -478,23 +507,35 @@ void AlgoBridge::register_self_cv() {
           pbool("enable_fpn_correction", "FPN correction", "false"),
           pfloat("fpn_target_rate_hz", "FPN target rate (Hz)", "100", "1", "1000")}});
 
-    // §4.3.7 Orientation Filter
+    // §4.3.7 Orientation Filter (jAER SimpleOrientationFilter min-dt WTA)
     add({"orientation_filter", "Orientation Filter", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pint("tau_us", "Time constant (us)", "10000", "1000", "100000")}});
+         {pint("tau_us", "Time window (us)", "10000", "1000", "50000"),
+          pint("min_neighbors", "Min neighbors", "1", "1", "8"),
+          pint("min_dt_threshold_us", "Min dt threshold (us)", "100000", "1", "1000000"),
+          pbool("multi_ori_output", "Multi-ori output", "false"),
+          pbool("use_average_dt", "Use average dt", "true"),
+          pbool("ori_history_enabled", "Ori history smoothing", "false"),
+          pbool("pass_all_events", "Pass all events", "false"),
+          pint("dt_reject_threshold_us", "Dt reject threshold (us)", "100000", "1", "10000000")}});
 
-    // §4.3.8 Direction Selective Filter
+    // §4.3.8 Direction Selective Filter (jAER DirectionSelectiveFilter)
     add({"direction_selective", "Direction Selective Filter", "cv", "self",
          AlgoDisplayMode::Overlay,
-         {pint("direction", "Direction", "0", "0", "7"),
-          pint("tau_us", "Time constant (us)", "10000", "1000", "100000")}});
+         {pint("tau_us", "Time window (us)", "10000", "1000", "50000"),
+          pint("min_dt_us", "Min dt (us)", "100", "0", "1000000"),
+          pint("search_distance", "Search distance (px)", "3", "1", "12"),
+          pint("tau_low_ms", "Tau low-pass (ms)", "100", "1", "100000"),
+          pbool("enable_global_mode", "Global motion mode", "true")}});
 
     // §4.3.9 Sparse Optical Flow (4 modes: LocalPlanes/LucasKanade/BlockMatch/ClusterOF)
     add({"sparse_optical_flow", "Sparse Optical Flow", "cv", "self",
          AlgoDisplayMode::Overlay,
          {penum("mode", "Mode", "0", {"0=LocalPlanes", "1=LucasKanade",
            "2=BlockMatch", "3=ClusterOF"}),
-          pint("search_radius", "Search radius (px)", "8", "3", "30")}});
+          pint("search_radius", "Search radius (px)", "8", "3", "30"),
+          pint("time_window_us", "Time window (us)", "20000", "1000", "100000"),
+          pfloat("cluster_ema_alpha", "Cluster EMA alpha", "0.05", "0.001", "1.0")}});
 
     // §4.3.10 Blob Detector
     add({"blob_detector", "Blob Detector", "cv", "self",
@@ -502,7 +543,7 @@ void AlgoBridge::register_self_cv() {
          {pfloat("threshold", "Threshold", "10", "1", "254"),
           pfloat("learning_rate", "Learning rate", "0.05", "0.001", "1.0")}});
 
-    // §4.3.11 Object Tracker (4 modes)
+    // §4.3.11 Object Tracker (4 modes, jAER RectangularClusterTracker)
     add({"object_tracker", "Object Tracker", "cv", "self",
          AlgoDisplayMode::Overlay,
          {penum("mode", "Mode", "0", {"0=RCT", "1=Median", "2=Kalman", "3=MultiHypothesis"}),
@@ -510,7 +551,11 @@ void AlgoBridge::register_self_cv() {
           pint("cluster_time_us", "Cluster time (us)", "5000", "1000", "50000"),
           pint("min_cluster_events", "Min cluster events", "50", "10", "500"),
           pfloat("max_lost_age_s", "Max lost age (s)", "1.0", "0.1", "5.0"),
-          pbool("enable_velocity_prediction", "Velocity prediction", "true")}});
+          pbool("enable_velocity_prediction", "Velocity prediction", "true"),
+          pfloat("location_mixing_factor", "Location mixing factor", "0.05", "0.0", "1.0"),
+          pfloat("predictive_velocity_factor", "Predictive velocity factor", "1.0", "0.0", "10.0"),
+          pint("mass_decay_tau_us", "Mass decay tau (us)", "100000", "1", "1000000"),
+          pfloat("threshold_mass_for_visible", "Threshold mass visible", "10.0", "0.0", "1000000.0")}});
 
     // §4.3.12 Corner Detector (3 modes)
     add({"corner_detector", "Corner Detector", "cv", "self",
@@ -524,23 +569,30 @@ void AlgoBridge::register_self_cv() {
          {pint("min_length", "Min length (px)", "10", "3", "100"),
           pint("gap", "Max gap (px)", "3", "1", "20")}});
 
-    // §4.3.14 Hough Line Tracker
+    // §4.3.14 Hough Line Tracker (jAER HoughLineTracker)
     add({"hough_line", "Hough Line Tracker", "cv", "self",
          AlgoDisplayMode::Overlay,
          {pint("threshold", "Threshold", "50", "2", "500"),
           pint("num_theta_bins", "Theta bins", "90", "8", "360"),
           pint("num_rho_bins", "Rho bins (0=auto)", "0", "0", "4000"),
-          pint("accumulator_decay_us", "Decay (us)", "100000", "1000", "5000000")}});
+          pint("accumulator_decay_us", "Decay (us)", "100000", "1000", "5000000"),
+          pfloat("hough_decay_factor", "Per-packet decay factor", "0.6", "0.0", "1.0")}});
 
-    // §4.3.15 Hough Circle Tracker — tightened defaults to reduce lag:
-    // narrower radius range (8-30 → 23 radii vs 5-50 → 46) and higher
-    // threshold (50 vs 30) so find_peaks scans fewer candidates.
+    // §4.3.15 Hough Circle Tracker (jAER HoughCircleTracker) — tightened
+    // defaults to reduce lag: narrower radius range (8-30 → 23 radii vs
+    // 5-50 → 46) and higher threshold (50 vs 30) so find_peaks scans fewer
+    // candidates.
     add({"hough_circle", "Hough Circle Tracker", "cv", "self",
          AlgoDisplayMode::Overlay,
          {pint("min_radius", "Min radius (px)", "8", "1", "100"),
           pint("max_radius", "Max radius (px)", "30", "5", "500"),
           pint("threshold", "Threshold", "50", "2", "500"),
-          pint("accumulator_decay_us", "Decay (us)", "100000", "1000", "5000000")}});
+          pint("accumulator_decay_us", "Decay (us)", "100000", "1000", "5000000"),
+          pfloat("decay", "Decay factor", "1.0", "0.0", "10.0"),
+          pint("buffer_length", "Buffer length", "4000", "100", "100000"),
+          pint("nr_max", "Max circles", "1", "1", "20"),
+          pbool("decay_mode", "Decay mode", "true"),
+          pbool("loc_depression", "Local depression", "true")}});
 
     // §4.3.17 Orientation Cluster
     add({"orientation_cluster", "Orientation Cluster", "cv", "self",

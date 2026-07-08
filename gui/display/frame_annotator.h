@@ -93,6 +93,16 @@ public:
     void draw_flow_arrows(QImage& img, const std::vector<FlowArrow>& arrows,
                           const QColor& color = QColor());
 
+    /// @brief Draws colored events (per-event RGB pixels).
+    /// Used by orientation/direction filters to color each event by its label.
+    void draw_colored_events(QImage& img,
+                             const std::vector<std::tuple<int, int, QColor>>& events);
+
+    /// @brief Draws trajectories (polylines with optional id labels).
+    void draw_trajectories(QImage& img,
+                           const std::vector<std::pair<int, std::vector<QPointF>>>& trajs,
+                           const QColor& color = QColor());
+
 private:
     QColor resolve(const QColor& c) const;
 

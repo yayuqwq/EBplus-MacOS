@@ -93,6 +93,7 @@ public:
     void set_min_track_len(int v) { min_track_len_ = clamp_i(v, 3, 100); }
     void set_cluster_size_px(int v) { cluster_size_px_ = clamp_i(v, 3, 50); }
     void set_cluster_time_us(int v) { cluster_time_us_ = clamp_i(v, 1000, 50000); }
+    void set_cluster_ema_alpha(float v) { cluster_ema_alpha_ = v < 0.0F ? 0.0F : (v > 1.0F ? 1.0F : v); }
 
     int time_window_us() const { return time_window_us_; }
     int spatial_radius_px() const { return spatial_radius_px_; }
@@ -111,6 +112,7 @@ public:
     bool use_diamond_search() const { return use_diamond_search_; }
     double grad_thr() const { return grad_thr_; }
     int min_track_len() const { return min_track_len_; }
+    float cluster_ema_alpha() const { return cluster_ema_alpha_; }
     int width() const { return width_; }
     int height() const { return height_; }
 
@@ -656,7 +658,7 @@ private:
                     cl.prev_cy = cl.cy;
                     cl.prev_t = cl.last_t;
                 }
-                const float a = 0.2F;  // EMA smoothing
+                const float a = cluster_ema_alpha_;  // jAER spatialSmoothingFactor (default 0.05)
                 cl.cx = cl.cx * (1.0F - a) + static_cast<float>(e.x) * a;
                 cl.cy = cl.cy * (1.0F - a) + static_cast<float>(e.y) * a;
                 cl.last_t = e.t;
@@ -692,7 +694,7 @@ private:
     Mode mode_;
 
     // LocalPlanes + LucasKanade params ------------------------------------
-    int time_window_us_{10000};
+    int time_window_us_{20000};  // jAER LucasKanadeFlow default
     int spatial_radius_px_{8};
     int min_events_per_cluster_{10};
     int block_size_{16};
@@ -721,6 +723,7 @@ private:
     int min_track_len_{5};
     int cluster_size_px_{10};
     int cluster_time_us_{5000};
+    float cluster_ema_alpha_{0.05F};  // jAER ClusterBasedOpticalFlow spatialSmoothingFactor
     std::vector<OFCluster> of_clusters_;
 
     // Shared time surface (Surface of Active Events) ----------------------

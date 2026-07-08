@@ -155,6 +155,8 @@ public:
     void set_ratio_longer(int v) { rep_ratio_longer_ = clamp_i(v, 1, 100); }
     int ratio_shorter() const { return rep_ratio_shorter_; }
     int ratio_longer() const { return rep_ratio_longer_; }
+    void set_min_dt_to_store_us(int v) { rep_min_dt_to_store_ = clamp_i(v, 0, 1000000); }
+    int min_dt_to_store_us() const { return rep_min_dt_to_store_; }
 
     // SpatialBP (jAER port) ------------------------------------------------
     void set_center_radius_px(int v) { sbp_center_ = clamp_i(v, 1, 10); }
@@ -464,11 +466,17 @@ private:
             return true;
         }
         const double thisdt = static_cast<double>(e.t - lastt);
+        // jAER: if(thisdt<minDtToStore){ continue; } — drop the event and
+        // do NOT update the map (prevents burst noise from polluting avgDt).
+        if (thisdt < static_cast<double>(rep_min_dt_to_store_)) {
+            return false;
+        }
         const double avg = avg_dt;
         bool repetitious = false;
         if (avg > 0.0) {
-            repetitious = (thisdt > avg / rep_ratio_longer_) &&
-                          (thisdt < avg * rep_ratio_shorter_);
+            // jAER L180: repetitious = thisdt < avgDt*ratioLonger && thisdt > avgDt/ratioShorter
+            repetitious = (thisdt < avg * rep_ratio_longer_) &&
+                          (thisdt > avg / rep_ratio_shorter_);
         }
         if (thisdt < 0.0) {
             // Non-monotonic / wrap: reset the running estimate.
@@ -654,6 +662,7 @@ private:
     int rep_ratio_shorter_{2};   // jAER RepetitiousFilter default
     int rep_ratio_longer_{2};    // jAER RepetitiousFilter default
     int rep_averaging_samples_{3}; // jAER averagingSamples default
+    int rep_min_dt_to_store_{1000};  // jAER minDtToStore default (us)
     int sbp_center_{2};
     int sbp_surround_{10};
     Metavision::timestamp sbp_dt_surround_us_{8000}; // jAER dtSurround default

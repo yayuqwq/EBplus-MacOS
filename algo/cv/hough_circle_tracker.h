@@ -175,9 +175,7 @@ public:
                 accum_[idx(x - 1, y)] *= 0.1f;
                 accum_[idx(x + 1, y + 1)] *= 0.1f;
                 accum_[idx(x - 1, y + 1)] *= 0.1f;
-                // jAER bug, faithfully ported: [x-1][y-1] is written twice and
-                // [x+1][y-1] is missing.
-                accum_[idx(x - 1, y - 1)] *= 0.1f;
+                accum_[idx(x + 1, y - 1)] *= 0.1f;
                 accum_[idx(x - 1, y - 1)] *= 0.1f;
             }
 
@@ -205,6 +203,10 @@ public:
     int nr_max() const { return nr_max_; }
     bool decay_mode() const { return decay_mode_; }
     bool loc_depression() const { return loc_depression_; }
+    /// @brief Read-only access to the per-pixel Hough accumulator
+    /// (x major, y minor; size = width_*height_). Used by the GUI backend
+    /// to render the Hough space as an aux frame.
+    const std::vector<float>& accum() const { return accum_; }
 
     void set_min_radius_px(int v) {
         if (v < 0) v = 0;

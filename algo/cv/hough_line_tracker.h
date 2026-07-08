@@ -45,11 +45,13 @@ public:
                      int num_theta_bins = 90,
                      int num_rho_bins = 0,
                      int threshold = 50,
-                     Metavision::timestamp accumulator_decay_us = 100000)
+                     Metavision::timestamp accumulator_decay_us = 100000,
+                     float hough_decay_factor = 0.6F)
         : width_(width), height_(height),
           num_theta_bins_(num_theta_bins),
           threshold_(threshold),
-          accumulator_decay_us_(accumulator_decay_us) {
+          accumulator_decay_us_(accumulator_decay_us),
+          hough_decay_factor_(hough_decay_factor) {
         if (num_theta_bins_ < 1) num_theta_bins_ = 1;
         rebuild(num_rho_bins);
     }
@@ -59,9 +61,8 @@ public:
         std::vector<HoughLine> result;
         if (packet.empty()) return result;
         const Metavision::timestamp cur_t = packet[packet.size() - 1].t;
-        if (last_t_ >= 0 && accumulator_decay_us_ > 0) {
-            const Metavision::timestamp dt = cur_t - last_t_;
-            if (dt > 0) apply_decay(dt);
+        if (last_t_ >= 0) {
+            apply_decay();
         }
         last_t_ = cur_t;
         for (const Event& e : packet) {
@@ -76,6 +77,9 @@ public:
     int num_theta_bins() const { return num_theta_bins_; }
     int num_rho_bins() const { return num_rho_bins_; }
     int threshold() const { return threshold_; }
+    /// @brief Read-only access to the θ-ρ accumulator (θ major, ρ minor).
+    /// Used by the GUI backend to render the Hough space as an aux frame.
+    const std::vector<float>& accum() const { return accum_; }
     Metavision::timestamp accumulator_decay_us() const {
         return accumulator_decay_us_;
     }
@@ -92,6 +96,10 @@ public:
     void set_threshold(int v) { threshold_ = v; }
     void set_accumulator_decay_us(Metavision::timestamp v) {
         accumulator_decay_us_ = v;
+    }
+    float hough_decay_factor() const { return hough_decay_factor_; }
+    void set_hough_decay_factor(float v) {
+        hough_decay_factor_ = v < 0.0F ? 0.0F : (v > 1.0F ? 1.0F : v);
     }
 
     void reset() {
@@ -153,10 +161,10 @@ private:
         }
     }
 
-    void apply_decay(Metavision::timestamp dt) {
-        const double factor = std::exp(-static_cast<double>(dt) /
-                                       static_cast<double>(accumulator_decay_us_));
-        const float f = static_cast<float>(factor);
+    /// @brief Per-packet multiplicative decay (jAER decayAccumArray style):
+    /// multiply every accumulator cell by hough_decay_factor_ once per packet.
+    void apply_decay() {
+        const float f = hough_decay_factor_;
         for (float& v : accum_) v *= f;
     }
 
@@ -270,6 +278,7 @@ private:
     int num_rho_bins_{1};
     int threshold_;
     Metavision::timestamp accumulator_decay_us_;
+    float hough_decay_factor_{0.6F};  // jAER houghDecayFactor default (per-packet)
     float rho_max_{0.0f};
     float rho_step_{1.0f};
     std::vector<float> cos_;

@@ -1147,6 +1147,45 @@ void MainWindow::process_algo_results(QImage& frame) {
                                          QPoint(t.x, t.y));
                 }
             }
+            // Colored events (orientation/direction per-event coloring).
+            if (!r.colored_events.empty()) {
+                std::vector<std::tuple<int, int, QColor>> cevs;
+                cevs.reserve(r.colored_events.size());
+                for (const auto& ce : r.colored_events) {
+                    cevs.emplace_back(ce.event.x, ce.event.y,
+                                      QColor(ce.r, ce.g, ce.b));
+                }
+                annotator_.draw_colored_events(frame, cevs);
+            }
+            // Trajectories (cluster history paths).
+            if (!r.trajectories.empty()) {
+                std::vector<std::pair<int, std::vector<QPointF>>> trajs;
+                trajs.reserve(r.trajectories.size());
+                for (const auto& t : r.trajectories) {
+                    std::vector<QPointF> pts;
+                    pts.reserve(t.points.size());
+                    for (const auto& pt : t.points) {
+                        pts.emplace_back(pt.x, pt.y);
+                    }
+                    trajs.emplace_back(t.id, std::move(pts));
+                }
+                annotator_.draw_trajectories(frame, trajs, QColor(0, 255, 0));
+            }
+            // Aux frame (Hough θ-ρ / per-pixel accumulator space).
+            // Routed to the AlgoWindow's display widget if one is open, so
+            // the user can see the accumulator state alongside the overlay.
+            if (r.has_aux_frame && !r.aux_frame.empty()) {
+                auto wit = algo_windows_.find(inst->info().name);
+                if (wit != algo_windows_.end() && wit.value()) {
+                    QPointer<EventDisplayWidget> disp = wit.value()->frame_display();
+                    if (disp) {
+                        QImage q = mat_to_qimage(r.aux_frame);
+                        QMetaObject::invokeMethod(this, [disp, q]() {
+                            if (disp) disp->set_frame(q);
+                        }, Qt::QueuedConnection);
+                    }
+                }
+            }
             // ROI zoom view (design §5.6.6): if the algo has ROI enabled and an
             // AlgoWindow with an EventDisplayWidget is open, crop the ROI
             // region from the annotated main frame and push it to the window.

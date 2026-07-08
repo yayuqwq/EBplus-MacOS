@@ -56,6 +56,20 @@ struct OverlayText {
     std::string text;
 };
 
+/// @brief 带颜色的事件（朝向/方向过滤器着色事件）。
+/// 携带原始 EventCD + RGB 颜色，渲染器按颜色绘制每个事件像素。
+struct ColoredEvent {
+    Metavision::EventCD event;
+    std::uint8_t r{255}, g{255}, b{255};
+};
+
+/// @brief 轨迹（聚类历史路径点序列）。
+/// 用于 ObjectTracker/ClusterLIF 绘制聚类移动轨迹。
+struct OverlayTrajectory {
+    int id{-1};
+    std::vector<cv::Point2i> points;
+};
+
 /// @brief 算法执行结果。由 AlgoBackend::pull_result() 返回。
 struct AlgoResult {
     std::vector<Metavision::EventCD> filtered_events;  ///< 过滤后事件流
@@ -69,6 +83,10 @@ struct AlgoResult {
     std::vector<OverlayColoredPoint> colored_points;
     std::vector<OverlayCircle> circles;
     std::vector<OverlayText> texts;
+    std::vector<ColoredEvent> colored_events;       ///< 朝向/方向着色事件
+    std::vector<OverlayTrajectory> trajectories;    ///< 聚类轨迹
+    bool has_aux_frame{false};
+    cv::Mat aux_frame;                              ///< 辅助可视化帧（Hough 空间等）
 };
 
 /// @brief 类型擦除的算法后端接口。

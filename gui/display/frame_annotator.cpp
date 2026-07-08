@@ -174,4 +174,34 @@ void FrameAnnotator::draw_flow_arrows(QImage& img, const std::vector<FlowArrow>&
     }
 }
 
+void FrameAnnotator::draw_colored_events(
+        QImage& img,
+        const std::vector<std::tuple<int, int, QColor>>& events) {
+    if (img.isNull() || events.empty()) return;
+    // Direct pixel manipulation is much faster than QPainter for per-event
+    // coloring (potentially 10k+ events per frame).
+    for (const auto& [x, y, color] : events) {
+        if (x < 0 || x >= img.width() || y < 0 || y >= img.height()) continue;
+        img.setPixel(x, y, color.rgba());
+    }
+}
+
+void FrameAnnotator::draw_trajectories(
+        QImage& img,
+        const std::vector<std::pair<int, std::vector<QPointF>>>& trajs,
+        const QColor& color) {
+    if (img.isNull() || trajs.empty()) return;
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    const QColor c = resolve(color);
+    p.setPen(QPen(c, pen_width_ * 0.5));
+    p.setBrush(Qt::NoBrush);
+    for (const auto& [id, pts] : trajs) {
+        if (pts.size() < 2) continue;
+        for (std::size_t i = 1; i < pts.size(); ++i) {
+            p.drawLine(pts[i - 1], pts[i]);
+        }
+    }
+}
+
 } // namespace gui
