@@ -562,12 +562,19 @@ private:
             }
         }
         // --- Step 5: Prior image retention (lambda6) ---
-        // Gentle temporal stabilization: blend with previous reconstruction.
-        // Applied once (not iterated) to prevent collapse to flat field.
+        // Paper: λ6·||L(x,t1) − L̂(x)||² constrains L at the oldest
+        // time-step in the spatio-temporal volume. In our single-step
+        // framework, we apply the prior only at pixels WITHOUT new events
+        // (|f|≈0), where the data term provides no fresh information.
+        // At pixels with new events, the data term dominates. This matches
+        // the paper's intent: the prior compensates information loss from
+        // window sliding, which only affects pixels that lost their events.
         if (lambda6_ > 1e-9) {
             const double w = lambda6_;
             for (std::size_t i = 0; i < N; ++i) {
-                L_[i] = (L_[i] + w * L_prior_[i]) / (1.0 + w);
+                if (std::abs(f[i]) < 1e-9) {
+                    L_[i] = (L_[i] + w * L_prior_[i]) / (1.0 + w);
+                }
             }
         }
         // Persist state for next frame's sliding window.
@@ -596,13 +603,29 @@ private:
     //   (iii) F = m32(R x C)           — 3D rotation geometry (Eq. 3, 11-13)
     //
     // Each relation pulls a map toward the candidate satisfying it, using a
-    // relaxation step. R is updated via linear least squares (Eq. 10, 13).
+    // relaxation step δ. R is updated via linear least squares (Eq. 10, 13).
+    //
+    // Stability fixes (minimal, standard practice — do not alter algorithm
+    // behavior under normal conditions):
+    //   - V clamped to [-1, 1] (saturate after ~4-5 events per pixel)
+    //   - F estimation skipped where |G|² < 1e-6 (prevent div-by-zero)
+    //   - F magnitude clamped to 5.0 (prevent blow-up)
+    //   - R magnitude clamped to 0.5 rad (prevent rotation blow-up)
+    //   - I clamped to [-1, 1] (prevent divergence)
+    //   - Warm-start I from V on first frame (prevent all-zero deadlock)
     // =====================================================================
     cv::Mat reconstruct_interacting() {
         const int W = eff_w(), H = eff_h();
         const std::size_t N = static_cast<std::size_t>(W) * H;
         const std::size_t NI = static_cast<std::size_t>(W + 1) * (H + 1);
         const std::vector<double>& V = log_intensity_;  // input map V
+        // Clamp V to [-1, 1] — events represent ±theta=0.22 each; clamping
+        // at ±1.0 allows ~4-5 events per pixel before saturation.
+        std::vector<double> Vc(N);
+        for (std::size_t i = 0; i < N; ++i) {
+            double v = V[i];
+            Vc[i] = (v > 1.0) ? 1.0 : (v < -1.0 ? -1.0 : v);
+        }
         // Lazy initialization.
         if (I_map_.size() != NI) {
             I_map_.assign(NI, 0.0);
@@ -610,36 +633,149 @@ private:
             Fx_.assign(N, 0.0); Fy_.assign(N, 0.0);
             R_[0] = R_[1] = R_[2] = 0.0;
             im_calib_dirty_ = true;
+            im_first_frame_ = true;
         }
-        // Build calibration map C and precomputed projection matrix if needed.
         if (im_calib_dirty_ || Cx_.size() != N) {
             build_calibration_map();
             im_calib_dirty_ = false;
         }
-        // Direct intensity estimate: the accumulated event data V is itself a
-        // valid log-intensity estimate (events represent log-brightness
-        // changes). The full InteractingMaps relaxation (optical flow +
-        // rotation estimation) is numerically unstable for sparse, bursty
-        // event data — it produces NaN when V grows beyond ~0.5 due to
-        // positive feedback in the F·G gradient descent. Instead, we apply
-        // a light TV denoising to smooth noise while preserving edges, then
-        // output the result directly. This produces a stable, visible
-        // reconstruction.
-        //
-        // The relaxation infrastructure (I_map_, Gx_, Fx_, R_, Cx_, etc.)
-        // is retained for future use when a more robust solver is available.
-        // Clamp V to a safe range to prevent divergence.
-        std::vector<double> v_clamped(N);
-        for (std::size_t i = 0; i < N; ++i) {
-            double v = V[i];
-            if (v > 1.0) v = 1.0;
-            if (v < -1.0) v = -1.0;
-            v_clamped[i] = v;
+        // Warm-start: initialize I from V on first frame. Without this,
+        // I=G=F=0 and V cannot influence the system (F·G deadlock).
+        if (im_first_frame_) {
+            for (int y = 0; y < H; ++y) {
+                for (int x = 0; x < W; ++x) {
+                    I_map_[static_cast<std::size_t>(y) * (W + 1) + x] =
+                        Vc[static_cast<std::size_t>(y) * W + x];
+                }
+            }
+            im_first_frame_ = false;
         }
-        // TV denoise the clamped event data for a cleaner image.
-        std::vector<double> tv_out(N), px, py;
-        chambolle_tv(v_clamped, lambda3_, num_iterations_, W, H, tv_out, px, py);
-        return to_gray(tv_out, W, H);
+        const double delta = static_cast<double>(relaxation_step_);
+        // Relaxation iterations (Cook et al. 2011, Section II).
+        for (int iter = 0; iter < im_iterations_; ++iter) {
+            // (i) G = grad(I) — update gradient toward I's gradient.
+            for (int y = 0; y < H; ++y) {
+                for (int x = 0; x < W; ++x) {
+                    const std::size_t idx =
+                        static_cast<std::size_t>(y) * W + x;
+                    const std::size_t iidx =
+                        static_cast<std::size_t>(y) * (W + 1) + x;
+                    const double gx = I_map_[iidx + 1] - I_map_[iidx];
+                    const double gy = I_map_[iidx + W + 1] - I_map_[iidx];
+                    Gx_[idx] = (1.0 - delta) * Gx_[idx] + delta * gx;
+                    Gy_[idx] = (1.0 - delta) * Gy_[idx] + delta * gy;
+                }
+            }
+            // (ii) -V = F·G → F = -V * G / |G|² — optical flow constraint.
+            // Skip where |G|² is negligible (flat regions). Clamp |F|.
+            for (std::size_t i = 0; i < N; ++i) {
+                const double gmag2 = Gx_[i] * Gx_[i] + Gy_[i] * Gy_[i];
+                if (gmag2 > 1e-6) {
+                    double fx_c = -Vc[i] * Gx_[i] / gmag2;
+                    double fy_c = -Vc[i] * Gy_[i] / gmag2;
+                    const double fmag = std::sqrt(fx_c * fx_c + fy_c * fy_c);
+                    constexpr double fmax = 5.0;
+                    if (fmag > fmax) {
+                        const double s = fmax / fmag;
+                        fx_c *= s; fy_c *= s;
+                    }
+                    Fx_[i] = (1.0 - delta) * Fx_[i] + delta * fx_c;
+                    Fy_[i] = (1.0 - delta) * Fy_[i] + delta * fy_c;
+                }
+            }
+            // (iii) F = m32(R × C) — rotation geometry.
+            // Step a: update R via linear least squares from F and C.
+            //   F_x =  Cz*R1 - Cy*R2
+            //   F_y = -Cz*R0 + Cx*R2
+            // Jacobian A_i = [[0, Cz, -Cy], [-Cz, 0, Cx]].
+            // Normal equations: M·R = b, M = Σ A_i^T A_i, b = Σ A_i^T F_i.
+            {
+                double M[9] = {0}, b[3] = {0};
+                for (std::size_t i = 0; i < N; ++i) {
+                    const double cx = Cx_[i], cy = Cy_[i], cz = Cz_[i];
+                    const double fx = Fx_[i], fy = Fy_[i];
+                    // A_i^T A_i (symmetric, upper triangle):
+                    M[0] += cz * cz;                 // (0,0)
+                    M[1] += 0.0;                     // (0,1)
+                    M[2] += -cz * cx;                // (0,2)
+                    M[4] += cz * cz;                 // (1,1)
+                    M[5] += -cz * cy;                // (1,2)
+                    M[8] += cy * cy + cx * cx;       // (2,2)
+                    // A_i^T F_i:
+                    b[0] += -cz * fy;
+                    b[1] += cz * fx;
+                    b[2] += -cy * fx + cx * fy;
+                }
+                M[3] = M[1]; M[6] = M[2]; M[7] = M[5];  // symmetric
+                double R_new[3];
+                solve_3x3(M, b, R_new);
+                // Clamp R magnitude (prevents rotation blow-up).
+                const double rmag = std::sqrt(R_new[0] * R_new[0] +
+                                              R_new[1] * R_new[1] +
+                                              R_new[2] * R_new[2]);
+                constexpr double rmax = 0.5;  // radians
+                if (rmag > rmax) {
+                    const double s = rmax / rmag;
+                    R_new[0] *= s; R_new[1] *= s; R_new[2] *= s;
+                }
+                R_[0] = (1.0 - delta) * R_[0] + delta * R_new[0];
+                R_[1] = (1.0 - delta) * R_[1] + delta * R_new[1];
+                R_[2] = (1.0 - delta) * R_[2] + delta * R_new[2];
+            }
+            // Step b: update F from R and C (relation iii candidate).
+            for (std::size_t i = 0; i < N; ++i) {
+                const double cx = Cx_[i], cy = Cy_[i], cz = Cz_[i];
+                // m32(R × C) = [R1*Cz - R2*Cy, R2*Cx - R0*Cz]
+                const double fx_c = R_[1] * cz - R_[2] * cy;
+                const double fy_c = R_[2] * cx - R_[0] * cz;
+                Fx_[i] = (1.0 - delta) * Fx_[i] + delta * fx_c;
+                Fy_[i] = (1.0 - delta) * Fy_[i] + delta * fy_c;
+            }
+            // Update I: data fidelity (I → V) + gradient integration (Poisson).
+            // The Poisson step makes ∇I consistent with G (relation i),
+            // providing spatial smoothing. Data fidelity keeps I grounded
+            // to the event-derived log-intensity V.
+            for (int y = 0; y < H; ++y) {
+                for (int x = 0; x < W; ++x) {
+                    const std::size_t idx =
+                        static_cast<std::size_t>(y) * W + x;
+                    const std::size_t iidx =
+                        static_cast<std::size_t>(y) * (W + 1) + x;
+                    // Poisson target: I should have gradient G.
+                    // ∇²I = ∇·G → I_target = avg(neighbors) - div(G)/4.
+                    const double I_l = I_map_[iidx - (x > 0 ? 1 : 0)];
+                    const double I_r = I_map_[iidx + (x + 1 < W ? 1 : 0)];
+                    const double I_u = I_map_[iidx - (y > 0 ? W + 1 : 0)];
+                    const double I_d = I_map_[iidx + (y + 1 < H ? W + 1 : 0)];
+                    const double div_G =
+                        (Gx_[idx] - (x > 0 ? Gx_[idx - 1] : 0.0)) +
+                        (Gy_[idx] - (y > 0 ? Gy_[idx - static_cast<std::size_t>(W)] : 0.0));
+                    const double poisson =
+                        0.25 * (I_l + I_r + I_u + I_d) - 0.25 * div_G;
+                    // Data fidelity: blend with V where events exist.
+                    double target;
+                    if (std::abs(Vc[idx]) > 1e-9) {
+                        target = 0.5 * Vc[idx] + 0.5 * poisson;
+                    } else {
+                        target = poisson;
+                    }
+                    double I_new = (1.0 - delta) * I_map_[iidx] + delta * target;
+                    // Clamp I to prevent divergence.
+                    if (I_new > 1.0) I_new = 1.0;
+                    if (I_new < -1.0) I_new = -1.0;
+                    I_map_[iidx] = I_new;
+                }
+            }
+        }
+        // Extract I (W×H subgrid) to gray frame.
+        std::vector<double> I_out(N);
+        for (int y = 0; y < H; ++y) {
+            for (int x = 0; x < W; ++x) {
+                I_out[static_cast<std::size_t>(y) * W + x] =
+                    I_map_[static_cast<std::size_t>(y) * (W + 1) + x];
+            }
+        }
+        return to_gray(I_out, W, H);
     }
 
     /// @brief Builds the camera calibration map C (3D unit direction per
@@ -720,11 +856,10 @@ private:
     float lambda3_{0.02f};
     float lambda4_{0.2f};
     float lambda5_{0.1f};
-    float lambda6_{0.1f};          ///< Prior retention (reduced from paper's
-                                   ///< 1.0 because our single-step framework
-                                   ///< blends the entire previous frame,
-                                   ///< unlike the paper which only constrains
-                                   ///< the oldest time-step in the window).
+    float lambda6_{1.0f};          ///< Prior retention (paper value). Applied
+                                   ///< only at pixels without new events to
+                                   ///< match the paper's intent of compensating
+                                   ///< window-sliding information loss.
     int num_iterations_{100};
 
     // InteractingMaps parameters.

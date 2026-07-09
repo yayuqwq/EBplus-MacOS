@@ -654,7 +654,7 @@ void AlgoBridge::register_self_cv() {
     // §4.3.25 XYT Visualizer
     add({"xyt_visualizer", "XYT 3D Visualizer", "cv", "self",
          AlgoDisplayMode::Standalone,
-         {pint("time_window_us", "Time window (us)", "200000", "10000", "10000000"),
+         {pint("time_window_us", "Time window (us)", "500000", "10000", "10000000"),
           pint("max_points", "Max points", "50000", "1000", "500000")}});
 
     // §4.3.26 Overlay
@@ -702,17 +702,17 @@ void AlgoBridge::register_self_analytics() {
           // --- BardowVariational (mode 0) ---
           pfloat("delta_t_ms", "Delta t (ms)", "15", "1", "50", "0"),
           pfloat("theta", "Theta", "0.22", "0.05", "0.5", "0"),
-          pint("num_iterations", "TV iterations", "100", "10", "500", "0,1"),
+          pint("num_iterations", "TV iterations", "100", "10", "500", "0"),
           pfloat("lambda1", "Lambda1 (TV weight)", "0.02", "0.0", "1.0", "0"),
           pfloat("lambda2", "Lambda2", "0.05", "0.0", "1.0", "0"),
-          pfloat("lambda3", "Lambda3 (TV weight)", "0.02", "0.0", "1.0", "0,1"),
+          pfloat("lambda3", "Lambda3 (TV weight)", "0.02", "0.0", "1.0", "0"),
           pfloat("lambda4", "Lambda4", "0.2", "0.0", "2.0", "0"),
           pfloat("lambda5", "Lambda5", "0.1", "0.0", "1.0", "0"),
-          pfloat("lambda6", "Lambda6 (prior)", "0.1", "0.0", "2.0", "0"),
+          pfloat("lambda6", "Lambda6 (prior)", "1.0", "0.0", "2.0", "0"),
           // --- InteractingMaps (mode 1) ---
-          // relaxation_step / im_iterations / fov_deg retained in backend for
-          // the (currently disabled) six-map relaxation; not exposed in GUI
-          // since the simplified path uses lambda3 + num_iterations instead.
+          pfloat("relaxation_step", "Relaxation step", "0.1", "0.001", "0.5", "1"),
+          pint("im_iterations", "Relax iterations", "50", "10", "1000", "1"),
+          pfloat("fov_deg", "Camera FOV (deg)", "60", "10", "170", "1"),
           // --- E2VID (mode 2) ---
           pstring("model_path", "Model path (ONNX)", "models/e2vid_lightweight.onnx", "2"),
           pint("num_bins", "Num bins", "5", "1", "20", "2"),

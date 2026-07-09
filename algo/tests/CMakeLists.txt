@@ -57,6 +57,38 @@ target_compile_options(test_phase8_10 PRIVATE -Wall -Wextra -Werror)
 
 gtest_discover_tests(test_phase8_10)
 
+# Raw-event integration tests: exercises every streaming algorithm against a
+# real Metavision .raw recording (algo/tests/sparklers.raw, committed). Unlike
+# the synthetic-event unit tests above, these assert real-world behaviour:
+# non-flat reconstructed frames, no NaN divergence, sane filter rates, and
+# in-bounds detected features. The .raw path is injected as an absolute
+# compile definition so the test binary finds it regardless of CWD.
+add_executable(test_raw_algos
+    test_raw_algos.cpp
+)
+
+target_link_libraries(test_raw_algos PRIVATE
+    gui_algo
+    GTest::GTest
+    GTest::Main
+    MetavisionSDK::base
+    MetavisionSDK::core
+    MetavisionSDK::stream
+    ${OpenCV_LIBS}
+)
+
+target_include_directories(test_raw_algos PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_compile_definitions(test_raw_algos PRIVATE
+    GUI_TEST_RAW_FILE="${CMAKE_CURRENT_SOURCE_DIR}/sparklers.raw"
+)
+
+target_compile_options(test_raw_algos PRIVATE -Wall -Wextra)
+
+gtest_discover_tests(test_raw_algos)
+
 # Standalone diagnostic: feed .raw events to EventToVideo and report stats.
 add_executable(test_raw_e2v
     test_raw_e2v.cpp

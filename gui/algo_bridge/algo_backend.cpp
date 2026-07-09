@@ -1305,7 +1305,7 @@ class EventToVideoBackend final : public AlgoBackend {
     float theta_{0.22F};
     int num_iterations_{100};
     float lambda1_{0.02F}, lambda2_{0.05F}, lambda3_{0.02F};
-    float lambda4_{0.2F}, lambda5_{0.1F}, lambda6_{0.1F};
+    float lambda4_{0.2F}, lambda5_{0.1F}, lambda6_{1.0F};
     float decay_tau_ms_{0.0F};
     // InteractingMaps params.
     float relaxation_step_{0.1F};
@@ -1957,7 +1957,7 @@ class XYTVisualizerBackend final : public AlgoBackend {
 public:
     XYTVisualizerBackend(int w, int h)
         : sensor_w_(w), sensor_h_(h),
-          algo_(200.0f,
+          algo_(500.0f,
                 gui_algo::XYTVisualizer::ColorMode::Age,
                 2.5f,
                 false,

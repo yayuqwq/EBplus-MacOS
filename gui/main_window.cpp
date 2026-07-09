@@ -1841,7 +1841,7 @@ void MainWindow::on_open_xyt_view() {
         if (!xyt_algo_) xyt_algo_ = algo_bridge_.find_or_create("xyt_visualizer");
         if (xyt_algo_) xyt_algo_->set_enabled(true);
         // Sync the time_window from the algo parameter to the 3D display.
-        // The GUI registers time_window_us (default 1000000 = 1s); the
+        // The GUI registers time_window_us (default 500000 = 500ms); the
         // SpaceTimeDisplay uses time_window_ms. Without this sync, the
         // display would always use its 50ms default.
         if (xyt_algo_) {
