@@ -5,18 +5,23 @@
 
 #include <QWidget>
 #include "../app/camera_controller.h"
+#include "abstract_panel.h"
 
 class QLabel;
 class QFormLayout;
 
 namespace gui {
 
-class InformationPanel : public QWidget {
+class InformationPanel : public AbstractPanel {
     Q_OBJECT
 public:
     explicit InformationPanel(QWidget* parent = nullptr);
 
-public slots:
+    QString panel_id() const override { return QStringLiteral("information"); }
+    QString panel_title() const override { return tr("Information"); }
+    QString panel_group() const override { return QStringLiteral("相机设备"); }
+
+    public slots:
     void set_info(const SensorInfo& info);
     void clear();
 

@@ -5,8 +5,9 @@
 #include <QGroupBox>
 #include <QLabel>
 #include <QScrollArea>
-#include <QTabWidget>
+#include <QSettings>
 #include <QVBoxLayout>
+#include <utility>
 
 #include "algorithms_panel.h"
 #include "biases_panel.h"
@@ -21,8 +22,29 @@
 #include "trigger_panel.h"
 #include "algo_bridge/algo_bridge.h"
 #include "app/file_converter.h"
+#include "widgets/collapsible_section.h"
 
 namespace gui {
+
+AbstractPanel* SettingsPanel::register_panel(std::unique_ptr<AbstractPanel> panel) {
+    AbstractPanel* raw = panel.get();
+    panel_index_[raw->panel_id()] = raw;
+    panels_.push_back(std::move(panel));
+    return raw;
+}
+
+AbstractPanel* SettingsPanel::find_panel(const QString& id) const {
+    auto it = panel_index_.find(id);
+    return it == panel_index_.end() ? nullptr : it->second;
+}
+
+std::vector<AbstractPanel*> SettingsPanel::panels_in_group(const QString& group) const {
+    std::vector<AbstractPanel*> out;
+    for (const auto& p : panels_) {
+        if (p->panel_group() == group) out.push_back(p.get());
+    }
+    return out;
+}
 
 SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter,
                              QWidget* parent)
@@ -30,96 +52,100 @@ SettingsPanel::SettingsPanel(AlgoBridge* bridge, FileConverter* converter,
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
 
-    // 两个页面：基础功能 + 算法模块
-    tabs_ = new QTabWidget(this);
-    tabs_->setTabPosition(QTabWidget::North);
-    outer->addWidget(tabs_);
+    // --- Phase 3 (§3.7): VSCode-style stacked CollapsibleSections. ---
+    // Panels are aggregated by panel_group(); each group becomes one
+    // collapsible section. The whole stack lives in a scroll area so all
+    // sections remain reachable even when they exceed the viewport.
+    auto* scroll = new QScrollArea(this);
+    scroll->setWidgetResizable(true);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto* host = new QWidget(scroll);
+    auto* host_layout = new QVBoxLayout(host);
+    host_layout->setContentsMargins(6, 6, 6, 6);
+    host_layout->setSpacing(8);
 
-    // --- Tab 1: 基础功能 (Basic Features) ---
-    auto* basic_scroll = new QScrollArea(tabs_);
-    basic_scroll->setWidgetResizable(true);
-    basic_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    auto* basic_host = new QWidget(basic_scroll);
-    auto* basic_layout = new QVBoxLayout(basic_host);
-    basic_layout->setContentsMargins(6, 6, 6, 6);
-    basic_layout->setSpacing(8);
+    // Register every panel into the registry first (ownership via panels_).
+    // The unique_ptr is the authoritative owner; add_panel reparents each
+    // widget into a group box inside its section (Qt removes it from the old
+    // parent first), which is safe — deleting a QWidget removes it from its
+    // parent's child list, so the unique_ptr can destroy it later.
+    register_panel(std::make_unique<DevicesPanel>(nullptr));
+    register_panel(std::make_unique<InformationPanel>(nullptr));
+    register_panel(std::make_unique<StatisticsPanel>(nullptr));
+    register_panel(std::make_unique<DisplayPanel>(nullptr));
+    register_panel(std::make_unique<BiasesPanel>(nullptr));
+    register_panel(std::make_unique<RoiPanel>(nullptr));
+    register_panel(std::make_unique<EspPanel>(nullptr));
+    register_panel(std::make_unique<TriggerPanel>(nullptr));
+    register_panel(std::make_unique<PreprocessingPanel>(nullptr));
+    register_panel(std::make_unique<FileToolsPanel>(converter, nullptr));
+    register_panel(std::make_unique<AlgorithmsPanel>(bridge, nullptr));
 
-    auto add_group = [&](const QString& title, QWidget* body, bool enabled = true) {
-        auto* gb = new QGroupBox(title, basic_host);
-        auto* gl = new QVBoxLayout(gb);
-        gl->setContentsMargins(6, 6, 6, 6);
-        gl->addWidget(body);
-        gb->setCheckable(false);
-        gb->setEnabled(enabled);
-        basic_layout->addWidget(gb);
-        return gb;
+    // Group order + default collapse state (design §3.7.3 table).
+    struct GroupDef { QString name; bool default_collapsed; };
+    const GroupDef groups[] = {
+        {QStringLiteral("相机设备"),   false},
+        {QStringLiteral("显示与统计"), false},
+        {QStringLiteral("硬件配置"),   false},
+        {QStringLiteral("算法模块"),   true},
+        {QStringLiteral("工具"),       true},
     };
 
-    auto add_placeholder = [&](const QString& title, const QString& note) {
-        auto* gb = new QGroupBox(title, basic_host);
-        auto* gl = new QVBoxLayout(gb);
-        gl->setContentsMargins(6, 6, 6, 6);
-        auto* lbl = new QLabel(note, gb);
-        lbl->setWordWrap(true);
-        lbl->setStyleSheet("color: #888; font-style: italic;");
-        gl->addWidget(lbl);
-        gb->setEnabled(false);
-        basic_layout->addWidget(gb);
-        return gb;
-    };
+    QSettings s;
+    for (const auto& g : groups) {
+        const auto panels = panels_in_group(g.name);
+        if (panels.empty()) continue;
 
-    devices_ = new DevicesPanel(basic_host);
-    add_group(tr("Devices"), devices_);
+        auto* section = new CollapsibleSection(g.name, host);
+        for (auto* p : panels) {
+            section->add_panel(p);
+        }
 
-    information_ = new InformationPanel(basic_host);
-    add_group(tr("Information"), information_);
+        // The 工具 group also holds the Calibration placeholder (Phase 9
+        // install target for set_calibration_panel). The wizard itself is
+        // launched from the Tools menu; this group box just shows a hint.
+        if (g.name == QStringLiteral("工具")) {
+            calibration_group_ = new QGroupBox(tr("Calibration"), section);
+            auto* gl = new QVBoxLayout(calibration_group_);
+            gl->setContentsMargins(6, 6, 6, 6);
+            auto* lbl = new QLabel(
+                tr("Open via menu: Tools → Intrinsic Wizard..."),
+                calibration_group_);
+            lbl->setWordWrap(true);
+            lbl->setProperty("class", "hint");
+            gl->addWidget(lbl);
+            calibration_group_->setEnabled(false);
+            section->add_widget(calibration_group_);
+        }
 
-    statistics_ = new StatisticsPanel(basic_host);
-    add_group(tr("Statistics"), statistics_);
+        // Apply persisted (or default) collapse state. set_collapsed also
+        // writes the value back to QSettings, which is harmless.
+        const QString key =
+            QStringLiteral("layout/section_%1_collapsed").arg(g.name);
+        const bool collapsed = s.value(key, g.default_collapsed).toBool();
+        section->set_collapsed(collapsed);
 
-    display_ = new DisplayPanel(basic_host);
-    add_group(tr("Display"), display_);
+        host_layout->addWidget(section);
+    }
 
-    // Phase 2: camera control panels (Bias / ROI / ESP / Trigger).
-    biases_panel_  = new BiasesPanel(basic_host);
-    add_group(tr("Biases"), biases_panel_);
-    roi_     = new RoiPanel(basic_host);
-    add_group(tr("ROI"), roi_);
-    esp_     = new EspPanel(basic_host);
-    add_group(tr("ESP"), esp_);
-    trigger_ = new TriggerPanel(basic_host);
-    add_group(tr("Trigger"), trigger_);
-
-    // Phase 5: event preprocessing.
-    preprocessing_ = new PreprocessingPanel(basic_host);
-    add_group(tr("Preprocessing"), preprocessing_);
-
-    file_tools_ = new FileToolsPanel(converter, basic_host);
-    add_group(tr("File Tools"), file_tools_, converter != nullptr);
-
-    // Calibration — placeholder until CalibrationWizard is installed.
-    calibration_group_ = add_placeholder(tr("Calibration"),
-                                         tr("Open via menu: Calibration → Intrinsic Wizard..."));
-
-    basic_layout->addStretch(1);
-    basic_scroll->setWidget(basic_host);
-    tabs_->addTab(basic_scroll, tr("Basic"));
-
-    // --- Tab 2: Algorithms ---
-    // AlgorithmsPanel already contains the global Algorithm ROI selector at
-    // its top, followed by the scrollable algorithm list. All algorithm
-    // configuration lives here — the Algorithm menu bar is removed from
-    // MainWindow to avoid duplication.
-    auto* algo_scroll = new QScrollArea(tabs_);
-    algo_scroll->setWidgetResizable(true);
-    algo_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    algorithms_ = new AlgorithmsPanel(bridge, algo_scroll);
-    algo_scroll->setWidget(algorithms_);
-    tabs_->addTab(algo_scroll, tr("Algorithms"));
-
-    // Default to the basic tab.
-    tabs_->setCurrentIndex(0);
+    host_layout->addStretch(1);
+    scroll->setWidget(host);
+    outer->addWidget(scroll);
 }
+
+// Type-safe accessors — each delegates to find_panel() + static_cast so the
+// registry (panels_ / panel_index_) is the single source of truth.
+InformationPanel*   SettingsPanel::information_panel()    const { return static_cast<InformationPanel*>(find_panel(QStringLiteral("information"))); }
+StatisticsPanel*    SettingsPanel::statistics_panel()     const { return static_cast<StatisticsPanel*>(find_panel(QStringLiteral("statistics"))); }
+DisplayPanel*       SettingsPanel::display_panel()        const { return static_cast<DisplayPanel*>(find_panel(QStringLiteral("display"))); }
+DevicesPanel*       SettingsPanel::devices_panel()        const { return static_cast<DevicesPanel*>(find_panel(QStringLiteral("devices"))); }
+BiasesPanel*        SettingsPanel::biases_panel()         const { return static_cast<BiasesPanel*>(find_panel(QStringLiteral("biases"))); }
+RoiPanel*           SettingsPanel::roi_panel()            const { return static_cast<RoiPanel*>(find_panel(QStringLiteral("roi"))); }
+EspPanel*           SettingsPanel::esp_panel()            const { return static_cast<EspPanel*>(find_panel(QStringLiteral("esp"))); }
+TriggerPanel*       SettingsPanel::trigger_panel()        const { return static_cast<TriggerPanel*>(find_panel(QStringLiteral("trigger"))); }
+PreprocessingPanel* SettingsPanel::preprocessing_panel() const { return static_cast<PreprocessingPanel*>(find_panel(QStringLiteral("preprocessing"))); }
+AlgorithmsPanel*    SettingsPanel::algorithms_panel()     const { return static_cast<AlgorithmsPanel*>(find_panel(QStringLiteral("algorithms"))); }
+FileToolsPanel*     SettingsPanel::file_tools_panel()     const { return static_cast<FileToolsPanel*>(find_panel(QStringLiteral("file_tools"))); }
 
 void SettingsPanel::set_calibration_panel(QWidget* panel) {
     if (!panel || !calibration_group_) return;

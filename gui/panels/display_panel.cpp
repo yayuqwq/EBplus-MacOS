@@ -13,7 +13,7 @@
 
 namespace gui {
 
-DisplayPanel::DisplayPanel(QWidget* parent) : QWidget(parent) {
+DisplayPanel::DisplayPanel(QWidget* parent) : AbstractPanel(parent) {
     auto* form = new QFormLayout(this);
     form->setContentsMargins(8, 8, 8, 8);
     form->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);

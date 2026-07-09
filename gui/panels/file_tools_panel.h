@@ -8,6 +8,8 @@
 
 #include <QWidget>
 
+#include "abstract_panel.h"
+
 class QProgressBar;
 class QLabel;
 class QPushButton;
@@ -16,12 +18,16 @@ namespace gui {
 
 class FileConverter;
 
-class FileToolsPanel : public QWidget {
+class FileToolsPanel : public AbstractPanel {
     Q_OBJECT
 public:
     explicit FileToolsPanel(FileConverter* converter, QWidget* parent = nullptr);
 
-private slots:
+    QString panel_id() const override { return QStringLiteral("file_tools"); }
+    QString panel_title() const override { return tr("File Tools"); }
+    QString panel_group() const override { return QStringLiteral("工具"); }
+
+    private slots:
     void on_convert_hdf5();
     void on_convert_csv();
     void on_cutter();

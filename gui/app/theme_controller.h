@@ -97,6 +97,10 @@ private:
     void on_system_color_scheme_changed();
     void sync_menu_actions();
 
+    /// Resolves the current Mode (+ system color scheme when FollowSystem) to
+    /// a concrete light/dark flag. Used to index the semantic token table.
+    bool is_dark_mode() const;
+
     QMainWindow* window_{nullptr};
     Color color_{Color::LightBlue};
     Mode mode_{Mode::FollowSystem};

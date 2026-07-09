@@ -10,6 +10,8 @@
 
 #include <QWidget>
 
+#include "abstract_panel.h"
+
 class QCheckBox;
 class QComboBox;
 class QSpinBox;
@@ -20,14 +22,18 @@ namespace gui {
 
 class CameraController;
 
-class RoiPanel : public QWidget {
+class RoiPanel : public AbstractPanel {
     Q_OBJECT
 public:
     explicit RoiPanel(QWidget* parent = nullptr);
 
+    QString panel_id() const override { return QStringLiteral("roi"); }
+    QString panel_title() const override { return tr("ROI"); }
+    QString panel_group() const override { return QStringLiteral("硬件配置"); }
+
 public slots:
-    void on_camera_connected(CameraController* controller);
-    void on_camera_disconnected();
+    void on_camera_connected(CameraController* controller) override;
+    void on_camera_disconnected() override;
 
     /// @brief Called when the user finishes a drag on the display widget.
     /// Coordinates are in sensor pixels.
@@ -37,8 +43,6 @@ signals:
     /// @brief Emitted after a successful apply. The display widget uses this
     /// to draw the rectangle overlay.
     void roi_applied(int x, int y, int w, int h, bool enabled);
-    void info_message(const QString& msg);
-    void error_message(const QString& msg);
 
 private:
     void populate();
@@ -56,7 +60,6 @@ private:
     QPushButton*  apply_btn_{nullptr};
     QPushButton*  clear_btn_{nullptr};
 
-    CameraController* controller_{nullptr};
     int  sensor_w_{0};
     int  sensor_h_{0};
     bool populated_{false};

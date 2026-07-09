@@ -20,7 +20,7 @@
 namespace gui {
 
 AlgorithmsPanel::AlgorithmsPanel(AlgoBridge* bridge, QWidget* parent)
-    : QWidget(parent), bridge_(bridge) {
+    : AbstractPanel(parent), bridge_(bridge) {
     build_ui();
 }
 
@@ -33,6 +33,13 @@ void AlgorithmsPanel::build_ui() {
     // (design §5.6.6). Per-algorithm roi_* params are no longer shown in each
     // algo's parameter editor; they're controlled exclusively here.
     build_roi_selector(outer);
+
+    // Global Preprocessing selector (v1.1.0): stackable noise filter + 1/4
+    // downsample applied AFTER the ROI (order: ROI → filter → downsample).
+    // These overlay on top of any main algorithm and are NOT mutually
+    // exclusive with it. Per-algorithm preproc_* params are skipped in each
+    // algo's parameter editor and controlled exclusively here.
+    build_preproc_selector(outer);
 
     auto* scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
@@ -111,6 +118,9 @@ void AlgorithmsPanel::build_ui() {
                 if (p.key == "roi_enabled" || p.key == "roi_x" ||
                     p.key == "roi_y" || p.key == "roi_w" ||
                     p.key == "roi_h") continue;
+                // Skip per-algorithm preproc_* params — they're controlled by
+                // the global Preprocessing selector at the top of the panel.
+                if (p.key.rfind("preproc_", 0) == 0) continue;
 
                 auto* lbl = new QLabel(QString::fromStdString(p.display_name),
                                        params_host);
@@ -220,6 +230,15 @@ void AlgorithmsPanel::build_ui() {
                         // Apply the current global ROI to this newly-enabled
                         // instance so it starts with the right region.
                         apply_global_roi();
+                        // Apply the current global preprocessing settings
+                        // (noise filter + 1/4 downsample) so the new instance
+                        // inherits the shared stackable preprocessing stage.
+                        apply_global_preproc("preproc_filter_enabled",
+                            preproc_filter_cb_->isChecked() ? "true" : "false");
+                        apply_global_preproc("preproc_downsample",
+                            preproc_downsample_cb_->isChecked() ? "true" : "false");
+                        apply_global_preproc("preproc_filter_mode",
+                            std::to_string(preproc_filter_mode_combo_->currentIndex()));
                     }
                     emit info_message(tr("Algorithm enabled: %1")
                                           .arg(QString::fromStdString(a->display_name)));
@@ -304,6 +323,63 @@ void AlgorithmsPanel::apply_global_roi() {
         inst->set_param("roi_w", w);
         inst->set_param("roi_h", h);
     }
+}
+
+void AlgorithmsPanel::apply_global_preproc(const std::string& key,
+                                           const std::string& value) {
+    // Delegate to the bridge, which iterates every live self-developed
+    // instance and forwards the preproc_* parameter. Each backend's
+    // Preprocessor / RoiFilter member recognises the key. Preprocessing is
+    // stackable and NOT mutually exclusive with the main algorithm.
+    if (bridge_) bridge_->apply_global_preproc(key, value);
+}
+
+void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
+    auto* gb = new QGroupBox(tr("Preprocessing (ROI → filter → downsample)"), this);
+    auto* form = new QFormLayout(gb);
+    form->setContentsMargins(6, 6, 6, 6);
+
+    // Noise filter enable (default off — opt-in denoising stage).
+    preproc_filter_cb_ = new QCheckBox(tr("Noise filter"), gb);
+    preproc_filter_cb_->setChecked(false);
+    form->addRow(preproc_filter_cb_);
+
+    // 1/4 downsample (default ON to preserve v1.0.0 behaviour where
+    // event_to_video had downsample=true).
+    preproc_downsample_cb_ = new QCheckBox(tr("1/4 Downsample"), gb);
+    preproc_downsample_cb_->setChecked(true);
+    form->addRow(preproc_downsample_cb_);
+
+    // Filter mode (8 modes, default STCF=1).
+    preproc_filter_mode_combo_ = new QComboBox(gb);
+    preproc_filter_mode_combo_->addItem("0=BAF");
+    preproc_filter_mode_combo_->addItem("1=STCF");
+    preproc_filter_mode_combo_->addItem("2=Refractory");
+    preproc_filter_mode_combo_->addItem("3=DWF");
+    preproc_filter_mode_combo_->addItem("4=AgePolarity");
+    preproc_filter_mode_combo_->addItem("5=Harmonic");
+    preproc_filter_mode_combo_->addItem("6=Repetitious");
+    preproc_filter_mode_combo_->addItem("7=SpatialBP");
+    preproc_filter_mode_combo_->setCurrentIndex(1);  // STCF
+    form->addRow(tr("Filter mode"), preproc_filter_mode_combo_);
+
+    parent_layout->addWidget(gb);
+
+    // Wire up: any change applies the preproc setting to all live instances.
+    // These checkboxes are intentionally NOT added to checkboxes_ (the
+    // algorithm-mutex map) so enabling preprocessing does not disable the
+    // main algorithm — preprocessing overlays on top of it.
+    connect(preproc_filter_cb_, &QCheckBox::toggled, this, [this](bool on) {
+        apply_global_preproc("preproc_filter_enabled", on ? "true" : "false");
+    });
+    connect(preproc_downsample_cb_, &QCheckBox::toggled, this, [this](bool on) {
+        apply_global_preproc("preproc_downsample", on ? "true" : "false");
+    });
+    connect(preproc_filter_mode_combo_,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int idx) {
+                apply_global_preproc("preproc_filter_mode", std::to_string(idx));
+            });
 }
 
 void AlgorithmsPanel::apply_param(const std::string& algo_name,

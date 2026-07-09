@@ -17,7 +17,7 @@
 
 namespace gui {
 
-PreprocessingPanel::PreprocessingPanel(QWidget* parent) : QWidget(parent) {
+PreprocessingPanel::PreprocessingPanel(QWidget* parent) : AbstractPanel(parent) {
     build_ui();
     setEnabled(false);
 }
@@ -140,8 +140,8 @@ void PreprocessingPanel::build_ui() {
 }
 
 void PreprocessingPanel::apply_stage(const QString& stage) {
-    if (!controller_) return;
-    auto* chain = controller_->filter_chain();
+    if (!camera_) return;
+    auto* chain = camera_->filter_chain();
     auto* cb = enables_.value(stage);
     if (!cb) return;
     // Use the thread-safe locked wrappers. Calling chain->stage()->set_enabled
@@ -180,7 +180,7 @@ void PreprocessingPanel::apply_stage(const QString& stage) {
 }
 
 void PreprocessingPanel::on_camera_connected(CameraController* controller) {
-    controller_ = controller;
+    camera_ = controller;
     setEnabled(true);
     // Re-apply any stages that were enabled before the camera connected
     // (e.g. via the Preprocess menu while disconnected). Without this the
@@ -193,19 +193,19 @@ void PreprocessingPanel::on_camera_connected(CameraController* controller) {
 }
 
 void PreprocessingPanel::on_camera_disconnected() {
-    // Disable every stage in the FilterChain BEFORE nullifying controller_.
+    // Disable every stage in the FilterChain BEFORE nullifying camera_.
     // CameraController is a long-lived MainWindow member (not destroyed on
     // disconnect) and CameraController::teardown() does not reset filter_chain_,
     // so previously-enabled stages would keep filtering events from the next
     // camera with no UI indication. apply_stage() early-returns once
-    // controller_ is null, so we must drive the chain directly here.
-    if (controller_) {
-        auto* chain = controller_->filter_chain();
+    // camera_ is null, so we must drive the chain directly here.
+    if (camera_) {
+        auto* chain = camera_->filter_chain();
         for (auto it = enables_.constBegin(); it != enables_.constEnd(); ++it) {
             chain->set_stage_enabled(it.key().toStdString(), false);
         }
     }
-    controller_ = nullptr;
+    camera_ = nullptr;
     setEnabled(false);
     for (auto* cb : enables_) {
         cb->blockSignals(true);

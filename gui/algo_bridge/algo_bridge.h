@@ -22,7 +22,14 @@
 
 #include "algo_backend.h"  // AlgoBackend, AlgoResult, Overlay* structs
 
+class QImage;  // Qt forward declaration (used in apply_strategy signature).
+
 namespace gui {
+
+// Forward declarations to break the include cycle with gui/display/display_strategy.h
+// (which itself only forward-declares AlgoInstance/AlgoInfo/AlgoResult).
+class IDisplayStrategy;
+struct DisplayContext;
 
 /// How an algorithm's result is presented in the UI (design §5.6.1).
 enum class AlgoDisplayMode {
@@ -67,6 +74,11 @@ class AlgoInstance {
 public:
     explicit AlgoInstance(const AlgoInfo& info, int width = 1280, int height = 720);
 
+    // Defined out-of-line (in algo_bridge.cpp) so the std::unique_ptr<IDisplayStrategy>
+    // member can be destroyed with a complete type — IDisplayStrategy is only
+    // forward-declared in this header.
+    ~AlgoInstance();
+
     const AlgoInfo& info() const { return info_; }
 
     void set_param(const std::string& key, const std::string& value);
@@ -91,6 +103,13 @@ public:
     /// Pull the latest result (filtered events + overlay + frame).
     AlgoResult pull_result();
 
+    /// Dispatches the already-pulled @p result to this instance's display
+    /// strategy (selected at construction from info().display_mode). The
+    /// caller fills @p ctx with its display members; apply_strategy() then
+    /// sets ctx.instance = this and forwards to the strategy. Replaces the
+    /// former switch in MainWindow::process_algo_results() (design §3.5.4).
+    void apply_strategy(QImage& frame, AlgoResult& result, DisplayContext& ctx);
+
     /// Reset the underlying backend.
     void reset();
 
@@ -106,6 +125,9 @@ private:
     mutable std::mutex mutex_;
     std::unordered_map<std::string, std::string> param_values_;
     std::unique_ptr<AlgoBackend> backend_;
+    // Display strategy selected from info_.display_mode at construction
+    // (design §3.5.3). Owned by the instance; apply_strategy() forwards to it.
+    std::unique_ptr<IDisplayStrategy> strategy_;
     bool enabled_{false};
 
     // --- Flood guard (design §5.6.7) -------------------------------------
@@ -147,6 +169,13 @@ public:
     /// @brief Sets the actual sensor dimensions so new instances are created
     /// with the correct width/height instead of the 1280x720 default.
     void set_sensor_dimensions(int width, int height);
+
+    /// @brief Applies a shared preprocessing parameter (preproc_*) to every
+    /// live self-developed instance. Preprocessing (noise filter + 1/4
+    /// downsample) is stackable and overlays on top of any main algorithm;
+    /// it is NOT mutually exclusive. Used by AlgorithmsPanel's preproc
+    /// selector so a single control updates all enabled algorithms.
+    void apply_global_preproc(const std::string& key, const std::string& value);
 
     /// @brief Looks up a live instance by name. Returns nullptr if no live
     /// instance exists (either never created or already destroyed).

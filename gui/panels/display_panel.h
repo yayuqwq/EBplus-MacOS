@@ -11,6 +11,8 @@
 
 #include <QWidget>
 
+#include "abstract_panel.h"
+
 class QSlider;
 class QDoubleSpinBox;
 class QSpinBox;
@@ -18,10 +20,14 @@ class QComboBox;
 
 namespace gui {
 
-class DisplayPanel : public QWidget {
+class DisplayPanel : public AbstractPanel {
     Q_OBJECT
 public:
     explicit DisplayPanel(QWidget* parent = nullptr);
+
+    QString panel_id() const override { return QStringLiteral("display"); }
+    QString panel_title() const override { return tr("Display"); }
+    QString panel_group() const override { return QStringLiteral("显示与统计"); }
 
     int accumulation_time_us() const;
     int color_palette_index() const;

@@ -1,14 +1,17 @@
 // gui/main_window.h — top-level QMainWindow.
 //
 // Layout (design §5.1):
-//   - central:  EventDisplayWidget (OpenGL)
-//   - right dock: SettingsPanel (two tabs: 基础功能 / 算法模块)
+//   - title bar:  CustomTitleBar (app icon/name + 5 menu dropdowns + window
+//                 controls), installed via setMenuWidget — no QMenuBar hack.
+//   - central:    EventDisplayWidget (OpenGL)
+//   - right dock: SettingsPanel (stacked CollapsibleSections per panel_group)
 //   - bottom (status bar): connection | event rate | timestamp | recording state
 //   - bottom (above status bar): PlaybackControls (file playback only)
-//   - menu bar: File | View | Camera | Calibration | Tools | Help
+//   - menus:      File | View | Camera | Tools | Help (Theme folds into View,
+//                 Calibration folds into Tools — design §3.6.3)
 //
 // The Algorithm menu has been removed — all algorithm configuration lives
-// in the sidebar's "算法模块" tab. The sidebar can be hidden via the
+// in the sidebar's "算法模块" section. The sidebar can be hidden via the
 // View menu (Ctrl+Shift+S) to maximize the display area.
 //
 // Phase 1-2: live camera + bias/roi/esp/trigger control.
@@ -55,6 +58,7 @@ class QAction;
 class QMenu;
 class QToolBar;
 class QDockWidget;
+class QTimer;
 
 namespace gui {
 
@@ -71,7 +75,6 @@ public:
 protected:
     void closeEvent(QCloseEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
-    bool eventFilter(QObject* obj, QEvent* event) override;
 
 signals:
     /// Emitted from the frame_ready handler after process_algo_results() has
@@ -113,6 +116,9 @@ private slots:
     void on_load_layout();
     void on_reset_layout();
 
+    // Status bar recording-dot blink (design §3.8.2).
+    void on_rec_blink();
+
 private:
     void build_menus();
     void build_toolbar();
@@ -121,6 +127,15 @@ private:
     void wire_signals();
     void update_palettes(int index);
     void forward_panel_message(const QString& msg, bool isError);
+
+    /// Updates the connection-status dot color (green connected / gray
+    /// disconnected) and toggles the text label's class property so the QSS
+    /// status-conn / status-disc rules recolor it. Call after setText().
+    void set_conn_connected(bool connected);
+    /// Starts the 500ms recording blink timer and shows the red dot.
+    void start_rec_blink();
+    /// Stops the blink timer and hides the red dot.
+    void stop_rec_blink();
 
     /// Shows/hides the right-edge sidebar tab based on dock visibility.
     /// Called whenever the settings dock is toggled.
@@ -151,6 +166,10 @@ private:
     QLabel* status_rate_{nullptr};
     QLabel* status_ts_{nullptr};
     QLabel* status_rec_{nullptr};
+    QLabel* status_conn_dot_{nullptr};   ///< Colored dot (green/gray).
+    QLabel* status_rec_dot_{nullptr};    ///< Red dot, blinks while recording.
+    QTimer* rec_blink_timer_{nullptr};
+    bool rec_blink_on_{false};
 
     // File menu actions.
     QAction* a_save_cfg_{nullptr};
@@ -243,6 +262,11 @@ private:
 
     /// Edge/corner resize handles for the frameless window.
     std::vector<ResizeGrip*> resize_grips_;
+
+    /// Custom title bar (installed via setMenuWidget) — replaces the old
+    /// QMenuBar hack. Holds the app icon/name, the 5 menu dropdown buttons,
+    /// and the window control buttons (design §3.6.1).
+    CustomTitleBar* title_bar_{nullptr};
 };
 
 } // namespace gui

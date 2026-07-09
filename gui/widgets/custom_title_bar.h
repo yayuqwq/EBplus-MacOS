@@ -7,11 +7,14 @@
 // unlike the native title bar whose color is controlled by the window manager
 // and cannot be changed reliably from Qt.
 //
-// Layout (left to right):
-//   [menu bar] [stretch] [title label] [stretch] [minimize] [maximize] [close]
+// Layout (left to right) per design §3.6.1:
+//   [app icon][app name]  [文件▾][视图▾][相机▾][工具▾][帮助▾]  [—][□][✕]
+//   left cluster           menu dropdown buttons            window controls
 //
-// Dragging the title bar moves the window (QWindow::startSystemMove).
-// Double-clicking toggles maximize/restore.
+// The menus are no longer a top-level QMenuBar; each menu is a QPushButton
+// that pops up a QMenu on click (addMenu). Dragging the empty title-bar area
+// moves the window (QWindow::startSystemMove). Double-clicking toggles
+// maximize/restore.
 //
 // ResizeGrip provides 8 edge/corner resize handles so the frameless window
 // remains resizable (QWindow::startSystemResize).
@@ -22,42 +25,45 @@
 #include <QColor>
 #include <QWidget>
 
+class QHBoxLayout;
 class QLabel;
-class QMenuBar;
+class QMenu;
 class QPushButton;
 
 namespace gui {
 
-/// @brief Custom title bar widget — replaces the native WM title bar.
-///
-/// The background color is set directly (not via the WM), so it always
-/// matches the application theme. See the VSCode reference above.
+/// @brief Custom title bar widget — replaces the native WM title bar and the
+/// old QMenuBar hack. Installed via QMainWindow::setMenuWidget().
 class CustomTitleBar : public QWidget {
     Q_OBJECT
 public:
     explicit CustomTitleBar(QWidget* parent = nullptr);
 
-    /// Reparents @p menu_bar into the title bar (left side).
-    void setMenuBar(QMenuBar* menu_bar);
-
-    /// Sets the window title text shown in the center.
+    /// Sets the application title text shown on the left.
     void setTitle(const QString& title);
+    /// Sets the application icon shown on the left of the title.
+    void setAppIcon(const QIcon& icon);
 
-    /// Sets the background and text colors.
-    /// @p bg should be slightly darker than the main window background.
+    /// Sets the background and text colors. The background always tracks the
+    /// application theme; the text color is black in light mode, white in dark.
     void setColors(const QColor& bg, const QColor& fg);
 
-    QSize sizeHint() const override { return {0, 32}; }
-    QSize minimumSizeHint() const override { return {0, 32}; }
+    /// @brief Adds a menu dropdown button labeled @p title.
+    /// @return The QMenu owned by the button, so the caller can populate it
+    ///         with actions.
+    QMenu* addMenu(const QString& title);
+
+    QSize sizeHint() const override { return {0, 36}; }
+    QSize minimumSizeHint() const override { return {0, 36}; }
 
 protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
-    void paintEvent(QPaintEvent* event) override;
 
 private:
-    QMenuBar* menu_bar_{nullptr};
+    QLabel* icon_label_{nullptr};
     QLabel* title_label_{nullptr};
+    QHBoxLayout* menu_layout_{nullptr};
     QPushButton* btn_min_{nullptr};
     QPushButton* btn_max_{nullptr};
     QPushButton* btn_close_{nullptr};

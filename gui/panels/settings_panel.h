@@ -1,17 +1,27 @@
-// gui/panels/settings_panel.h — right-dock container with two tabs:
-//   1. 基础功能 (Basic Features): Devices, Information, Statistics, Display,
-//      Biases, ROI, ESP, Trigger, Preprocessing, File Tools, Calibration
-//   2. 算法模块 (Algorithm Modules): AlgorithmsPanel + global Algorithm ROI
+// gui/panels/settings_panel.h — right-dock container.
 //
-// The tab structure lets the user switch between camera/display setup and
-// algorithm configuration without scrolling through a single long list.
-// The dock can be hidden via the View menu or Ctrl+Shift+S to maximize the
-// display area.
+// Phase 3 (§3.7): the sidebar regresses from the two-tab layout to a VSCode-
+// style stack of CollapsibleSection widgets, one per panel_group(). Panels
+// are aggregated via panels_in_group(); each section's collapse state is
+// persisted by CollapsibleSection itself. The dock can be hidden via the
+// View menu or Ctrl+Shift+S to maximize the display area.
+//
+// Phase 2 (§3.3.3): panels are stored in a registry (panels_) keyed by
+// panel_id(), so MainWindow looks up panels via find_panel("biases") instead
+// of a hardcoded accessor per panel. The registry is the single source of
+// truth; the visible layout (now stacked sections) is independent of it, so
+// programmatic find_panel() access is unaffected by the layout change.
 
 #ifndef GUI_PANELS_SETTINGS_PANEL_H
 #define GUI_PANELS_SETTINGS_PANEL_H
 
+#include <QString>
 #include <QWidget>
+#include <memory>
+#include <unordered_map>
+#include <vector>
+
+#include "abstract_panel.h"
 
 class QGroupBox;
 class QTabWidget;
@@ -39,34 +49,47 @@ public:
                            FileConverter* converter = nullptr,
                            QWidget* parent = nullptr);
 
-    InformationPanel*  information_panel()     const { return information_; }
-    StatisticsPanel*   statistics_panel()      const { return statistics_; }
-    DisplayPanel*      display_panel()         const { return display_; }
-    DevicesPanel*      devices_panel()         const { return devices_; }
-    BiasesPanel*       biases_panel()          const { return biases_panel_; }
-    RoiPanel*          roi_panel()             const { return roi_; }
-    EspPanel*          esp_panel()             const { return esp_; }
-    TriggerPanel*      trigger_panel()         const { return trigger_; }
-    PreprocessingPanel* preprocessing_panel()  const { return preprocessing_; }
-    AlgorithmsPanel*   algorithms_panel()      const { return algorithms_; }
-    FileToolsPanel*    file_tools_panel()      const { return file_tools_; }
-    QTabWidget*        tab_widget()            const { return tabs_; }
+    /// @brief Registers a panel into the internal registry. The panel is
+    /// keyed by its panel_id(); lookups use find_panel(). Ownership of the
+    /// unique_ptr transfers to SettingsPanel.
+    /// @return Raw pointer to the registered panel (still valid until this
+    /// SettingsPanel is destroyed).
+    AbstractPanel* register_panel(std::unique_ptr<AbstractPanel> panel);
+
+    /// @brief Looks up a panel by id. Returns nullptr if not found.
+    AbstractPanel* find_panel(const QString& id) const;
+
+    /// @brief Returns all panels whose panel_group() equals @p group.
+    std::vector<AbstractPanel*> panels_in_group(const QString& group) const;
+
+    /// @brief Returns all registered panels.
+    const std::vector<std::unique_ptr<AbstractPanel>>& panels() const { return panels_; }
+
+    // Type-safe accessors (kept for MainWindow compatibility; each delegates
+    // to find_panel() + static_cast so the registry is the single source of
+    // truth). Phase 3 will migrate MainWindow to find_panel() directly.
+    InformationPanel*   information_panel()    const;
+    StatisticsPanel*    statistics_panel()     const;
+    DisplayPanel*       display_panel()        const;
+    DevicesPanel*       devices_panel()        const;
+    BiasesPanel*        biases_panel()         const;
+    RoiPanel*           roi_panel()            const;
+    EspPanel*           esp_panel()            const;
+    TriggerPanel*       trigger_panel()        const;
+    PreprocessingPanel* preprocessing_panel() const;
+    AlgorithmsPanel*    algorithms_panel()     const;
+    FileToolsPanel*     file_tools_panel()     const;
+    QTabWidget*         tab_widget()           const { return tabs_; }
 
     /// @brief Installs an externally-built calibration panel (Phase 9).
     void set_calibration_panel(QWidget* panel);
 
 private:
-    InformationPanel*  information_{nullptr};
-    StatisticsPanel*   statistics_{nullptr};
-    DisplayPanel*      display_{nullptr};
-    DevicesPanel*      devices_{nullptr};
-    BiasesPanel*       biases_panel_{nullptr};
-    RoiPanel*          roi_{nullptr};
-    EspPanel*          esp_{nullptr};
-    TriggerPanel*      trigger_{nullptr};
-    PreprocessingPanel* preprocessing_{nullptr};
-    AlgorithmsPanel*   algorithms_{nullptr};
-    FileToolsPanel*    file_tools_{nullptr};
+    // Registry of all panels (owns via unique_ptr; Qt parent-child also
+    // applies once the panel is added to a layout, but the unique_ptr is the
+    // authoritative owner — see register_panel implementation note).
+    std::vector<std::unique_ptr<AbstractPanel>> panels_;
+    std::unordered_map<QString, AbstractPanel*> panel_index_;
 
     QTabWidget* tabs_{nullptr};
 

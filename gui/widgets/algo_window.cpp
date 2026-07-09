@@ -43,8 +43,8 @@ AlgoWindow::AlgoWindow(AlgoBridge* bridge, const std::string& algo_name,
     // QDockWidget requires an inner content widget set via setWidget().
     content_ = new QWidget(this);
     auto* outer = new QVBoxLayout(content_);
-    outer->setContentsMargins(4, 4, 4, 4);
-    outer->setSpacing(4);
+    outer->setContentsMargins(8, 8, 8, 8);
+    outer->setSpacing(8);
 
     // Display area: defaults to a status QLabel; Standalone frame algos
     // install an EventDisplayWidget via set_display_widget() after construction.

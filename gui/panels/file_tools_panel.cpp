@@ -20,7 +20,7 @@
 namespace gui {
 
 FileToolsPanel::FileToolsPanel(FileConverter* converter, QWidget* parent)
-    : QWidget(parent), converter_(converter) {
+    : AbstractPanel(parent), converter_(converter) {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     auto* gb = new QGroupBox(tr("File Tools"), this);

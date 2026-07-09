@@ -5,7 +5,11 @@
 
 #include "algo_bridge.h"
 
+#include <QImage>
+
 #include <mutex>
+
+#include "display/display_strategy.h"  // IDisplayStrategy + concrete strategies
 
 namespace gui {
 
@@ -26,6 +30,23 @@ AlgoInstance::AlgoInstance(const AlgoInfo& info, int width, int height)
             backend_->set_param(p.key, p.default_value);
         }
     }
+    // Select the display strategy from the declared display mode
+    // (design §3.5.3). The strategy is queried later via apply_strategy().
+    switch (info_.display_mode) {
+        case AlgoDisplayMode::Passive:    strategy_ = std::make_unique<PassiveStrategy>(); break;
+        case AlgoDisplayMode::Overlay:    strategy_ = std::make_unique<OverlayStrategy>(); break;
+        case AlgoDisplayMode::Replace:    strategy_ = std::make_unique<ReplaceStrategy>(); break;
+        case AlgoDisplayMode::Standalone: strategy_ = std::make_unique<StandaloneStrategy>(); break;
+    }
+}
+
+// Out-of-line so std::unique_ptr<IDisplayStrategy> destroys with a complete type.
+AlgoInstance::~AlgoInstance() = default;
+
+void AlgoInstance::apply_strategy(QImage& frame, AlgoResult& result,
+                                  DisplayContext& ctx) {
+    ctx.instance = this;
+    strategy_->apply(frame, result, info_, ctx);
 }
 
 void AlgoInstance::set_param(const std::string& key, const std::string& value) {
@@ -179,6 +200,60 @@ std::vector<AlgoParamSpec> roi_params() {
     };
 }
 
+/// Returns the shared preprocessing parameters (v1.1.0): a stackable noise
+/// filter + 1/4 downsample applied AFTER the algorithm ROI, in the order
+/// ROI → filter → downsample. These overlay on top of any main algorithm and
+/// are NOT mutually exclusive with it. preproc_downsample defaults to "true"
+/// to preserve v1.0.0 behaviour (event_to_video had downsample=true).
+/// preproc_filter_enabled defaults to "false" (opt-in). The preproc_filter_*
+/// params mirror the standalone NoiseFilter params (§4.3.5) so the same 8
+/// denoiser modes are available as a preprocessing stage.
+std::vector<AlgoParamSpec> preproc_params() {
+    return {
+        pbool("preproc_filter_enabled", "Preproc: noise filter", "false"),
+        pbool("preproc_downsample", "Preproc: 1/4 downsample", "true"),
+        penum("preproc_filter_mode", "Preproc: filter mode", "1",
+              {"0=BAF", "1=STCF", "2=Refractory", "3=DWF",
+               "4=AgePolarity", "5=Harmonic", "6=Repetitious", "7=SpatialBP"}),
+        // STCF (mode 1)
+        pfloat("preproc_filter_correlation_time_s", "Preproc STCF corr (s)", "0.005", "0.001", "0.1"),
+        pint("preproc_filter_min_neighbors", "Preproc STCF min nbr", "2", "1", "8"),
+        pbool("preproc_filter_require_polarity_match", "Preproc STCF pol match", "false"),
+        pbool("preproc_filter_allow_coincidence", "Preproc STCF coincide", "false"),
+        // BAF (mode 0)
+        pint("preproc_filter_baf_dt_us", "Preproc BAF dt (us)", "1000", "1000", "100000"),
+        pint("preproc_filter_baf_subsample_by", "Preproc BAF subsample", "0", "0", "4"),
+        // Refractory (mode 2)
+        pint("preproc_filter_refractory_us", "Preproc Refractory (us)", "1000", "100", "100000"),
+        // DWF (mode 3)
+        pint("preproc_filter_dwf_window_length", "Preproc DWF win len", "2", "1", "100"),
+        pint("preproc_filter_dwf_dist_threshold", "Preproc DWF dist", "2", "1", "1024"),
+        pint("preproc_filter_dwf_min_correlated", "Preproc DWF min corr", "2", "1", "8"),
+        pbool("preproc_filter_dwf_double_mode", "Preproc DWF double", "false"),
+        // AgePolarity (mode 4)
+        pint("preproc_filter_agep_tau_us", "Preproc AgePol tau (us)", "3000", "1000", "100000"),
+        pfloat("preproc_filter_age_threshold", "Preproc AgePol thresh", "2.0", "0.0", "8.0"),
+        pint("preproc_filter_agep_radius", "Preproc AgePol radius", "2", "1", "5"),
+        // Harmonic (mode 5)
+        penum("preproc_filter_line_freq_hz", "Preproc Harmonic Hz", "50", {"50", "60"}),
+        pfloat("preproc_filter_notch_q", "Preproc Harmonic Q", "5.0", "0.1", "100.0"),
+        pfloat("preproc_filter_harmonic_threshold", "Preproc Harmonic thresh", "0.1", "0.0", "1.0"),
+        // Repetitious (mode 6)
+        pint("preproc_filter_rep_period_us", "Preproc Rep period (us)", "5000", "1000", "1000000"),
+        pint("preproc_filter_rep_tolerance_us", "Preproc Rep tol (us)", "1000", "100", "10000"),
+        pint("preproc_filter_rep_ratio_shorter", "Preproc Rep ratio short", "10", "1", "100"),
+        pint("preproc_filter_rep_ratio_longer", "Preproc Rep ratio long", "10", "1", "100"),
+        pint("preproc_filter_rep_min_dt_to_store_us", "Preproc Rep min dt (us)", "1000", "0", "1000000"),
+        // SpatialBP (mode 7)
+        pint("preproc_filter_sbp_center_radius_px", "Preproc SBP center", "2", "1", "10"),
+        pint("preproc_filter_sbp_surround_radius_px", "Preproc SBP surround", "10", "5", "30"),
+        pint("preproc_filter_sbp_dt_surround_us", "Preproc SBP dt (us)", "10000", "100", "1000000"),
+        // Cross-mode flags
+        pbool("preproc_filter_filter_hot_pixels", "Preproc filter hot px", "false"),
+        pbool("preproc_filter_adaptive_correlation_time", "Preproc adaptive corr", "false"),
+    };
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -232,6 +307,23 @@ std::shared_ptr<AlgoInstance> AlgoBridge::find_or_create(const std::string& name
 void AlgoBridge::set_sensor_dimensions(int width, int height) {
     sensor_w_ = (width > 0) ? width : 1280;
     sensor_h_ = (height > 0) ? height : 720;
+}
+
+void AlgoBridge::apply_global_preproc(const std::string& key,
+                                      const std::string& value) {
+    // Apply the preproc_* parameter to every live self-developed instance.
+    // Preprocessing is stackable and overlays on top of any main algorithm;
+    // it is NOT mutually exclusive with it. Each backend's Preprocessor /
+    // RoiFilter member handles the key (returns true from set_param).
+    std::lock_guard<std::mutex> lk(live_mutex_);
+    for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
+        if (auto inst = it->second.lock()) {
+            inst->set_param(key, value);
+            ++it;
+        } else {
+            it = live_instances_.erase(it);
+        }
+    }
 }
 
 std::shared_ptr<AlgoInstance> AlgoBridge::find_live(const std::string& name) {
@@ -461,52 +553,16 @@ void AlgoBridge::register_self_cv() {
     auto add = [&](AlgoInfo a) {
         a.source = "self";
         a.category = "cv";
-        // All self-developed CV algorithms support ROI (design §5.6.6).
+        // All self-developed CV algorithms support ROI (design §5.6.6) and the
+        // shared preprocessing stage (v1.1.0: ROI → filter → downsample).
         for (auto& p : roi_params()) a.params.push_back(std::move(p));
+        for (auto& p : preproc_params()) a.params.push_back(std::move(p));
         registry_[a.name] = std::move(a);
     };
 
-    // §4.3.5 Noise Filter (8 modes)
-    add({"noise_filter", "Noise Filter", "cv", "self",
-         AlgoDisplayMode::Passive,
-         {penum("mode", "Mode", "1", {"0=BAF", "1=STCF", "2=Refractory",
-           "3=DWF", "4=AgePolarity", "5=Harmonic", "6=Repetitious", "7=SpatialBP"}),
-          // STCF (mode 1)
-          pfloat("correlation_time_s", "STCF corr time (s)", "0.005", "0.001", "0.1"),
-          pint("min_neighbors", "STCF min neighbors", "2", "1", "8"),
-          pbool("require_polarity_match", "STCF polarity match", "false"),
-          pbool("allow_coincidence", "STCF allow coincidence", "false"),
-          // BAF (mode 0)
-          pint("baf_dt_us", "BAF dt (us)", "1000", "1000", "100000"),
-          pint("baf_subsample_by", "BAF subsample by", "0", "0", "4"),
-          // Refractory (mode 2)
-          pint("refractory_us", "Refractory (us)", "1000", "100", "100000"),
-          // DWF (mode 3)
-          pint("dwf_window_length", "DWF window length", "2", "1", "100"),
-          pint("dwf_dist_threshold", "DWF dist threshold", "2", "1", "1024"),
-          pint("dwf_min_correlated", "DWF min correlated", "2", "1", "8"),
-          pbool("dwf_double_mode", "DWF double mode", "false"),
-          // AgePolarity (mode 4)
-          pint("agep_tau_us", "AgePol tau (us)", "3000", "1000", "100000"),
-          pfloat("age_threshold", "AgePol threshold", "2.0", "0.0", "8.0"),
-          pint("agep_radius", "AgePol radius", "2", "1", "5"),
-          // Harmonic (mode 5)
-          penum("line_freq_hz", "Harmonic line freq (Hz)", "50", {"50", "60"}),
-          pfloat("notch_q", "Harmonic notch Q", "5.0", "0.1", "100.0"),
-          pfloat("harmonic_threshold", "Harmonic threshold", "0.1", "0.0", "1.0"),
-          // Repetitious (mode 6)
-          pint("rep_period_us", "Rep period (us)", "5000", "1000", "1000000"),
-          pint("rep_tolerance_us", "Rep tolerance (us)", "1000", "100", "10000"),
-          pint("rep_ratio_shorter", "Rep ratio shorter", "10", "1", "100"),
-          pint("rep_ratio_longer", "Rep ratio longer", "10", "1", "100"),
-          pint("rep_min_dt_to_store_us", "Rep min dt store (us)", "1000", "0", "1000000"),
-          // SpatialBP (mode 7)
-          pint("sbp_center_radius_px", "SBP center radius", "2", "1", "10"),
-          pint("sbp_surround_radius_px", "SBP surround radius", "10", "5", "30"),
-          pint("sbp_dt_surround_us", "SBP dt surround (us)", "10000", "100", "1000000"),
-          // Cross-mode flags
-          pbool("filter_hot_pixels", "Filter hot pixels", "false"),
-          pbool("adaptive_correlation_time", "Adaptive corr time", "false")}});
+    // §4.3.5 Noise Filter — removed as a standalone algorithm in v1.1.0; the
+    // noise filter is now a stackable preprocessing stage (see preproc_params)
+    // shared by all self-developed algorithms (ROI → filter → downsample).
 
     // §4.3.6 Hot Pixel Filter
     add({"hot_pixel_filter", "Hot Pixel Filter", "cv", "self",
@@ -677,8 +733,10 @@ void AlgoBridge::register_self_analytics() {
     auto add = [&](AlgoInfo a) {
         a.source = "self";
         a.category = "analytics";
-        // All self-developed analytics algorithms support ROI (design §5.6.6).
+        // All self-developed analytics algorithms support ROI (design §5.6.6)
+        // and the shared preprocessing stage (v1.1.0: ROI → filter → downsample).
         for (auto& p : roi_params()) a.params.push_back(std::move(p));
+        for (auto& p : preproc_params()) a.params.push_back(std::move(p));
         registry_[a.name] = std::move(a);
     };
 
@@ -717,7 +775,8 @@ void AlgoBridge::register_self_analytics() {
           pstring("model_path", "Model path (ONNX)", "models/e2vid_lightweight.onnx", "2"),
           pint("num_bins", "Num bins", "5", "1", "20", "2"),
           pbool("auto_hdr", "Auto HDR", "false", "2"),
-          pbool("downsample", "1/4 Downsample", "true"),
+          // 1/4 downsample is now a shared preprocessing stage
+          // (preproc_downsample) — removed the per-algo downsample param.
           pfloat("unsharp_amount", "Unsharp amount", "0.3", "0.0", "2.0", "2"),
           pfloat("unsharp_sigma", "Unsharp sigma", "1.0", "0.1", "5.0", "2"),
           pfloat("bilateral_sigma", "Bilateral sigma", "0.0", "0.0", "10.0", "2")}});
