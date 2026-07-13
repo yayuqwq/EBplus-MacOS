@@ -69,6 +69,20 @@ RoiPanel::RoiPanel(QWidget* parent) : AbstractPanel(parent) {
     form->addRow(QString(), apply_btn_);
     form->addRow(QString(), clear_btn_);
 
+    // --- Camera menu controls moved here (§14.5) ---
+    form->addRow(new QLabel(QString(), this)); // spacer
+    drag_check_ = new QCheckBox(tr("ROI Drag Mode"), this);
+    drag_check_->setToolTip(tr("Drag on the display to draw an ROI rectangle"));
+    drag_check_->setEnabled(false);
+    form->addRow(tr("Display"), drag_check_);
+
+    preset_combo_ = new QComboBox(this);
+    preset_combo_->setEnabled(false);
+    preset_apply_btn_ = new QPushButton(tr("Apply Preset"), this);
+    preset_apply_btn_->setEnabled(false);
+    form->addRow(tr("Preset"), preset_combo_);
+    form->addRow(QString(), preset_apply_btn_);
+
     setEnabled(false);
 
     connect(enable_check_, &QCheckBox::toggled, this, &RoiPanel::toggle_enable);
@@ -92,6 +106,11 @@ RoiPanel::RoiPanel(QWidget* parent) : AbstractPanel(parent) {
         enable_check_->setChecked(false);
         emit roi_applied(0, 0, 0, 0, false);
         emit info_message(tr("ROI windows cleared."));
+    });
+    connect(drag_check_, &QCheckBox::toggled, this, &RoiPanel::roi_drag_toggled);
+    connect(preset_apply_btn_, &QPushButton::clicked, this, [this]() {
+        const int idx = preset_combo_->currentIndex();
+        if (idx >= 0) emit preset_apply_requested(idx);
     });
 }
 
@@ -259,6 +278,25 @@ bool RoiPanel::apply() {
     }
     emit roi_applied(x, y, w, h, enable_check_->isChecked());
     return true;
+}
+
+void RoiPanel::set_roi_drag_checked(bool checked) {
+    QSignalBlocker b(drag_check_);
+    drag_check_->setChecked(checked);
+}
+
+void RoiPanel::set_roi_drag_enabled(bool enabled) {
+    drag_check_->setEnabled(enabled);
+}
+
+void RoiPanel::set_preset_names(const QStringList& names) {
+    preset_combo_->clear();
+    for (const auto& n : names) preset_combo_->addItem(n);
+}
+
+void RoiPanel::set_presets_enabled(bool enabled) {
+    preset_combo_->setEnabled(enabled);
+    preset_apply_btn_->setEnabled(enabled);
 }
 
 } // namespace gui

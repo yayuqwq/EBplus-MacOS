@@ -53,12 +53,10 @@
 #include "display/space_time_display.h"
 #include "widgets/algo_window.h"
 #include "widgets/custom_title_bar.h"
-#include "widgets/multi_window_manager.h"
 
 class QLabel;
 class QAction;
 class QMenu;
-class QToolBar;
 class QDockWidget;
 class QTimer;
 
@@ -112,8 +110,6 @@ private slots:
     // Phase 10 — multi-window / layout / standalone algorithm views.
     void on_open_xyt_view();
     void on_open_algo_window(const std::string& algo_name);
-    void on_add_display_window();
-    void on_tile_windows();
     void on_save_layout();
     void on_load_layout();
     void on_reset_layout();
@@ -123,7 +119,6 @@ private slots:
 
 private:
     void build_menus();
-    void build_toolbar();
     void build_status_bar();
     void build_title_bar_controls();
     void wire_signals();
@@ -190,9 +185,6 @@ private:
     QAction* a_load_cfg_{nullptr};
     QAction* a_save_biases_{nullptr};
     QAction* a_load_biases_{nullptr};
-    QAction* a_export_{nullptr};
-    QAction* a_record_start_{nullptr};
-    QAction* a_record_stop_{nullptr};
 
     /// "Recent Files" submenu — persisted via QSettings so the list survives
     /// restarts. Most recent first, capped at 10 entries.
@@ -200,9 +192,6 @@ private:
     void build_recent_files_menu();
     void add_recent_file(const QString& path);
     void on_open_recent_file(const QString& path);
-
-    // Camera menu actions.
-    QAction* a_roi_drag_{nullptr};
 
     // Calibration menu actions.
     QMenu* m_calibration_{nullptr};
@@ -228,9 +217,7 @@ private:
     // Phase 9 — owned lazily; built when the wizard is first opened.
     CalibrationWizard* calibration_wizard_{nullptr};
 
-    // Phase 10 — layout manager is owned from construction; multi-window
-    // manager is owned lazily.
-    std::unique_ptr<MultiWindowManager> multi_window_;
+    // Phase 10 — layout manager is owned from construction.
     std::unique_ptr<LayoutManager> layout_manager_;
 
     // Standalone algorithm windows (design §5.6.1 / §5.6.6).
@@ -255,11 +242,6 @@ private:
     /// button. Used to restore the width when content is shown again
     /// (§11.2 point 5). 0 means no saved width (first toggle or never set).
     int saved_sidebar_width_{0};
-
-    /// Main toolbar (top) with prominent buttons for playback panel and
-    /// layout actions. The sidebar toggle is no longer in the toolbar — it
-    /// lives at the bottom of the ActivityBar (§11.2 point 5).
-    QToolBar* main_toolbar_{nullptr};
 
     /// Draws the ROI rectangle of any enabled self-developed algorithm
     /// (design §5.6.6: all self-developed algos support ROI) on the main

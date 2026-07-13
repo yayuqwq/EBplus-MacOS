@@ -54,9 +54,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/calibration/calibration_wizard.cpp")
     )
 endif()
 
-# Phase 10 — multi-window / layout manager.
+# Phase 10 — layout manager.
 list(APPEND GUI_LIB_SOURCES
-    widgets/multi_window_manager.cpp
     widgets/custom_title_bar.cpp
     widgets/collapsible_section.cpp
     widgets/activity_bar.cpp

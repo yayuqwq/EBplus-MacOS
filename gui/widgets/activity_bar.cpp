@@ -68,6 +68,9 @@ ActivityBar::ActivityBar(QWidget* parent)
 
     // VSCode-style styling: transparent background, accent strip on the left
     // edge for the checked button, subtle hover/checked backgrounds.
+    // §15.2: border-right color is set dynamically via set_separator_color()
+    // to match the title bar's bottom line.  §15.4: explicit :checked:hover
+    // rule prevents the accent strip from flickering on hover.
     setStyleSheet(QStringLiteral(
         "QFrame#activity_bar { background-color: palette(window);"
         "  border-right: 1px solid palette(mid); }"
@@ -81,6 +84,10 @@ ActivityBar::ActivityBar(QWidget* parent)
         "}"
         "QPushButton:hover { background-color: palette(midlight); }"
         "QPushButton:checked {"
+        "  background-color: palette(midlight);"
+        "  border-left: 2px solid palette(highlight);"
+        "}"
+        "QPushButton:checked:hover {"
         "  background-color: palette(midlight);"
         "  border-left: 2px solid palette(highlight);"
         "}"));
@@ -152,7 +159,38 @@ void ActivityBar::refresh_icons() {
     // pick up the new theme colors (§12.2.2 — theme color lag fix).
     style()->unpolish(this);
     style()->polish(this);
+    // Re-apply the separator color if one was set (§15.2).
+    if (separator_color_.isValid()) {
+        set_separator_color(separator_color_);
+    }
     update();
+}
+
+void ActivityBar::set_separator_color(const QColor& color) {
+    separator_color_ = color;
+    // Update only the border-right color — rebuild the full QSS string
+    // because QSS doesn't support property-based dynamic colors.
+    const QString sep_hex = color.name();
+    setStyleSheet(QStringLiteral(
+        "QFrame#activity_bar { background-color: palette(window);"
+        "  border-right: 1px solid %1; }"
+        "QPushButton {"
+        "  background: transparent;"
+        "  border: none;"
+        "  border-left: 2px solid transparent;"
+        "  padding: 8px;"
+        "  margin: 0 4px;"
+        "  border-radius: 6px;"
+        "}"
+        "QPushButton:hover { background-color: palette(midlight); }"
+        "QPushButton:checked {"
+        "  background-color: palette(midlight);"
+        "  border-left: 2px solid palette(highlight);"
+        "}"
+        "QPushButton:checked:hover {"
+        "  background-color: palette(midlight);"
+        "  border-left: 2px solid palette(highlight);"
+        "}").arg(sep_hex));
 }
 
 QDockWidget* ActivityBar::find_dock() const {

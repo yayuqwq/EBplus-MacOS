@@ -98,6 +98,11 @@ QString ThemeController::effective_background_hex() const {
                                 theme_tokens::Token::BgPrimary);
 }
 
+QString ThemeController::effective_panel_hex() const {
+    return theme_tokens::lookup(static_cast<int>(color_), is_dark_mode(),
+                                theme_tokens::Token::BgPanel);
+}
+
 QString ThemeController::effective_text_hex() const {
     return theme_tokens::lookup(static_cast<int>(color_), is_dark_mode(),
                                 theme_tokens::Token::FgPrimary);
@@ -213,6 +218,8 @@ void ThemeController::apply_stylesheet() {
     const QColor bg_input(theme_tokens::lookup(color_idx, dark, T::BgInput));
     const QColor bg_panel(theme_tokens::lookup(color_idx, dark, T::BgPanel));
     const QColor accent(theme_tokens::lookup(color_idx, dark, T::Accent));
+    const QColor bg_hover(theme_tokens::lookup(color_idx, dark, T::BgHover));
+    const QColor border(theme_tokens::lookup(color_idx, dark, T::Border));
 
     QPalette pal;
     pal.setColor(QPalette::Window, bg_primary);
@@ -226,6 +233,14 @@ void ThemeController::apply_stylesheet() {
     pal.setColor(QPalette::ToolTipText, fg_primary);
     pal.setColor(QPalette::Highlight, accent);
     pal.setColor(QPalette::HighlightedText, QColor(Qt::white));
+    // §15.4: set Mid/Midlight explicitly so QSS palette(midlight) references
+    // (e.g. ActivityBar :checked/:hover) use the theme's bg-hover token
+    // instead of Qt's auto-computed default which is far too bright in dark
+    // mode.
+    pal.setColor(QPalette::Midlight, bg_hover);
+    pal.setColor(QPalette::Mid, border);
+    pal.setColor(QPalette::Light, bg_hover);
+    pal.setColor(QPalette::Dark, border);
     if (auto* app = qobject_cast<QApplication*>(QCoreApplication::instance())) {
         app->setPalette(pal);
     }

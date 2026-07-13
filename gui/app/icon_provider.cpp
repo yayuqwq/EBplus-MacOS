@@ -4,10 +4,26 @@
 
 #include <QFile>
 #include <QGuiApplication>
+#include <QHash>
 #include <QPalette>
 #include <QPixmap>
 
 namespace gui {
+
+namespace {
+// Cache of rendered icons keyed by "name|color". Avoids repeated file I/O
+// and SVG parsing on theme refreshes (§14.2 — performance fix).
+// The cache grows with the number of distinct (name, color) pairs, which is
+// bounded by (icon count × distinct colors) — typically < 100 entries.
+QHash<QString, QIcon>& icon_cache() {
+    static QHash<QString, QIcon> cache;
+    return cache;
+}
+
+QString cache_key(const QString& name, const QColor& color) {
+    return name + QLatin1Char('|') + color.name();
+}
+} // namespace
 
 QIcon IconProvider::get(const QString& name) {
     // The ThemeController sets the application palette's WindowText/Text to the
@@ -23,6 +39,13 @@ QIcon IconProvider::get(const QString& name, const QColor& color) {
 }
 
 QIcon IconProvider::render(const QString& name, const QColor& color) {
+    // Check the cache first — avoids file I/O + SVG parsing on repeated
+    // requests for the same icon (e.g. during theme refresh).
+    const QString key = cache_key(name, color);
+    auto& cache = icon_cache();
+    auto it = cache.constFind(key);
+    if (it != cache.constEnd()) return it.value();
+
     QFile f(QStringLiteral(":/icons/") + name + QStringLiteral(".svg"));
     if (!f.open(QIODevice::ReadOnly)) return QIcon();
 
@@ -37,7 +60,9 @@ QIcon IconProvider::render(const QString& name, const QColor& color) {
     // the resulting pixmap is 24x24 and QIcon scales it on demand.
     QPixmap pm;
     if (!pm.loadFromData(svg.toUtf8(), "svg")) return QIcon();
-    return QIcon(pm);
+    QIcon icon(pm);
+    cache.insert(key, icon);
+    return icon;
 }
 
 } // namespace gui

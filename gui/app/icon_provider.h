@@ -4,6 +4,9 @@
 // recolored by replacing the SVG's "currentColor" with the requested color,
 // then rendered via QSvgRenderer. This gives cross-platform consistent icons
 // that follow the active theme's foreground color.
+//
+// Rendered icons are cached per (name, color) pair so repeated requests for
+// the same icon (e.g. on theme refresh) skip file I/O and SVG parsing.
 
 #ifndef GUI_APP_ICON_PROVIDER_H
 #define GUI_APP_ICON_PROVIDER_H

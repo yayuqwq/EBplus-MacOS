@@ -68,6 +68,7 @@ public:
 protected:
     void mousePressEvent(QMouseEvent* event) override;
     void mouseDoubleClickEvent(QMouseEvent* event) override;
+    void paintEvent(QPaintEvent* event) override;
 
 private:
     /// Re-renders icon_label_ with app_icon_name_ + title_color_.
@@ -82,6 +83,7 @@ private:
     QColor bg_color_;
     QColor fg_color_;
     QColor title_color_;      // pure black/white — title label + app icon only
+    QColor line_color_;       // bottom separator line color
     QString app_icon_name_;   // SVG name for the app icon (e.g. "camera")
     QString min_icon_name_;
     QString max_icon_name_;

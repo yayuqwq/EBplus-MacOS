@@ -146,31 +146,49 @@ void CustomTitleBar::setColors(const QColor& bg, const QColor& fg, const QColor&
     fg_color_ = fg;
     title_color_ = title_fg;
 
+    // Separator line color — visible on both light and dark backgrounds:
+    // dark bg → lighter line, light bg → darker line (§15.1).
+    line_color_ = bg.lightness() < 128
+        ? bg.lighter(140)
+        : bg.darker(120);
+
     const QString bg_hex = bg.name();
     const QString fg_hex = fg.name();
     const QString title_hex = title_fg.name();
+    const QString line_hex = line_color_.name();
 
-    // Style the title bar background, the embedded labels/menu buttons, and
-    // the popup menus so they all follow the application theme. The window
-    // control buttons stay transparent so the title bar background shows
-    // through; on hover they get a subtle overlay. The #AppTitle label and
-    // #AppIcon label get the inverse title color (§13) so the title is the
-    // most eye-catching element.
+    // §15.3: the background is painted manually in paintEvent() because the
+    // global QSS rule `QWidget { background-color: bg-primary; }` overrides
+    // the local `CustomTitleBar { ... }` rule in Qt's stylesheet cascade for
+    // widgets installed via setMenuWidget().  The QSS here only styles child
+    // widgets (labels, buttons, menus).
     setStyleSheet(QStringLiteral(
-        "CustomTitleBar { background-color: %1; border-bottom: 1px solid rgba(128,128,128,80); }"
         "QLabel { color: %2; background: transparent; border: none; }"
         "QLabel#AppTitle { color: %3; }"
-        "QPushButton { color: %2; }"
+        "QPushButton { color: %2; background: transparent; border: none; }"
         "QPushButton#qt_menubar_ext_button { background: transparent; border: none; }"
-        "QMenu { background-color: %1; color: %2; border: 1px solid rgba(128,128,128,80); }"
+        "QMenu { background-color: %1; color: %2; border: 1px solid %4; }"
         "QMenu::item { padding: 4px 20px; }"
-        "QMenu::item:selected { background-color: rgba(128,128,128,80); }"
-        "QMenu::separator { height: 1px; background: rgba(128,128,128,80); margin: 2px 6px; }"
-    ).arg(bg_hex, fg_hex, title_hex));
+        "QMenu::item:selected { background-color: rgba(128,128,128,60); }"
+        "QMenu::separator { height: 1px; background: %4; margin: 2px 6px; }"
+    ).arg(bg_hex, fg_hex, title_hex, line_hex));
 
     // Re-render window control icons + app icon so they track the new theme.
     refresh_icons();
     update();
+}
+
+void CustomTitleBar::paintEvent(QPaintEvent*) {
+    QPainter p(this);
+    // Fill the title bar background — painted manually to bypass the global
+    // QSS `QWidget { background-color: bg-primary; }` which overrides the
+    // local stylesheet for setMenuWidget()-installed widgets (§15.3).
+    p.fillRect(rect(), bg_color_);
+    // Draw the bottom separator line (§15.1).
+    if (line_color_.isValid()) {
+        p.setPen(QPen(line_color_, 1));
+        p.drawLine(rect().bottomLeft(), rect().bottomRight());
+    }
 }
 
 void CustomTitleBar::mousePressEvent(QMouseEvent* event) {

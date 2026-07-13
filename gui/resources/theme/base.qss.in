@@ -47,7 +47,7 @@ QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
     border-radius: 5px;
     padding: 4px 8px;
     min-height: 26px;
-    max-width: 100px;
+    max-width: 110px;
 }
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
     border: 1px solid %accent%;
@@ -70,6 +70,7 @@ QToolBar QToolButton:disabled { color: %fg-muted%; }
 
 QStatusBar { background-color: %bg-panel%; color: %fg-primary%; }
 QStatusBar::item { border: none; }
+QStatusBar QWidget, QStatusBar QLabel { background-color: %bg-panel%; color: %fg-primary%; }
 
 QMenuBar { background-color: %bg-panel%; color: %fg-primary%; }
 QMenuBar::item:selected { background-color: %bg-input%; }

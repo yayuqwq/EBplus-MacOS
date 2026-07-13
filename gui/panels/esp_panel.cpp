@@ -46,7 +46,7 @@ EspPanel::EspPanel(QWidget* parent) : AbstractPanel(parent) {
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(6);
 
-    hint_label_ = new QLabel(tr("No live camera connected."), this);
+    hint_label_ = new QLabel(tr("Connect a live camera to enable ESP settings."), this);
     hint_label_->setWordWrap(true);
     hint_label_->setProperty("class", "hint");
     outer->addWidget(hint_label_);
@@ -253,7 +253,7 @@ void EspPanel::on_camera_connected(CameraController* controller) {
 void EspPanel::on_camera_disconnected() {
     camera_ = nullptr;
     set_all_enabled(false);
-    hint_label_->setText(tr("No live camera connected."));
+    hint_label_->setText(tr("Connect a live camera to enable ESP settings."));
     hint_label_->setProperty("class", "hint");
     restyle(hint_label_);
 }

@@ -26,6 +26,7 @@
 #ifndef GUI_WIDGETS_ACTIVITY_BAR_H
 #define GUI_WIDGETS_ACTIVITY_BAR_H
 
+#include <QColor>
 #include <QFrame>
 #include <QPoint>
 #include <QString>
@@ -70,6 +71,11 @@ public:
     /// stylesheet pick up the new theme colors (§12.2.2).
     void refresh_icons();
 
+    /// Sets the separator (right border) color. Called by the host on theme
+    /// change so the ActivityBar's vertical line matches the title bar's
+    /// bottom line (§15.2).
+    void set_separator_color(const QColor& color);
+
 signals:
     /// Emitted whenever the selected entry changes (user click or select()).
     void group_selected(int index, const QString& title);
@@ -109,6 +115,10 @@ private:
     QPoint drag_start_pos_;
     /// The dock area the dock was in when the drag started.
     Qt::DockWidgetArea drag_start_area_{Qt::LeftDockWidgetArea};
+
+    /// Separator (right border) color — set by the host to match the title
+    /// bar's bottom line color (§15.2).
+    QColor separator_color_;
 };
 
 } // namespace gui

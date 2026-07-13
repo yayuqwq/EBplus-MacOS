@@ -21,8 +21,6 @@
 #include <QStatusBar>
 #include <QStyle>
 #include <QTimer>
-#include <QToolBar>
-#include <QToolButton>
 #include <QVBoxLayout>
 #include <QWindow>
 
@@ -36,6 +34,7 @@
 #include "panels/devices_panel.h"
 #include "panels/display_panel.h"
 #include "panels/esp_panel.h"
+#include "panels/file_tools_panel.h"
 #include "panels/information_panel.h"
 #include "panels/preprocessing_panel.h"
 #include "panels/roi_panel.h"
@@ -89,7 +88,7 @@ MainWindow::MainWindow(QWidget* parent)
     settings_dock_->setFeatures(QDockWidget::NoDockWidgetFeatures);
     settings_dock_->setTitleBarWidget(new QWidget(this));
     addDockWidget(Qt::LeftDockWidgetArea, settings_dock_);
-    settings_dock_->setMinimumWidth(160);
+    settings_dock_->setMinimumWidth(200);
 
     // Sidebar content toggle (§11.2 point 5): when the user clicks the
     // toggle button at the bottom of the ActivityBar, SettingsPanel emits
@@ -129,9 +128,12 @@ MainWindow::MainWindow(QWidget* parent)
     setMenuWidget(title_bar_);
 
     build_menus();
-    build_toolbar();
     build_status_bar();
     wire_signals();
+
+    // Populate the ROI panel's preset combo from the config manager (§14.5 —
+    // presets moved from the Camera menu to the sidebar ROI panel).
+    settings_->roi_panel()->set_preset_names(config_.preset_names());
 
     build_title_bar_controls();
 
@@ -151,9 +153,9 @@ MainWindow::MainWindow(QWidget* parent)
     // default width BEFORE capturing so reset_layout() restores to this
     // width instead of Qt's initial wide default (§13.2).
     if (settings_dock_) {
-        settings_dock_->setMinimumWidth(160);
+        settings_dock_->setMinimumWidth(200);
         const QList<QDockWidget*> docks = {settings_dock_};
-        const QList<int> sizes = {190};
+        const QList<int> sizes = {380};
         resizeDocks(docks, sizes, Qt::Horizontal);
     }
     layout_manager_->capture_default();
@@ -174,9 +176,9 @@ MainWindow::MainWindow(QWidget* parent)
     // the window is shown and the layout pass has settled (§13.2).
     QTimer::singleShot(0, this, [this]() {
         if (!settings_dock_ || !settings_dock_->isVisible()) return;
-        settings_dock_->setMinimumWidth(160);
+        settings_dock_->setMinimumWidth(200);
         const QList<QDockWidget*> docks = {settings_dock_};
-        const QList<int> sizes = {190};
+        const QList<int> sizes = {380};
         resizeDocks(docks, sizes, Qt::Horizontal);
     });
     // Set the initial toggle icon based on the dock's current area (left by
@@ -269,13 +271,27 @@ void MainWindow::build_title_bar_controls() {
     // action icons are re-rendered via the "icon_name" property (§13.1).
     auto apply = [this]() {
         if (!title_bar_) return;
-        const QColor bg(theme_.effective_background_hex());
+        // §15.3: title bar uses the panel color (same as the status bar) so
+        // both bars share the same shade, with a subtle difference from the
+        // sidebar which uses the primary background.
+        const QColor bg(theme_.effective_panel_hex());
         const QColor fg(theme_.effective_text_hex());
         // RGB-inverse of the background — "颜色意义上的反色" like main branch
         // (255-r, 255-g, 255-b). This rule applies ONLY to the title label
         // and camera icon; all other title-bar elements use the theme fg.
         const QColor title_fg(255 - bg.red(), 255 - bg.green(), 255 - bg.blue());
         title_bar_->setColors(bg, fg, title_fg);
+        // §15.2: set the ActivityBar's separator color to match the title
+        // bar's bottom line so both lines are consistent.  Dark bg → lighter
+        // line, light bg → darker line (same logic as CustomTitleBar).
+        if (settings_) {
+            if (auto* bar = settings_->findChild<ActivityBar*>()) {
+                const QColor sep = bg.lightness() < 128
+                    ? bg.lighter(140)
+                    : bg.darker(120);
+                bar->set_separator_color(sep);
+            }
+        }
         // Re-render theme-recolorable status bar icons (BUG-4).
         if (status_rate_icon_) {
             status_rate_icon_->setPixmap(
@@ -284,17 +300,6 @@ void MainWindow::build_title_bar_controls() {
         if (status_ts_icon_) {
             status_ts_icon_->setPixmap(
                 IconProvider::get(QStringLiteral("clock")).pixmap(QSize(12, 12)));
-        }
-        // Refresh toolbar action icons — each action stores its SVG name in
-        // the "icon_name" property (set in build_toolbar) so we can re-render
-        // with the new theme's foreground color (§13.1).
-        if (main_toolbar_) {
-            for (QAction* act : main_toolbar_->actions()) {
-                const QString name = act->property("icon_name").toString();
-                if (!name.isEmpty()) {
-                    act->setIcon(IconProvider::get(name));
-                }
-            }
         }
         // Refresh ActivityBar icons so they track the new theme.
         if (settings_) settings_->refresh_icons();
@@ -326,26 +331,18 @@ void MainWindow::build_menus() {
     a_load_cfg_ = m_file->addAction(tr("Load Camera Config..."), this, &MainWindow::on_load_config);
     a_save_cfg_->setEnabled(false);
     a_load_cfg_->setEnabled(false);
+    a_save_cfg_->setToolTip(tr("Requires a live camera connection"));
+    a_load_cfg_->setToolTip(tr("Requires a live camera connection"));
     m_file->addSeparator();
     a_save_biases_ = m_file->addAction(tr("Save Biases..."), this, &MainWindow::on_save_biases);
     a_load_biases_ = m_file->addAction(tr("Load Biases..."), this, &MainWindow::on_load_biases);
     a_save_biases_->setEnabled(false);
     a_load_biases_->setEnabled(false);
-    m_file->addSeparator();
-    // Phase 3 — recording actions.
-    a_record_start_ = m_file->addAction(tr("Start &Recording..."), this,
-                                        &MainWindow::on_record_start,
-                                        QKeySequence("R"));
-    a_record_stop_  = m_file->addAction(tr("Sto&p Recording"), this,
-                                        &MainWindow::on_record_stop);
-    a_record_start_->setEnabled(false);
-    a_record_stop_->setEnabled(false);
-    m_file->addSeparator();
-    // Phase 4 — export.
-    a_export_ = m_file->addAction(tr("&Export..."), this, &MainWindow::on_export_dialog);
-    a_export_->setEnabled(false);
+    a_save_biases_->setToolTip(tr("Requires a live camera connection"));
+    a_load_biases_->setToolTip(tr("Requires a live camera connection"));
     m_file->addSeparator();
     // Phase 10 — algorithm parameter save/load.
+    // Recording and Export moved to the sidebar's File Tools panel (§14.5).
     m_file->addAction(tr("Save Algo Params..."), this, [this]() {
         const QString path = QFileDialog::getSaveFileName(
             this, tr("Save Algorithm Parameters"), {},
@@ -401,22 +398,9 @@ void MainWindow::build_menus() {
     auto* m_theme = mb->addMenu(tr("&Theme"));
     theme_.build_menu(m_theme);
 
-    // Camera — only display-interaction controls and presets that are NOT
-    // in the sidebar's Devices panel. Connect/Disconnect/Refresh live in
-    // the DevicesPanel (相机设备 section).
-    auto* m_cam = mb->addMenu(tr("&Camera"));
-    a_roi_drag_ = m_cam->addAction(tr("&ROI Drag Mode"), this, &MainWindow::on_toggle_roi_drag);
-    a_roi_drag_->setCheckable(true);
-    a_roi_drag_->setChecked(false);
-    a_roi_drag_->setShortcut(QKeySequence("Ctrl+R"));
-    a_roi_drag_->setEnabled(false);
-    m_cam->addSeparator();
-    // Built-in config presets (Phase 4).
-    auto* m_presets = m_cam->addMenu(tr("&Presets"));
-    const auto preset_names = config_.preset_names();
-    for (int i = 0; i < preset_names.size(); ++i) {
-        m_presets->addAction(preset_names[i], this, [this, i]() { on_apply_preset(i); });
-    }
+    // The Camera menu has been removed — ROI Drag Mode and Presets moved
+    // to the sidebar's ROI panel (Hardware section) per §14.5.
+    // Connect/Disconnect/Refresh already live in the DevicesPanel.
 
     // Preprocess menu and Frame Mode menu have been removed — all
     // preprocessing stage toggles live in the PreprocessingPanel and all
@@ -427,22 +411,13 @@ void MainWindow::build_menus() {
     // (enable, ROI, parameters, configure) lives in the sidebar's "算法模块"
     // section (AlgorithmsPanel).
 
-    // Tools (design §5.5) — window management + the calibration wizard
-    // (folded in from the former Calibration menu, §3.6.3). Algorithm-
-    // specific windows are opened from the sidebar's "算法模块" section, not
-    // duplicated here.
+    // Tools (design §5.5) — the calibration wizard (folded in from the former
+    // Calibration menu, §3.6.3). The former Add/Tile/Cascade/Close display-
+    // window actions were removed (§14.1) — they were legacy multi-window
+    // management functions irrelevant to the current dock-based GUI.
+    // Algorithm-specific windows are opened from the sidebar's Algorithms
+    // section, not duplicated here.
     m_tools_ = mb->addMenu(tr("&Tools"));
-    m_tools_->addAction(tr("&Add Display Window..."), this, &MainWindow::on_add_display_window);
-    m_tools_->addAction(tr("&Tile Windows"), this, &MainWindow::on_tile_windows);
-    m_tools_->addAction(tr("&Cascade Windows"), this, [this]() {
-        if (multi_window_) multi_window_->cascade();
-        else statusBar()->showMessage(tr("No display windows open."), 3000);
-    });
-    m_tools_->addAction(tr("&Close All Windows"), this, [this]() {
-        if (multi_window_) multi_window_->close_all();
-        else statusBar()->showMessage(tr("No display windows open."), 3000);
-    });
-    m_tools_->addSeparator();
     // Calibration (Phase 9) — launches the wizard lazily.
     m_tools_->addAction(tr("&Intrinsic Wizard..."), this, &MainWindow::on_intrinsic_wizard);
 
@@ -450,79 +425,6 @@ void MainWindow::build_menus() {
     auto* m_help = mb->addMenu(tr("&Help"));
     m_help->addAction(tr("&About"), this, &MainWindow::on_about);
     m_help->addAction(tr("About &Qt"), this, &QApplication::aboutQt);
-}
-
-void MainWindow::build_toolbar() {
-    // Main toolbar — semantic groups separated by addSeparator() (design
-    // §3.6.2). Icons are 20px Lucide SVGs via IconProvider; checked-state
-    // buttons (sidebar toggle) get the accent background via base.qss.in
-    // (QToolBar QToolButton:checked). All existing toolbar actions are
-    // preserved; a few existing menu actions (record/export) are surfaced
-    // here for quick access. The playback transport group is intentionally
-    // omitted — it already lives in the bottom PlaybackControls dock, and
-    // duplicating it here would risk desynchronized state.
-    main_toolbar_ = addToolBar(tr("Main"));
-    main_toolbar_->setObjectName("MainToolbar");
-    main_toolbar_->setMovable(false);
-    main_toolbar_->setIconSize({20, 20});
-    main_toolbar_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-
-    // --- Group 1: 连接 (camera connection) ---
-    auto* a_connect = main_toolbar_->addAction(
-        IconProvider::get(QStringLiteral("connect")), tr("Connect"));
-    a_connect->setProperty("icon_name", QStringLiteral("connect"));
-    a_connect->setToolTip(tr("Connect to first available camera"));
-    connect(a_connect, &QAction::triggered, this, &MainWindow::on_connect_first);
-    auto* a_refresh = main_toolbar_->addAction(
-        IconProvider::get(QStringLiteral("refresh")), tr("Refresh"));
-    a_refresh->setProperty("icon_name", QStringLiteral("refresh"));
-    a_refresh->setToolTip(tr("Refresh device list"));
-    connect(a_refresh, &QAction::triggered, this, &MainWindow::on_refresh_devices);
-
-    main_toolbar_->addSeparator();
-
-    // --- Group 2: 录制 (recording) — surfaces the File menu action. ---
-    if (a_record_start_) {
-        a_record_start_->setIcon(IconProvider::get(QStringLiteral("record")));
-        a_record_start_->setProperty("icon_name", QStringLiteral("record"));
-        main_toolbar_->addAction(a_record_start_);
-    }
-
-    main_toolbar_->addSeparator();
-
-    // --- Group 3: 布局 (window layout) ---
-    // The sidebar toggle is no longer in the toolbar — it lives at the
-    // bottom of the ActivityBar (§11.2 point 5).
-    auto* a_tile = main_toolbar_->addAction(
-        IconProvider::get(QStringLiteral("restore")), tr("Tile"));
-    a_tile->setProperty("icon_name", QStringLiteral("restore"));
-    a_tile->setToolTip(tr("Tile display windows"));
-    connect(a_tile, &QAction::triggered, this, &MainWindow::on_tile_windows);
-    auto* a_reset = main_toolbar_->addAction(
-        IconProvider::get(QStringLiteral("layout")), tr("Reset Layout"));
-    a_reset->setProperty("icon_name", QStringLiteral("layout"));
-    a_reset->setToolTip(tr("Reset window layout"));
-    connect(a_reset, &QAction::triggered, this, &MainWindow::on_reset_layout);
-
-    main_toolbar_->addSeparator();
-
-    // --- Group 4: 导出 (export) — surfaces the File menu action. ---
-    if (a_export_) {
-        a_export_->setIcon(IconProvider::get(QStringLiteral("export")));
-        a_export_->setProperty("icon_name", QStringLiteral("export"));
-        main_toolbar_->addAction(a_export_);
-    }
-
-    main_toolbar_->addSeparator();
-
-    // --- Group 5: 全屏 (fullscreen) ---
-    auto* a_fs = main_toolbar_->addAction(
-        IconProvider::get(QStringLiteral("fullscreen")), tr("Fullscreen"));
-    a_fs->setProperty("icon_name", QStringLiteral("fullscreen"));
-    connect(a_fs, &QAction::triggered, this, [this]() {
-        if (isFullScreen()) showNormal();
-        else showFullScreen();
-    });
 }
 
 void MainWindow::build_status_bar() {
@@ -653,17 +555,19 @@ void MainWindow::on_sidebar_content_toggled(bool visible) {
     if (visible) {
         // Restore the minimum width and the saved dock width (or a sensible
         // default if none saved).
-        settings_dock_->setMinimumWidth(160);
-        const int target = saved_sidebar_width_ > 0 ? saved_sidebar_width_ : 190;
+        settings_dock_->setMinimumWidth(200);
+        settings_dock_->setMaximumWidth(QWIDGETSIZE_MAX); // remove collapsed cap
+        const int target = saved_sidebar_width_ > 0 ? saved_sidebar_width_ : 380;
         const QList<QDockWidget*> docks = {settings_dock_};
         const QList<int> sizes = {target};
         resizeDocks(docks, sizes, Qt::Horizontal);
     } else {
         // Save the current dock width before shrinking to ActivityBar width.
         saved_sidebar_width_ = settings_dock_->width();
-        // Lower the minimum width so the dock can shrink to just the
-        // ActivityBar (48px).
+        // Lower the minimum width and cap the maximum so the dock cannot be
+        // dragged wider while collapsed (§15.5).
         settings_dock_->setMinimumWidth(48);
+        settings_dock_->setMaximumWidth(48);
         const QList<QDockWidget*> docks = {settings_dock_};
         const QList<int> sizes = {48};
         resizeDocks(docks, sizes, Qt::Horizontal);
@@ -710,10 +614,13 @@ void MainWindow::wire_signals() {
         a_load_cfg_->setEnabled(live);
         a_save_biases_->setEnabled(live);
         a_load_biases_->setEnabled(live);
-        a_roi_drag_->setEnabled(live);
-        a_record_start_->setEnabled(live);
-        a_record_stop_->setEnabled(false);
-        a_export_->setEnabled(true);
+        // ROI Drag Mode + Presets moved to the sidebar ROI panel (§14.5).
+        settings_->roi_panel()->set_roi_drag_enabled(live);
+        settings_->roi_panel()->set_presets_enabled(live);
+        // Recording + Export moved to the sidebar File Tools panel (§14.5).
+        settings_->file_tools_panel()->set_record_enabled(live);
+        settings_->file_tools_panel()->set_stop_enabled(false);
+        settings_->file_tools_panel()->set_export_enabled(true);
         // Phase 3: show/hide playback bar.
         if (auto* pb = findChild<QDockWidget*>("PlaybackDock")) {
             pb->setVisible(info.is_file);
@@ -787,11 +694,14 @@ void MainWindow::wire_signals() {
         a_load_cfg_->setEnabled(false);
         a_save_biases_->setEnabled(false);
         a_load_biases_->setEnabled(false);
-        a_roi_drag_->setEnabled(false);
-        a_roi_drag_->setChecked(false);
-        a_record_start_->setEnabled(false);
-        a_record_stop_->setEnabled(false);
-        a_export_->setEnabled(false);
+        // ROI Drag Mode + Presets moved to the sidebar ROI panel (§14.5).
+        settings_->roi_panel()->set_roi_drag_enabled(false);
+        settings_->roi_panel()->set_roi_drag_checked(false);
+        settings_->roi_panel()->set_presets_enabled(false);
+        // Recording + Export moved to the sidebar File Tools panel (§14.5).
+        settings_->file_tools_panel()->set_record_enabled(false);
+        settings_->file_tools_panel()->set_stop_enabled(false);
+        settings_->file_tools_panel()->set_export_enabled(false);
         display_->set_roi_drag_mode(false);
         display_->clear();
         if (auto* pb = findChild<QDockWidget*>("PlaybackDock")) {
@@ -926,20 +836,31 @@ void MainWindow::wire_signals() {
             roi, &RoiPanel::set_roi_from_drag);
     connect(roi, &RoiPanel::roi_applied, display_, &EventDisplayWidget::set_roi_overlay);
 
+    // ROI Drag Mode + Presets moved from Camera menu to ROI panel (§14.5).
+    connect(roi, &RoiPanel::roi_drag_toggled, this, &MainWindow::on_toggle_roi_drag);
+    connect(roi, &RoiPanel::preset_apply_requested, this, &MainWindow::on_apply_preset);
+
+    // Recording + Export moved from File menu/toolbar to File Tools panel (§14.5).
+    auto* ft = settings_->file_tools_panel();
+    connect(ft, &FileToolsPanel::record_start_requested, this, &MainWindow::on_record_start);
+    connect(ft, &FileToolsPanel::record_stop_requested, this, &MainWindow::on_record_stop);
+    connect(ft, &FileToolsPanel::export_requested, this, &MainWindow::on_export_dialog);
+
     // Phase 3 — recorder.
     connect(&recorder_, &RecorderController::recording_started, this,
             [this](const QString& path) {
                 status_rec_->setText(tr("REC: %1").arg(QFileInfo(path).fileName()));
                 start_rec_blink();
-                a_record_start_->setEnabled(false);
-                a_record_stop_->setEnabled(true);
+                settings_->file_tools_panel()->set_record_enabled(false);
+                settings_->file_tools_panel()->set_stop_enabled(true);
             });
     connect(&recorder_, &RecorderController::recording_stopped, this,
             [this](const QString& path) {
                 status_rec_->setText(tr("Idle"));
                 stop_rec_blink();
-                a_record_start_->setEnabled(camera_.is_connected() && !camera_.is_file_source());
-                a_record_stop_->setEnabled(false);
+                settings_->file_tools_panel()->set_record_enabled(
+                    camera_.is_connected() && !camera_.is_file_source());
+                settings_->file_tools_panel()->set_stop_enabled(false);
                 statusBar()->showMessage(tr("Recording saved: %1").arg(path), 5000);
             });
     connect(&recorder_, &RecorderController::elapsed, this, &MainWindow::on_record_elapsed);
@@ -1532,26 +1453,6 @@ void MainWindow::on_intrinsic_wizard() {
     calibration_wizard_->show_intrinsic();
 }
 
-void MainWindow::on_add_display_window() {
-    if (!multi_window_) {
-        multi_window_ = std::make_unique<MultiWindowManager>(this);
-    }
-    auto* w = multi_window_->add_display(tr("Display %1").arg(multi_window_->window_count() + 1));
-    if (w) {
-        // Feed the new display the annotated frame (after process_algo_results)
-        // so child windows see the same overlays/replacements as the main view.
-        connect(this, &MainWindow::annotated_frame_ready,
-                w, &EventDisplayWidget::set_frame);
-        statusBar()->showMessage(tr("Added display window (%1 total).")
-            .arg(multi_window_->window_count()), 3000);
-    }
-}
-
-void MainWindow::on_tile_windows() {
-    if (multi_window_) multi_window_->tile();
-    else statusBar()->showMessage(tr("No display windows open."), 3000);
-}
-
 void MainWindow::on_save_layout() {
     if (!layout_manager_) return;
     const QString path = QFileDialog::getSaveFileName(
@@ -1581,15 +1482,23 @@ void MainWindow::on_load_layout() {
 
 void MainWindow::on_reset_layout() {
     if (layout_manager_) layout_manager_->reset_layout();
-    // Force the sidebar to the default width after layout reset —
-    // reset_layout() restores the captured state which may have a wider
-    // dock width (§13.2).
     if (settings_dock_) {
         settings_dock_->setVisible(true);
-        settings_dock_->setMinimumWidth(160);
-        const QList<QDockWidget*> docks = {settings_dock_};
-        const QList<int> sizes = {190};
-        resizeDocks(docks, sizes, Qt::Horizontal);
+        // §15.5: expand the sidebar if it was collapsed — reset should
+        // restore the full default layout, not a collapsed state.
+        if (settings_ && !settings_->is_content_visible()) {
+            saved_sidebar_width_ = 380;  // use default width on reset
+            settings_->toggle_content();  // emits content_toggled(true)
+            // on_sidebar_content_toggled handles the resize; no need to
+            // resize again here.
+        } else {
+            // Already expanded — just force the default width.
+            settings_dock_->setMinimumWidth(200);
+            settings_dock_->setMaximumWidth(QWIDGETSIZE_MAX);
+            const QList<QDockWidget*> docks = {settings_dock_};
+            const QList<int> sizes = {380};
+            resizeDocks(docks, sizes, Qt::Horizontal);
+        }
     }
     update_toggle_icon();
     statusBar()->showMessage(tr("Layout reset to default."), 3000);
