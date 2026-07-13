@@ -123,6 +123,7 @@ class TriggerSyncedBackend final : public AlgoBackend {
     gui_algo::TriggerSyncedFilter algo_;
     std::vector<Metavision::EventCD> last_out_;
     RoiFilter roi_;
+    std::vector<gui_algo::Event> roi_buf_;
 public:
     TriggerSyncedBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
@@ -139,16 +140,7 @@ public:
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         std::vector<Metavision::EventCD> inp(b, e);
-        auto* ev = const_cast<gui_algo::Event*>(as_events(inp.data()));
-        std::size_t n = inp.size();
-        // Compact in place to ROI events (design §5.6.6).
-        if (roi_.region.enabled && roi_.region.rw > 0 && roi_.region.rh > 0) {
-            std::size_t kept = 0;
-            for (std::size_t i = 0; i < n; ++i) {
-                if (roi_.region.contains(ev[i].x, ev[i].y)) ev[kept++] = ev[i];
-            }
-            n = kept;
-        }
+        auto [ev, n] = roi_.apply(as_events(inp.data()), inp.size(), roi_buf_);
         gui_algo::EventPacket pkt(ev, n);
         auto out = algo_.process(pkt);
         last_out_.assign(out.begin(), out.end());
@@ -160,7 +152,7 @@ public:
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
-    void reset() override { algo_.reset(); last_out_.clear(); }
+    void reset() override { algo_.reset(); last_out_.clear(); roi_buf_.clear(); }
 };
 
 /// UltraSlowMotion backend — outputs time-dilated event vector.

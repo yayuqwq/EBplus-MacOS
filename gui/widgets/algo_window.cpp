@@ -74,7 +74,11 @@ void AlgoWindow::set_display_widget(QWidget* w) {
     // new one in the same layout slot.
     if (display_widget_) {
         display_layout_->removeWidget(display_widget_);
-        delete display_widget_;
+        // Clear the member before deleting so any signal/event triggered
+        // during deletion sees null instead of a dangling pointer (BUG-G10).
+        QWidget* old = display_widget_;
+        display_widget_ = nullptr;
+        delete old;
     }
     display_widget_ = w;
     display_layout_->addWidget(display_widget_, 1);

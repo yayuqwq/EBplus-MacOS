@@ -77,11 +77,6 @@ protected:
     void resizeEvent(QResizeEvent* event) override;
 
 signals:
-    /// Emitted from the frame_ready handler after process_algo_results() has
-    /// applied overlays/replacements. Multi-window child displays connect to
-    /// this instead of the raw FramePipeline signal so they see the same
-    /// annotated frame as the main display.
-    void annotated_frame_ready(QImage frame);
 
 private slots:
     void on_open_file();
@@ -246,8 +241,10 @@ private:
     /// Draws the ROI rectangle of any enabled self-developed algorithm
     /// (design §5.6.6: all self-developed algos support ROI) on the main
     /// display frame so the user can see which region is being processed.
-    /// Called from process_algo_results().
-    void draw_roi_overlays(QImage& frame);
+    /// Called from process_algo_results() with the already-snapshotted
+    /// instances vector to avoid a redundant list_live() call (N7).
+    void draw_roi_overlays(QImage& frame,
+                           const std::vector<std::shared_ptr<AlgoInstance>>& instances);
 
     /// Application theme controller (background color + light/dark mode).
     /// Owned by MainWindow; the SettingsPanel sidebar exposes its UI.

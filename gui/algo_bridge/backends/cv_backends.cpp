@@ -30,6 +30,7 @@ class HotPixelFilterBackend final : public AlgoBackend {
     gui_algo::HotPixelFilter algo_;
     std::vector<Metavision::EventCD> buf_;
     RoiFilter roi_;
+    std::vector<gui_algo::Event> roi_buf_;
     std::size_t last_kept_{0};
 public:
     HotPixelFilterBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
@@ -50,18 +51,19 @@ public:
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         buf_.assign(b, e);
-        auto* ev = const_cast<gui_algo::Event*>(as_events(buf_.data()));
-        std::size_t n = buf_.size();
-        if (roi_.region.enabled && roi_.region.rw > 0 && roi_.region.rh > 0) {
-            std::size_t kept = 0;
-            for (std::size_t i = 0; i < n; ++i) {
-                if (roi_.region.contains(ev[i].x, ev[i].y)) ev[kept++] = ev[i];
-            }
-            n = kept;
-        }
-        buf_.resize(n);
-        algo_.learn(as_events(buf_.data()), n);
+        auto [ev_c, n] = roi_.apply(as_events(buf_.data()), buf_.size(), roi_buf_);
+        auto* ev = const_cast<gui_algo::Event*>(ev_c);
+        algo_.learn(ev, n);
         last_kept_ = algo_.process(ev, n);
+        // pull_result reads from buf_: if roi_.apply() filtered into another
+        // buffer (roi_buf_ or Preprocessor::buf_), copy the compacted result
+        // back; otherwise the in-place compact already happened in buf_.
+        if (ev_c != as_events(buf_.data())) {
+            buf_.assign(reinterpret_cast<const Metavision::EventCD*>(ev_c),
+                        reinterpret_cast<const Metavision::EventCD*>(ev_c + last_kept_));
+        } else {
+            buf_.resize(last_kept_);
+        }
     }
     AlgoResult pull_result() override {
         AlgoResult r;
@@ -70,7 +72,7 @@ public:
                    std::to_string(last_kept_) + std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
-    void reset() override { algo_.reset(); buf_.clear(); last_kept_ = 0; }
+    void reset() override { algo_.reset(); buf_.clear(); roi_buf_.clear(); last_kept_ = 0; }
 };
 
 /// OpticalGyro (EIS) backend — modifies event coordinates in place.
@@ -78,6 +80,7 @@ class OpticalGyroBackend final : public AlgoBackend {
     gui_algo::OpticalGyro algo_;
     std::vector<Metavision::EventCD> buf_;
     RoiFilter roi_;
+    std::vector<gui_algo::Event> roi_buf_;
 public:
     OpticalGyroBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
@@ -95,18 +98,18 @@ public:
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         buf_.assign(b, e);
-        auto* ev = const_cast<gui_algo::Event*>(as_events(buf_.data()));
-        std::size_t n = buf_.size();
-        if (roi_.region.enabled && roi_.region.rw > 0 && roi_.region.rh > 0) {
-            std::size_t kept = 0;
-            for (std::size_t i = 0; i < n; ++i) {
-                if (roi_.region.contains(ev[i].x, ev[i].y)) ev[kept++] = ev[i];
-            }
-            n = kept;
-        }
-        buf_.resize(n);
+        auto [ev_c, n] = roi_.apply(as_events(buf_.data()), buf_.size(), roi_buf_);
+        auto* ev = const_cast<gui_algo::Event*>(ev_c);
         gui_algo::MutableEventPacket pkt(ev, n);
         algo_.process(pkt);
+        // pull_result reads from buf_: if roi_.apply() filtered into another
+        // buffer, copy the processed events back; otherwise they are in buf_.
+        if (ev_c != as_events(buf_.data())) {
+            buf_.assign(reinterpret_cast<const Metavision::EventCD*>(ev_c),
+                        reinterpret_cast<const Metavision::EventCD*>(ev_c + n));
+        } else {
+            buf_.resize(n);
+        }
     }
     AlgoResult pull_result() override {
         AlgoResult r;
@@ -146,7 +149,7 @@ public:
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
-    void reset() override { algo_.reset(); buf_.clear(); }
+    void reset() override { algo_.reset(); buf_.clear(); roi_buf_.clear(); }
 };
 
 /// PerspectiveUndistort backend — remaps event coordinates in place.
@@ -154,6 +157,7 @@ class PerspectiveUndistortBackend final : public AlgoBackend {
     gui_algo::PerspectiveUndistort algo_;
     std::vector<Metavision::EventCD> buf_;
     RoiFilter roi_;
+    std::vector<gui_algo::Event> roi_buf_;
 public:
     PerspectiveUndistortBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
@@ -169,18 +173,18 @@ public:
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         buf_.assign(b, e);
-        auto* ev = const_cast<gui_algo::Event*>(as_events(buf_.data()));
-        std::size_t n = buf_.size();
-        if (roi_.region.enabled && roi_.region.rw > 0 && roi_.region.rh > 0) {
-            std::size_t kept = 0;
-            for (std::size_t i = 0; i < n; ++i) {
-                if (roi_.region.contains(ev[i].x, ev[i].y)) ev[kept++] = ev[i];
-            }
-            n = kept;
-        }
-        buf_.resize(n);
+        auto [ev_c, n] = roi_.apply(as_events(buf_.data()), buf_.size(), roi_buf_);
+        auto* ev = const_cast<gui_algo::Event*>(ev_c);
         gui_algo::MutableEventPacket pkt(ev, n);
         algo_.process(pkt);
+        // pull_result reads from buf_: if roi_.apply() filtered into another
+        // buffer, copy the processed events back; otherwise they are in buf_.
+        if (ev_c != as_events(buf_.data())) {
+            buf_.assign(reinterpret_cast<const Metavision::EventCD*>(ev_c),
+                        reinterpret_cast<const Metavision::EventCD*>(ev_c + n));
+        } else {
+            buf_.resize(n);
+        }
     }
     AlgoResult pull_result() override {
         AlgoResult r;
@@ -189,7 +193,7 @@ public:
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
-    void reset() override { algo_.reset(); buf_.clear(); }
+    void reset() override { algo_.reset(); buf_.clear(); roi_buf_.clear(); }
 };
 
 // ===========================================================================

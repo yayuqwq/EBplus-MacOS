@@ -271,6 +271,10 @@ void MainWindow::build_title_bar_controls() {
     // action icons are re-rendered via the "icon_name" property (§13.1).
     auto apply = [this]() {
         if (!title_bar_) return;
+        // Clear the icon cache so re-rendered icons pick up the new theme
+        // color (BUG-R7: stale icons from the previous theme otherwise
+        // persist in the cache).
+        IconProvider::clear_cache();
         // §15.3: title bar uses the panel color (same as the status bar) so
         // both bars share the same shade, with a subtle difference from the
         // sidebar which uses the primary background.
@@ -733,9 +737,6 @@ void MainWindow::wire_signals() {
             [this](QImage frame, Metavision::timestamp ts) {
                 process_algo_results(frame);
                 display_->set_frame(frame);
-                // Forward the annotated frame to any multi-window child displays
-                // so they see the same overlays/replacements as the main view.
-                emit annotated_frame_ready(frame);
                 settings_->statistics_panel()->set_timestamp(ts);
                 status_ts_->setText(QStringLiteral("t: %1 s").arg(ts / 1.0e6, 0, 'f', 3));
                 if (prev_frame_ts_ > 0 && ts > prev_frame_ts_) {
@@ -1031,6 +1032,10 @@ void MainWindow::on_connect_first() {
 }
 
 void MainWindow::on_disconnect() {
+    // Stop the recorder first so it closes the output file cleanly before the
+    // camera's data thread disappears (BUG-G3: without this, the recorder's
+    // CD callback may fire on a torn-down pipeline and crash).
+    recorder_.stop();
     camera_.disconnect();
 }
 
@@ -1360,7 +1365,10 @@ void MainWindow::process_algo_results(QImage& frame) {
     // in the concrete IDisplayStrategy classes (gui/display/display_strategy.cpp).
     DisplayContext ctx{&annotator_, &algo_windows_, xyt_display_.data(), this,
                        &camera_, nullptr};
-    for (auto& inst : algo_bridge_.list_live()) {
+    // Snapshot once and reuse for draw_roi_overlays to avoid a redundant
+    // list_live() call (N7).
+    auto instances = algo_bridge_.list_live();
+    for (auto& inst : instances) {
         // Surface the flood-guard auto-disable so the user knows why an algo
         // stopped producing output (design §5.6.7). Re-enabling it from the
         // sidebar's "算法模块" tab clears the overload and restarts processing.
@@ -1389,10 +1397,12 @@ void MainWindow::process_algo_results(QImage& frame) {
     // Draw the ROI rectangle of any enabled self-developed algorithm so the
     // user can see which region is being processed (design §5.6.6: all
     // self-developed algos support ROI, defaulting to center 128×128).
-    draw_roi_overlays(frame);
+    draw_roi_overlays(frame, instances);
 }
 
-void MainWindow::draw_roi_overlays(QImage& frame) {
+void MainWindow::draw_roi_overlays(
+    QImage& frame,
+    const std::vector<std::shared_ptr<AlgoInstance>>& instances) {
     // All self-developed algorithms support ROI (design §5.6.6). Iterate the
     // live instances and draw a rectangle for each enabled one with
     // roi_enabled=true. The overlay coordinates are at sensor scale.
@@ -1408,7 +1418,6 @@ void MainWindow::draw_roi_overlays(QImage& frame) {
     };
     std::vector<QRect> boxes;
     std::vector<std::pair<QString, QPoint>> labels;  // (text, pos)
-    auto instances = algo_bridge_.list_live();
     for (auto& inst : instances) {
         if (!inst->is_enabled()) continue;
         // Only self-developed algorithms carry the roi_* params (design §5.6.6).
@@ -1603,10 +1612,14 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
     // there, tab this one with it so multiple algo windows share a single
     // dock slot (the user can switch between them via the tab bar).
     addDockWidget(Qt::RightDockWidgetArea, w);
-    // Find any other already-docked algo window to tabify with.
+    // Find any other already-docked algo window to tabify with. Only tabify
+    // if both docks are in the same area (BUG-G11: tabifyDockWidget moves the
+    // second dock to the first's area, which would relocate the new window
+    // if the other algo is in a different area).
     for (auto tit = algo_windows_.constBegin(); tit != algo_windows_.constEnd(); ++tit) {
         AlgoWindow* other = tit.value().data();
-        if (other && other != w && !other->isFloating()) {
+        if (other && other != w && !other->isFloating() &&
+            dockWidgetArea(other) == Qt::RightDockWidgetArea) {
             tabifyDockWidget(other, w);
             break;
         }

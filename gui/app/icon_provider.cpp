@@ -38,6 +38,10 @@ QIcon IconProvider::get(const QString& name, const QColor& color) {
     return render(name, color.isValid() ? color : QColor(Qt::black));
 }
 
+void IconProvider::clear_cache() {
+    icon_cache().clear();
+}
+
 QIcon IconProvider::render(const QString& name, const QColor& color) {
     // Check the cache first — avoids file I/O + SVG parsing on repeated
     // requests for the same icon (e.g. during theme refresh).

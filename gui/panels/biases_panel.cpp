@@ -19,13 +19,6 @@
 
 namespace gui {
 
-namespace {
-void restyle(QWidget* w) {
-    w->style()->unpolish(w);
-    w->style()->polish(w);
-}
-} // namespace
-
 BiasesPanel::BiasesPanel(QWidget* parent) : AbstractPanel(parent) {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);

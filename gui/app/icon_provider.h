@@ -28,6 +28,11 @@ public:
     /// status indicators (green / red / gray dots, etc.).
     static QIcon get(const QString& name, const QColor& color);
 
+    /// Clears the icon cache so subsequent get() calls re-render icons with
+    /// the current theme color (BUG-R7: without this, stale icons from the
+    /// previous theme persist after a color switch).
+    static void clear_cache();
+
 private:
     /// Renders the SVG named @p name with @p color into a QIcon. Returns a
     /// null icon if the resource is missing or invalid.

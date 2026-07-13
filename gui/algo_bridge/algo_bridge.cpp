@@ -51,9 +51,33 @@ void AlgoInstance::apply_strategy(QImage& frame, AlgoResult& result,
 
 void AlgoInstance::set_param(const std::string& key, const std::string& value) {
     std::lock_guard<std::mutex> lk(mutex_);
-    param_values_[key] = value;
+    // Only store known parameter keys to avoid map pollution from
+    // unknown/obsolete keys (BUG-G12). The backend still receives the
+    // call so it can handle backward-compat forwards (e.g. "downsample"
+    // -> "preproc_downsample" in EventToVideoBackend) and global
+    // preproc_* keys (handled by Preprocessor, not in info_.params).
+    bool known = false;
+    for (const auto& p : info_.params) {
+        if (p.key == key) { known = true; break; }
+    }
+    if (known) param_values_[key] = value;
     if (backend_) {
         backend_->set_param(key, value);
+        // BUG-G2: after setting model_path on an E2VID backend, the real
+        // num_bins is dictated by the loaded ONNX model's input channel
+        // count (backend updates e2vid_num_bins_ internally). Sync that
+        // authoritative value back into param_values_ so the subsequent
+        // get_param("num_bins") call from AlgorithmsPanel::apply_param
+        // returns the model-determined value, not the stale registry
+        // default ("5"). We intentionally do NOT delegate get_param to
+        // the backend in general — that would change the string format
+        // of every param (backend uses std::to_string(double), producing
+        // "5.500000" instead of the registry's "5.5") and break
+        // ParamRoundTrip tests. This targeted sync keeps the fix minimal.
+        if (key == "model_path") {
+            std::string nb = backend_->get_param("num_bins");
+            if (!nb.empty()) param_values_["num_bins"] = nb;
+        }
     }
 }
 
@@ -71,6 +95,13 @@ void AlgoInstance::set_enabled(bool e) {
         // counter so the algo gets a fresh start.
         overloaded_ = false;
         flood_strikes_ = 0;
+        // BUG-G5: reset the backend's internal state (buffers/accumulators)
+        // so stale data from the previous enabled session doesn't bleed into
+        // the new one. Parameter values are preserved (stored in param_values_
+        // and the backend's own members, not touched by reset()). We call
+        // backend_->reset() directly (not this->reset()) because we already
+        // hold mutex_ — reset() would re-lock and deadlock.
+        if (backend_) backend_->reset();
     }
 }
 
@@ -293,6 +324,31 @@ std::shared_ptr<AlgoInstance> AlgoBridge::create(const std::string& name) {
     {
         std::lock_guard<std::mutex> lk(live_mutex_);
         live_instances_[name] = inst;
+        // Replay cached global params so new instances inherit the current
+        // shared state (BUG-R4 for preproc, N3 for ROI). Without this,
+        // instances created by other code paths (ConfigManager, calibration
+        // wizard) would miss the shared preproc_*/roi_* settings. Skip
+        // calibration algos (BUG-R8: they don't use preproc/roi params).
+        if (it->second.source == "self" &&
+            it->second.category != "calibration") {
+            for (const auto& [k, v] : preproc_cache_) {
+                inst->set_param(k, v);
+            }
+            for (const auto& [k, v] : roi_cache_) {
+                inst->set_param(k, v);
+            }
+        }
+        // Replay per-algorithm cached params (N1): values loaded from a
+        // config file for an algorithm that had no live instance are
+        // replayed here so they are not lost.
+        auto pit = algo_param_cache_.find(name);
+        if (pit != algo_param_cache_.end()) {
+            for (const auto& [k, v] : pit->second) {
+                inst->set_param(k, v);
+            }
+            // Clear the cache — the instance now holds the values directly.
+            algo_param_cache_.erase(pit);
+        }
     }
     return inst;
 }
@@ -316,9 +372,15 @@ void AlgoBridge::apply_global_preproc(const std::string& key,
     // (pass-through); preproc_* params have no effect on them and would
     // pollute their param_values_ map, so they are skipped.
     std::lock_guard<std::mutex> lk(live_mutex_);
+    // Cache the value so instances created later (by other code paths) inherit
+    // the shared preprocessing state (BUG-R4).
+    preproc_cache_[key] = value;
     for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
         if (auto inst = it->second.lock()) {
-            if (inst->info().source == "self") {
+            // Skip calibration algorithms — they don't use preproc params
+            // and would just accumulate pollution in param_values_ (BUG-R8).
+            if (inst->info().source == "self" &&
+                inst->info().category != "calibration") {
                 inst->set_param(key, value);
             }
             ++it;
@@ -326,6 +388,46 @@ void AlgoBridge::apply_global_preproc(const std::string& key,
             it = live_instances_.erase(it);
         }
     }
+}
+
+void AlgoBridge::apply_global_roi(const std::string& enabled,
+                                  const std::string& x,
+                                  const std::string& y,
+                                  const std::string& w,
+                                  const std::string& h) {
+    // Apply the roi_* parameters to every live self-developed instance and
+    // cache them so instances created later inherit the current ROI (N3).
+    // Same source/category filter as apply_global_preproc.
+    std::lock_guard<std::mutex> lk(live_mutex_);
+    roi_cache_["roi_enabled"] = enabled;
+    roi_cache_["roi_x"] = x;
+    roi_cache_["roi_y"] = y;
+    roi_cache_["roi_w"] = w;
+    roi_cache_["roi_h"] = h;
+    for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
+        if (auto inst = it->second.lock()) {
+            if (inst->info().source == "self" &&
+                inst->info().category != "calibration") {
+                inst->set_param("roi_enabled", enabled);
+                inst->set_param("roi_x", x);
+                inst->set_param("roi_y", y);
+                inst->set_param("roi_w", w);
+                inst->set_param("roi_h", h);
+            }
+            ++it;
+        } else {
+            it = live_instances_.erase(it);
+        }
+    }
+}
+
+void AlgoBridge::cache_algo_params(
+    const std::string& name,
+    const std::map<std::string, std::string>& params) {
+    // Store per-algorithm params for an instance that is not yet live (N1).
+    // create() will replay these when the instance is eventually created.
+    std::lock_guard<std::mutex> lk(live_mutex_);
+    algo_param_cache_[name] = params;
 }
 
 std::shared_ptr<AlgoInstance> AlgoBridge::find_live(const std::string& name) {
@@ -736,7 +838,7 @@ void AlgoBridge::register_self_analytics() {
         a.source = "self";
         a.category = "analytics";
         // All self-developed analytics algorithms support ROI (design §5.6.6)
-        // and the shared preprocessing stage (v1.1.0: ROI → filter → downsample).
+        // and the shared preprocessing stage (v1.0.9: ROI → filter → downsample).
         for (auto& p : roi_params()) a.params.push_back(std::move(p));
         for (auto& p : preproc_params()) a.params.push_back(std::move(p));
         registry_[a.name] = std::move(a);
@@ -758,7 +860,7 @@ void AlgoBridge::register_self_analytics() {
           pint("output_fps", "Output fps", "30", "1", "120"),
           // --- Shared non-DL params (mode 0,1) ---
           pfloat("window_ms", "Window (ms)", "50", "10", "500", "0,1"),
-          pfloat("decay_tau_ms", "Decay tau (ms)", "0", "0", "5000", "0,1"),
+          pfloat("decay_tau_ms", "Decay tau (ms)", "500", "0", "5000", "0,1"),
           // --- BardowVariational (mode 0) ---
           pfloat("delta_t_ms", "Delta t (ms)", "15", "1", "50", "0"),
           pfloat("theta", "Theta", "0.22", "0.05", "0.5", "0"),

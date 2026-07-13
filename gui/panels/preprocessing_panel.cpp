@@ -27,7 +27,7 @@ void PreprocessingPanel::build_ui() {
     outer->setContentsMargins(0, 0, 0, 0);
     group_ = new QGroupBox(tr("Preprocessing"), this);
     auto* form = new QFormLayout(group_);
-    auto* hint = new QLabel(tr("Note: Noise/Hot-pixel filters are under the Algorithm menu."), group_);
+    auto* hint = new QLabel(tr("Note: Noise/Hot-pixel filters are under the Algorithms section."), group_);
     hint->setWordWrap(true);
     form->addRow(hint);
 

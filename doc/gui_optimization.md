@@ -289,27 +289,21 @@ private:
 
 #### 3.4.1 拆分方案
 
-`algo_backend.cpp`（2897 行，50 个子类）按类别拆成 7 个文件：
+`algo_backend.cpp`（2897 行，50 个子类）按类别拆成 11 个文件：
 
 ```
 gui/algo_bridge/backends/
-  ├── cv_backends.cpp          // 13 个：NoiseFilter, HotPixel, OpticalGyro,
-  │                            //        PerspectiveUndistort, ObjectTracker,
-  │                            //        CornerDetector, BlobDetector,
-  │                            //        SparseOpticalFlow, HoughLine,
-  │                            //        HoughCircle, LineSegment,
-  │                            //        OrientationCluster, ClusterLif
-  ├── analytics_backends.cpp   // 8 个：EventToVideo, FlowStatistics,
-  │                            //        ISIAnalyzer, FreqDetector,
-  │                            //        ActiveMarker, ParticleCounter,
-  │                            //        AutoBias, TriggerSynced
-  ├── display_backends.cpp     // 4 个：TimeSurface, UltraSlowMotion,
-  │                            //        XYTVisualizer, Overlay
-  ├── filter_backends.cpp      // 4 个：OrientationFilter, DirectionSelective,
-  │                            //        BackgroundMask, BandpassFilter
-  ├── openeb_filter_backends.cpp  // RoiMask, AdaptiveRateSplit 等
-  ├── openeb_frame_backends.cpp   // FrameIntegration, FrameDiff, FrameHisto 等
-  └── openeb_util_backends.cpp    // UtilFrameComposer, UtilRateEstimator 等
+  ├── backend_factory.cpp           // 注册入口
+  ├── cv_backends.cpp               // 自研 CV 算法
+  ├── cv_vector_backends.cpp        // CV 向量/轨迹类算法
+  ├── analytics_backends.cpp        // 自研 analytics 算法
+  ├── analytics_extra_backends.cpp  // analytics 扩展，E2VID 等
+  ├── display_backends.cpp          // 显示类算法
+  ├── filter_backends.cpp           // 自研 noise/hot_pixel filter
+  ├── openeb_filter_backends.cpp    // OpenEB 滤波器
+  ├── openeb_frame_backends.cpp     // OpenEB 帧生成
+  ├── openeb_preproc_backends.cpp   // OpenEB 预处理
+  └── openeb_util_backends.cpp      // OpenEB 工具
 ```
 
 `algo_backend.h` 保留 `AlgoBackend` 基类、`AlgoResult` 结构、`ProcessRegion`/`RoiFilter` helper。
@@ -1067,6 +1061,8 @@ for (auto& inst : algo_bridge_.list_live()) {
 ---
 
 ## 九、v1.0.9 自检 BUG 总结（main → develop）
+
+> **状态：全部已修复（v1.0.9）**。以下 14 个 BUG 均已在 develop 分支提交中修复并通过 341 项测试验证。下方保留原始记录供参考。
 
 > 自检日期：2026-07-13
 > 自检范围：main（7d5fde6 v1.0.0）→ develop（e67a858 v1.0.9）提交，104 文件变更，+6922/−4218 行

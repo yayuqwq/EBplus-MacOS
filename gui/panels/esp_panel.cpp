@@ -34,11 +34,6 @@ QGroupBox* make_group(QWidget* parent, const QString& title) {
     l->setLabelAlignment(Qt::AlignRight | Qt::AlignVCenter);
     return gb;
 }
-
-void restyle(QWidget* w) {
-    w->style()->unpolish(w);
-    w->style()->polish(w);
-}
 } // namespace
 
 EspPanel::EspPanel(QWidget* parent) : AbstractPanel(parent) {
@@ -316,7 +311,7 @@ void EspPanel::populate_antiflicker() {
     try { sp = af->get_stop_threshold(); }
     catch (const std::exception& e) { first_err(e); }
     if (!err.isEmpty())
-        emit error_message(tr("Anti-Flicker init: %1").arg(err));
+        emit info_message(tr("Anti-Flicker init: %1").arg(err));
     QSignalBlocker b0(af_enable_); af_enable_->setChecked(enabled);
     QSignalBlocker b1(af_mode_);
     af_mode_->setCurrentIndex(mode == Metavision::I_AntiFlickerModule::BAND_PASS ? 1 : 0);
@@ -339,6 +334,12 @@ void EspPanel::populate_antiflicker() {
     af_stop_thr_->setRange(static_cast<int>(std::min<uint32_t>(sp_min, INT_MAX)),
                            static_cast<int>(std::min<uint32_t>(sp_max, INT_MAX)));
     af_stop_thr_->setValue(static_cast<int>(std::min<uint32_t>(sp, INT_MAX)));
+    // BUG-G7: restore the af_preset_ selection based on the camera's current
+    // band so the user can quickly identify the active mains frequency.
+    QSignalBlocker b7(af_preset_);
+    if (low_f == 90 && high_f == 110) af_preset_->setCurrentIndex(1);
+    else if (low_f == 110 && high_f == 130) af_preset_->setCurrentIndex(2);
+    else af_preset_->setCurrentIndex(0);
 }
 
 void EspPanel::populate_trail() {
@@ -365,7 +366,7 @@ void EspPanel::populate_trail() {
     try { thr = tf->get_threshold(); }
     catch (const std::exception& e) { first_err(e); }
     if (!err.isEmpty())
-        emit error_message(tr("Trail Filter init: %1").arg(err));
+        emit info_message(tr("Trail Filter init: %1").arg(err));
     // Rebuild the combo from scratch every time we connect — removing
     // unsupported entries in place would permanently shrink the combo
     // across reconnects to cameras with different filter support.
@@ -407,7 +408,7 @@ void EspPanel::populate_erc() {
     try { rate = erc->get_cd_event_rate(); }
     catch (const std::exception& e) { first_err(e); }
     if (!err.isEmpty())
-        emit error_message(tr("ERC init: %1").arg(err));
+        emit info_message(tr("ERC init: %1").arg(err));
     QSignalBlocker b0(erc_enable_); erc_enable_->setChecked(enabled);
     QSignalBlocker b1(erc_rate_);
     erc_rate_->setRange(static_cast<int>(std::min<uint32_t>(min_rate, INT_MAX)),
@@ -416,14 +417,12 @@ void EspPanel::populate_erc() {
 }
 
 void EspPanel::set_all_enabled(bool on) {
-    // Group boxes are individually disabled by populate_* when the facility
-    // is missing; here we only flip the top-level enable for the case where
-    // no camera is connected at all.
-    if (!on) {
-        af_group_->setEnabled(false);
-        tf_group_->setEnabled(false);
-        erc_group_->setEnabled(false);
-    }
+    // When disabling (no camera), turn off all groups. When enabling,
+    // turn on all groups — populate_* will individually disable any whose
+    // facility is missing (N8: the previous on=true branch was a no-op).
+    af_group_->setEnabled(on);
+    tf_group_->setEnabled(on);
+    erc_group_->setEnabled(on);
 }
 
 } // namespace gui

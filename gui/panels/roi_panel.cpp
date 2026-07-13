@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QKeySequence>
 #include <QLabel>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -17,15 +18,6 @@
 #include "app/camera_controller.h"
 
 namespace gui {
-
-namespace {
-// Refresh a widget's styling after a property change so the matching QSS
-// rule (e.g. QLabel[class="hint"]) takes effect immediately.
-void restyle(QWidget* w) {
-    w->style()->unpolish(w);
-    w->style()->polish(w);
-}
-} // namespace
 
 RoiPanel::RoiPanel(QWidget* parent) : AbstractPanel(parent) {
     auto* form = new QFormLayout(this);
@@ -73,6 +65,7 @@ RoiPanel::RoiPanel(QWidget* parent) : AbstractPanel(parent) {
     form->addRow(new QLabel(QString(), this)); // spacer
     drag_check_ = new QCheckBox(tr("ROI Drag Mode"), this);
     drag_check_->setToolTip(tr("Drag on the display to draw an ROI rectangle"));
+    drag_check_->setShortcut(QKeySequence("Ctrl+R"));
     drag_check_->setEnabled(false);
     form->addRow(tr("Display"), drag_check_);
 

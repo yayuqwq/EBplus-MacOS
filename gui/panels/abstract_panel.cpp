@@ -2,9 +2,16 @@
 
 #include "abstract_panel.h"
 
+#include <QStyle>
+
 #include "app/camera_controller.h"
 
 namespace gui {
+
+void AbstractPanel::restyle(QWidget* w) {
+    w->style()->unpolish(w);
+    w->style()->polish(w);
+}
 
 void AbstractPanel::bind_camera(CameraController* cam) {
     if (camera_) {

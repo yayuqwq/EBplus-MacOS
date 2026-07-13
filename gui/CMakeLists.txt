@@ -57,7 +57,6 @@ endif()
 # Phase 10 — layout manager.
 list(APPEND GUI_LIB_SOURCES
     widgets/custom_title_bar.cpp
-    widgets/collapsible_section.cpp
     widgets/activity_bar.cpp
     config/layout_manager.cpp
 )

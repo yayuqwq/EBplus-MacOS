@@ -1,10 +1,11 @@
 # GUI-for-openEB 需求分析文档
 
-> 版本：2.0  
-> 日期：2026-07-01  
+> 版本：2.1  
+> 日期：2026-07-13  
 > 技术栈：C++17 + Qt 6  
 > 基于：OpenEB SDK v5.2.0（Apache 2.0）  
-> 参考：Metavision Studio（Prophesee Docs 5.3.1）、Metavision SDK Pro 产品页
+> 参考：Metavision Studio（Prophesee Docs 5.3.1）、Metavision SDK Pro 产品页  
+> v2.1: 同步 v1.0.9 GUI 重构（VSCode 风格侧栏、移除工具栏/Algorithm 菜单、纯英文界面）
 
 ---
 
@@ -41,32 +42,74 @@ GUI-for-openEB/
 ├── gui/                         # GUI 应用代码（C++ + Qt 6）
 │   ├── CMakeLists.txt
 │   ├── main.cpp                 # 应用入口
-│   ├── main_window.h / .cpp     # 主窗口
+│   ├── main_window.h / .cpp     # 主窗口（CustomTitleBar + 左侧栏 + 右侧 AlgoWindow）
 │   ├── widgets/                 # 通用 GUI 控件
+│   │   ├── custom_title_bar.h / .cpp    # 自定义标题栏（替代 QMenuBar，下拉菜单）
+│   │   ├── activity_bar.h / .cpp        # VSCode 风格 48px 图标列（§5.6.5）
 │   │   ├── target_labeler.h / .cpp   🆕 数据集标注工具（参考 jAER TargetLabeler）
 │   │   ├── pixel_probe.h / .cpp      🆕 像素探针（点击查看事件序列/ISI/极性）
 │   │   ├── mouse_adaptor.h / .cpp    🆕 鼠标交互（多矩形 ROI 绘制）
 │   │   ├── algo_window.h / .cpp      🆕 算法显示窗口（§5.6.6，仅输出；参数统一在侧栏调节）
-│   │   └── multiline_text.h / .cpp   🆕 多行文本渲染（计数/统计 HUD）
-│   ├── panels/                  # 设置面板（Biases/ROI/ESP/Trigger 等）
-│   │   ├── biases_panel.h / .cpp
-│   │   ├── roi_panel.h / .cpp          # 升级为多矩形 ROI（参考 jAER MouseROI）
-│   │   ├── esp_panel.h / .cpp
-│   │   ├── trigger_panel.h / .cpp
-│   │   └── bias_tweaks_panel.h / .cpp  🆕 Bias 高级微调（参考 DVSTweaks）
+│   │   └── multiline_text.h           🆕 多行文本渲染（header-only，计数/统计 HUD）
+│   ├── panels/                  # 设置面板（VSCode 风格侧栏分组）
+│   │   ├── abstract_panel.h / .cpp      # 面板抽象基类（相机生命周期解耦）
+│   │   ├── settings_panel.h / .cpp      # 侧栏容器（ActivityBar + QStackedWidget）
+│   │   ├── devices_panel.h / .cpp       # 相机连接/设备管理
+│   │   ├── information_panel.h / .cpp   # 相机信息显示
+│   │   ├── display_panel.h / .cpp       # 显示模式/帧率/色彩
+│   │   ├── statistics_panel.h / .cpp    # 事件率/吞吐统计
+│   │   ├── biases_panel.h / .cpp        # Bias 参数调节
+│   │   ├── roi_panel.h / .cpp           # 多矩形 ROI（参考 jAER MouseROI）+ 硬件控制
+│   │   ├── esp_panel.h / .cpp           # ESP 配置
+│   │   ├── trigger_panel.h / .cpp       # 触发配置
+│   │   ├── preprocessing_panel.h / .cpp # OpenEB 预处理链（Polarity/Flip/ROI Filter 等）
+│   │   ├── algorithms_panel.h / .cpp    # 自研算法选择 + 共享预处理（Noise/Downsample）
+│   │   └── file_tools_panel.h / .cpp    # 录制/导出（从原 File 菜单迁入）
 │   ├── display/                 # 事件显示渲染（OpenGL 加速）
 │   │   ├── event_display_widget.h / .cpp
-│   │   ├── adaptive_renderer.h          🆕 自适应亮度渲染（参考 AdaptiveIntensityRenderer）
-│   │   ├── contrast_controller.h        🆕 显示对比度自动控制（PID 反馈，参考 jAER 控制思路）
-│   │   ├── frame_annotator.h            🆕 帧标注叠加（bbox/ID/轨迹/箭头）
-│   │   └── space_time_display.h         🆕 XYT 3D 事件点云窗口（替代 Temporal Plot，VBO+GLSL，参考 SpaceTimeRollingEventDisplayMethod，借鉴 ref/Lighthouse/tools/event_3d_scatter.py）
+│   │   ├── display_strategy.h / .cpp    # 🆕 IDisplayStrategy 4 策略（Passive/Overlay/Replace/Standalone）
+│   │   ├── frame_annotator.h / .cpp     # 🆕 帧标注叠加（bbox/ID/轨迹/箭头）
+│   │   └── space_time_display.h / .cpp  # 🆕 XYT 3D 事件点云窗口（VBO+GLSL，参考 SpaceTimeRollingEventDisplayMethod）
+│   ├── app/                     # 应用层控制器（原 stats/ 合并到此）
+│   │   ├── camera_controller.h / .cpp   # 相机生命周期管理
+│   │   ├── frame_pipeline.h / .cpp      # 帧管线（事件→帧→显示）
+│   │   ├── file_frame_generator.h / .cpp # 文件源帧生成
+│   │   ├── file_converter.h / .cpp      # RAW/HDF5 格式转换
+│   │   ├── icon_provider.h / .cpp       # SVG 图标缓存（QHash + 主题适配）
+│   │   ├── theme_controller.h / .cpp    # 主题控制器（LightGray/LightBlue × Light/Dark/FollowSystem）
+│   │   └── statistics_controller.h / .cpp # 统计数据采集
+│   ├── calibration/             # 标定向导
+│   │   └── calibration_wizard.h / .cpp  # 内参标定向导（条件编译）
 │   ├── recorder/               # 录制/回放控制
 │   ├── exporter/               # 数据导出
-│   ├── config/                 # 配置序列化（JSON）
-│   ├── stats/                  # 统计面板
+│   ├── config/                 # 配置序列化（JSON）+ 布局管理
+│   ├── resources/              # Qt 资源（编译进二进制）
+│   │   ├── theme/              #   主题令牌（tokens.h）+ QSS 模板（base.qss.in）
+│   │   ├── icons/              #   Lucide 风格 SVG 图标集
+│   │   ├── theme.qrc
+│   │   └── icons.qrc
+│   ├── tests/                  # 🆕 GUI 单元测试（GTest + CTest）
+│   │   ├── CMakeLists.txt
+│   │   ├── test_algo_bridge.cpp
+│   │   ├── test_config_manager.cpp
+│   │   ├── test_display_strategy.cpp
+│   │   ├── test_layout_manager.cpp
+│   │   └── test_theme_tokens.cpp
 │   └── algo_bridge/            # 算法桥接（调用 algo/ 模块 + openEB SDK）
 │       ├── algo_bridge.h / .cpp
-│       └── filter_chain.h / .cpp   🆕 自研算法链式装配（顺序/叠加）
+│       ├── filter_chain.h / .cpp   🆕 自研算法链式装配（顺序/叠加）
+│       └── backends/               # 🆕 按类别拆分的后端注册（§5.6.6）
+│           ├── backend_factory.cpp          # 注册入口
+│           ├── cv_backends.cpp              # 自研 CV 算法
+│           ├── cv_vector_backends.cpp       # CV 向量/轨迹类算法
+│           ├── analytics_backends.cpp       # 自研 analytics 算法
+│           ├── analytics_extra_backends.cpp # analytics 扩展（E2VID 等）
+│           ├── display_backends.cpp         # 显示类算法
+│           ├── filter_backends.cpp          # 自研 noise/hot_pixel filter
+│           ├── openeb_filter_backends.cpp   # OpenEB 滤波器
+│           ├── openeb_frame_backends.cpp    # OpenEB 帧生成
+│           ├── openeb_preproc_backends.cpp  # OpenEB 预处理
+│           └── openeb_util_backends.cpp     # OpenEB 工具
 ├── algo/                        # 算法模块（C++17，被 gui/ 调用）
 │   ├── CMakeLists.txt
 │   ├── common/                  # 公共工具
@@ -92,7 +135,7 @@ GUI-for-openEB/
 │   │       ├── angular_lowpass.h        # 角度低通（参考 AngleLowPassFilter）
 │   │       └── median_lowpass.h          # 中位数低通（去脉冲噪声）
 │   ├── cv/                      # 计算机视觉与运动分析（全部 header-only）
-│   │   ├── noise_filter.h                 # 🆕 多模式（BAF/STCF/Refractory/DWF/AgePolarity/Harmonic/Repetitious/SpatialBP）
+│   │   ├── noise_filter.h                 # 🆕 多模式（BAF/STCF/Refractory/DWF/AgePolarity/Harmonic/Repetitious/SpatialBP）— v1.0.9 起从独立算法改为共享预处理
 │   │   ├── hot_pixel_filter.h             🆕 热像素过滤（学习+查表+FPN 概率校正）
 │   │   ├── orientation_filter.h           🆕 4 朝向边缘检测（参考 AbstractOrientationFilter）
 │   │   ├── direction_selective_filter.h         🆕 8 方向运动估计（参考 AbstractDirectionSelectiveFilter）
@@ -138,11 +181,14 @@ GUI-for-openEB/
 │       ├── test_phase8_10.cpp               # ✅ Phase 8-10 analytics + E2VID 单元测试
 │       ├── noise_tester.h                   # 降噪评测框架（注入泊松+漏噪声，统计 TP/FP/TN/FN）
 │       └── signal_noise_event.h             # 信号/噪声标注事件类型
+├── third_party/                 # 第三方依赖（ONNX Runtime 等）
 ├── LICENSE
 ├── README.md
 ├── README_CN.md
 └── doc/
-    └── design.md
+    ├── design.md                # 本文档（系统设计规格说明）
+    ├── compile.md               # 编译指南（Ubuntu 26.04 + GCC 15 + Qt 6.6+）
+    └── gui_optimization.md      # GUI 优化文档（VSCode 风格侧栏、BUG 修复记录）
 ```
 
 > 图例：🆕 = 基于 jAER 研究借鉴/新增的模块；🔄 = algo_bridge 直接调用 openEB 已有能力（见 §4.3）；无标注 = 原有模块。jAER 算法对照表见 1.6 节，每个模块的详细方案见第四章。
@@ -836,7 +882,7 @@ public:
 | **algo/tests/** | 2 | 🆕 降噪评测框架（注入泊松+漏噪声，统计 TP/FP/TN/FN）、信号/噪声标注事件 |
 | **gui/algo_bridge/** | （封装层） | 🔄 直接调用 openEB 27 项已有能力（9 事件过滤 + 7 帧生成 + 5 预处理器 + 6 工具），不重复实现 |
 
-> **总计**：自研 53 个算法模块 + 封装复用 openEB 27 项能力；openEB 全部 89 项内置功能（见 1.5 节）均需在 GUI 中可访问。`AlgoBridge` 注册全部 53 个自研模块（common 20 + cv 23 + analytics 7 + calibration 1 + tests 2）+ 27 项 openEB 封装能力，共 80 项可通过 `list_algos()` 枚举。
+> **总计**：自研 53 个算法模块 + 封装复用 openEB 27 项能力；openEB 全部 89 项内置功能（见 1.5 节）均需在 GUI 中可访问。`AlgoBridge` 注册全部 53 个自研模块（common 20 + cv 23 + analytics 7 + calibration 1 + tests 2）+ 27 项 openEB 封装能力，共 59 项可通过 `list_algos()` 枚举。
 > **数据约束**：仅支持单相机纯事件流 (x,y,p,t)，不含 DAVIS APS 帧、IMU、双目立体。所有模块均在纯事件输入下工作。
 > **算法来源**：噪声过滤、跟踪、光流、朝向、霍夫等核心思路借鉴 jAER（见 1.6 节对照表），全部以 C++17 重写并集成到 openEB 事件流回调中，不引入 Java 依赖。
 
@@ -925,6 +971,8 @@ public:
 | Timing Profiler | `TimingProfiler` | 性能剖析 |
 
 #### 4.3.5 🆕 噪声过滤 (NoiseFilter) — 叠加型
+
+> **v1.0.9 变更**：`noise_filter` 已从独立注册算法移除，改为通过 AlgorithmsPanel 的共享预处理控件暴露。8 种滤波模式（BAF/STCF/Refractory/DWF/AgePolarity/Harmonic/Repetitious/SpatialBP）仍由 `algo/cv/noise_filter.h` 实现，但通过 `preproc_filter_mode` 等参数键配置，作为 "ROI → filter → downsample" 预处理链的一环。Noise filter 与主算法不互斥，可叠加使用。
 
 openEB 未提供专用事件级噪声滤波器，需自研。作用于事件流，过滤后事件送显示/下游算法。借鉴 jAER `net/sf/jaer/eventprocessing/filter/`（见 1.6.1），提供 8 种模式以适配不同场景：
 
@@ -1373,53 +1421,56 @@ openEB 未提供光流算法，需自研。结果以箭头/颜色图叠加到主
 
 ### 5.1 主窗口布局
 
+v1.0.9 起 GUI 采用 VSCode 风格布局：自定义标题栏（CustomTitleBar，下拉菜单替代 QMenuBar）、左侧 ActivityBar + 设置面板、中央事件显示区、右侧 AlgoWindow 停靠区。工具栏已移除，录制/导出等功能迁入侧栏 File Tools 面板。
+
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  Menu: File | View | Camera | Preprocess | Frame Mode |  │
-│        Algorithm | Calibration | Tools | Help            │
-├───────────────────────────────────────┬──────────────────┤
-│                                       │  Settings Panel   │
-│                                       │                  │
-│                                       │ ┌──────────────┐ │
-│                                       │ │ Information   │ │
-│         Event Display                 │ ├──────────────┤ │
-│         (中央事件显示区)               │ │ Statistics    │ │
-│         OpenGL 渲染                   │ ├──────────────┤ │
-│         1280×720 / 640×480            │ │ Display       │ │
-│                                       │ ├──────────────┤ │
-│                                       │ │ Biases        │ │
-│                                       │ ├──────────────┤ │
-│                                       │ │ ROI           │ │
-│                                       │ ├──────────────┤ │
-│                                       │ │ ESP           │ │
-│                                       │ ├──────────────┤ │
-│                                       │ │ Trigger       │ │
-│                                       │ ├──────────────┤ │
-│                                       │ │ Algorithms    │ │
-│                                       │ └──────────────┘ │
-├───────────────────────────────────────┴──────────────────┤
+│  CustomTitleBar: [EB plus]  File|View|Theme|Tools|Help  [_□×]│
+├────┬─────────────────────────┬───────────────────────────┤
+│ A  │  Settings Panel          │                           │
+│ c  │  (QStackedWidget)        │                           │
+│ t  │ ┌──────────────────────┐ │     Event Display         │
+│ i  │ │ Camera:               │ │     (中央事件显示区)       │
+│ v  │ │   Devices, Info       │ │     OpenGL 渲染           │
+│ i  │ ├──────────────────────┤ │     1280×720 / 640×480    │
+│ t  │ │ Display & Stats:      │ │                           │
+│ y  │ │   Display, Statistics │ │                           │
+│ B  │ ├──────────────────────┤ │                           │
+│ a  │ │ Hardware:             │ │                           │
+│ r  │ │   Biases, ROI, ESP,   │ │                           │
+│    │ │   Trigger             │ │                           │
+│ 48 │ ├──────────────────────┤ │                           │
+│ px │ │ Algorithms:           │ │     AlgoWindow (右侧)     │
+│    │ │   Preprocessing,      │ │     (算法显示窗口)         │
+│ ▼  │ │   Algorithms          │ │                           │
+│    │ ├──────────────────────┤ │                           │
+│    │ │ Tools:                │ │                           │
+│    │ │   File Tools          │ │                           │
+│    │ └──────────────────────┘ │                           │
+├────┴─────────────────────────┴───────────────────────────┤
 │  Status Bar: 连接状态 │ 事件率 │ 时间戳 │ 录制状态        │
 ├──────────────────────────────────────────────────────────┤
-│  Playback Controls (回放时出现): ▶ ⏸ ⏩ 进度条 ──●──       │
+│  Playback Controls (回放时出现): 进度条                   │
 └──────────────────────────────────────────────────────────┘
 ```
 
+- **ActivityBar**（左侧 48px 图标列）：点击图标切换 QStackedWidget 页面；底部 chevron 按钮切换侧栏内容可见性（收起后 dock 缩至 48px）；空白区域可拖拽移动 dock 到对侧
+- **Settings Panel**（左侧停靠，默认宽 380px）：5 个分组页面，无内部滚动条，依赖父滚动区
+- **AlgoWindow**（右侧停靠）：算法显示窗口标签页叠加
+
 ### 5.2 设置面板各区域说明
 
-| 区域 | 内容 | 适用场景 |
-|------|------|----------|
-| **Information** | 传感器型号、分辨率、序列号、固件版本、平台信息 | 始终可见 |
-| **Statistics** | 事件率（Mev/s）、ON/OFF 比例、数据速率、温度/功耗 | 始终可见 |
-| **Display** | 帧生成模式（7种）、累积时间滑块、色彩主题、叠加层开关 | 实时 / 回放 |
-| **Biases** | 传感器 Bias 滑块 + 数值 + 预设 | 仅实时相机 |
-| **ROI** | ROI 开关 + 坐标 + 掩码 | 仅实时相机 |
-| **ESP** | Anti-Flicker / Trail Filter / ERC | 仅实时相机 |
-| **Trigger** | Trigger In / Out | 仅实时相机 |
-| **Preprocessing** | 事件过滤链：极性过滤、翻转、旋转、转置、缩放、速率分割 | 实时 / 回放 |
-| **Algorithms** | algo/cv + algo/analytics 模块选择 + 启停 + 参数；标注显示模式（叠加/独立窗口） | 实时 / 回放 |
-| **Calibration** | 内参/外参标定向导 | 实时相机 |
-| **File Tools** | 文件转换（→HDF5/CSV/DAT）、裁剪、编码、信息查看 | 文件模式 |
-| **Devices** | 设备列表、连接/断开、多相机同步、HAL 展示 | 始终可见 |
+v1.0.9 起设置面板采用 VSCode 风格分组，通过 ActivityBar 图标切换 QStackedWidget 页面。11 个面板归入 5 个分组：
+
+| 分组 | 包含面板 | 内容 |
+|------|---------|------|
+| **Camera** | Devices, Information | 设备列表/连接/断开；传感器型号、分辨率、序列号、固件版本 |
+| **Display & Stats** | Display, Statistics | 帧生成模式（7种）、累积时间、色彩主题、叠加层；事件率（Mev/s）、ON/OFF 比例、数据速率 |
+| **Hardware** | Biases, ROI, ESP, Trigger | Bias 滑块+预设；ROI 开关+坐标+掩码；Anti-Flicker/Trail Filter/ERC；Trigger In/Out |
+| **Algorithms** | Preprocessing, Algorithms | OpenEB 预处理链（Polarity/Flip/ROI Filter）；自研算法选择+启停+参数+共享预处理（Noise/Downsample） |
+| **Tools** | File Tools | 文件转换（→HDF5/CSV/DAT）、录制开始/停止、导出 AVI/HDF5 |
+
+> 注：Calibration（内参标定向导）通过 Tools 菜单 → Intrinsic Wizard 打开，不在侧栏常驻。
 
 ### 5.3 其他窗口
 
@@ -1432,17 +1483,17 @@ openEB 未提供光流算法，需自研。结果以箭头/颜色图叠加到主
 
 ### 5.4 菜单栏
 
+v1.0.9 起菜单栏由 CustomTitleBar 实现（下拉菜单替代 QMenuBar）。Camera/Preprocess/Frame Mode/Algorithm/Calibration 菜单已移除，相关功能迁入侧栏对应面板。新增 Theme 顶级菜单。
+
 | 菜单 | 选项 |
 |------|------|
-| **File** | Open Camera, Open File (RAW/HDF5/DAT), Save/Load Settings, Export→AVI, Export→HDF5, File Tools→Convert to HDF5, File Tools→Convert to CSV, File Tools→Convert to DAT, File Tools→Cutter, File Tools→Info, Exit |
-| **View** | Toggle Sidebar (Ctrl+Shift+S), Toggle Playback Panel (Ctrl+Shift+P), Reset Layout, Save/Load Layout, Fullscreen (F11) |
-| **Camera** | Connect/Disconnect, Device List, Platform Info, Monitor (Temperature/Power), Sync Multi-Camera, HAL Showcase |
-| **Preprocess** | ROI Filter, Polarity Filter, Polarity Invert, Flip X/Y, Rotate (0°/90°/180°/270°), Transpose, Rescale, Adaptive Rate Split |
-| **Frame Mode** | Integration, Diff, Time Decay |
-| **Algorithm** | Noise Filter, Hot Pixel Filter, Orientation Filter, Direction Selective Filter, Optical Flow (Sparse), Blob Detect, Object Tracker, Corner Detect, Line Segment (ELiSeD), Hough Line, Hough Circle, Orientation Cluster, LIF Cluster, Background Mask, Perspective Undistort, Trigger Synced, Bandpass Filter, EIS (Optical Gyro), Ultra Slow Motion, XYT 3D, Time Surface, Active Marker, Event→Video, Flow Statistics, ISI Analyzer, Particle Counter, Auto Bias, Freq Detector, Overlay（其中 XYT 3D / Time Surface / Event→Video / Freq Detector / ISI Analyzer 为可勾选项，详见 §5.6.6） |
-| **Calibration** | Intrinsic Wizard |
-| **Tools** | Add Display Window, Tile Windows, Cascade Windows, Close All Windows |
-| **Help** | About, Documentation, Software Info |
+| **File** | Open File (RAW/HDF5/DAT), Save Config, Load Config, Save Biases, Load Biases, Algorithm Params (导出/导入), Exit |
+| **View** | Toggle Playback Panel (Ctrl+Shift+P), Reset Layout, Save Layout, Load Layout, Fullscreen (F11) |
+| **Theme** | Color: LightGray / LightBlue; Mode: Follow System / Always Light / Always Dark |
+| **Tools** | Intrinsic Wizard (内参标定向导) |
+| **Help** | About, About Qt |
+
+> 注：侧栏切换由 ActivityBar 底部 chevron 按钮控制，不再通过 View 菜单。Camera Connect/Disconnect 在 Devices 面板，Frame Mode 在 Display 面板，Preprocess 在 Preprocessing 面板，Algorithm 选择在 Algorithms 面板，录制/导出在 File Tools 面板。
 
 ### 5.5 快捷键建议
 
@@ -1530,11 +1581,11 @@ openEB 未提供光流算法，需自研。结果以箭头/颜色图叠加到主
 
 #### 5.6.5 实现技术
 
-基于 Qt 6 的 `QDockWidget` 实现可停靠/浮动子窗口；主窗口采用 `QMainWindow`，中央区域为主显示（EventDisplayWidget），设置面板停靠在右侧，算法窗口（AlgoWindow）默认停靠在左侧并可标签页叠加。顶部工具栏提供侧边栏切换、窗口排列、全屏等快捷操作。侧边栏收起时右侧边缘显示竖条标记按钮用于恢复。布局自动重排通过 `QMainWindow.resizeDocks` / `tabifyDockWidget` 实现。
+基于 Qt 6 的 `QDockWidget` 实现可停靠/浮动子窗口；主窗口采用 `QMainWindow`，中央区域为主显示（EventDisplayWidget）。设置面板（SettingsPanel）停靠在**左侧**，包含 ActivityBar（48px 图标列）和 QStackedWidget（分组页面切换）；算法窗口（AlgoWindow）停靠在**右侧**并可标签页叠加。标题栏由 CustomTitleBar 实现（下拉菜单替代 QMenuBar）。工具栏已移除。侧栏收起时由 ActivityBar 底部 chevron 按钮控制可见性（收起后 dock 缩至 48px 仅显示图标列）。ActivityBar 空白区域支持拖拽移动 dock 到对侧（OpenHandCursor/ClosedHandCursor 反馈）。布局自动重排通过 `QMainWindow.resizeDocks` / `tabifyDockWidget` 实现。
 
 #### 5.6.6 🆕 算法 ROI 处理区（全算法支持，128×128 中心默认）
 
-**核心需求**：全部自研算法（22 个 CV + 7 个 Analytics，共 29 个）均支持"算法 ROI"处理区。GUI 默认启用 ROI 且默认区域为中心 128×128 内侧，使算法只处理 ROI 内事件、GUI 只渲染 ROI 区域的输出。用户可在侧栏"算法模块"面板顶部的全局 ROI 选择器中调节 ROI 坐标/尺寸，并在每个算法的展开参数编辑器中调节全部算法参数（AlgoWindow 显示窗口仅展示输出，不含参数控件）。
+**核心需求**：全部 29 个自研算法注册（21 个 CV + 7 个 Analytics + 1 个 Calibration）均支持"算法 ROI"处理区；noise_filter 模块仍存在于 algo/cv/ 但 v1.0.9 起从独立算法改为共享预处理阶段。GUI 默认启用 ROI 且默认区域为中心 128×128 内侧，使算法只处理 ROI 内事件、GUI 只渲染 ROI 区域的输出。用户可在侧栏"算法模块"面板顶部的全局 ROI 选择器中调节 ROI 坐标/尺寸，并在每个算法的展开参数编辑器中调节全部算法参数（AlgoWindow 显示窗口仅展示输出，不含参数控件）。
 
 **适用算法**：全部 29 个自研算法（包括 Overlay / Replace / Standalone / Passive 四种显示模式）。每个算法在 `algo_bridge.cpp` 注册时由 `add()` lambda 自动追加 5 个 ROI 参数；每个 `AlgoBackend` 通过 `RoiFilter` helper（或等价的 `ProcessRegion` 成员）实现事件过滤。
 
@@ -1560,21 +1611,19 @@ openEB 未提供光流算法，需自研。结果以箭头/颜色图叠加到主
 
 **事件过滤**：每个事件 `(x, y, p, t)` 若 `x0 ≤ x < x1 && y0 ≤ y < y1` 则保留（坐标平移与否取决于过滤模式），否则丢弃。
 
-**GUI 行为（Algorithm 菜单结构）**：
-1. **每个算法一个子菜单**（`QMenu`），包含三个条目：
-   - **"Enable"**（`checkable QAction`）：勾选时启用 AlgoInstance 并自动打开 AlgoWindow；取消勾选时关闭 AlgoWindow 并停用算法
-   - **"算法ROI"**（`checkable QAction`，默认勾选）：勾选时设置 `roi_enabled=true`，算法仅处理 ROI 内事件；取消勾选时设置 `roi_enabled=false`，算法处理全幅事件
-   - **"Configure..."**（普通 `QAction`）：打开该算法的 AlgoWindow 独立窗口
-2. **使用 `triggered(bool)` 信号**（非 `toggled`）避免程序化 `setChecked` 触发重入
-3. **AlgoWindow**（`gui/widgets/algo_window.h`，继承 `QDockWidget`）：
-   - 停靠在主窗口左侧，多个算法窗口标签页叠加；用户可拖拽至任意边缘、浮出或重新排列
-   - 内部 content widget 仅为显示区域，**不含参数控件**——所有参数调节统一在侧栏 AlgorithmsPanel 完成，避免两处独立参数面板不同步导致用户无法确认算法实际使用的参数值
-   - Standalone 帧类算法（`time_surface`/`event_to_video`/`isi_analyzer`/`background_mask`）安装 `EventDisplayWidget` 显示算法输出帧；**自研 Overlay 算法也安装 `EventDisplayWidget`，作为 ROI 放大视图**（见下文）；其余算法使用 `QLabel` 显示状态文本
-   - `xyt_visualizer` 额外维护独立的 `SpaceTimeDisplay`（QOpenGLWidget 3D 渲染），AlgoWindow 仅显示状态标签，参数在侧栏调节
-   - 关闭 AlgoWindow → `closeEvent` 显式 accept → 触发 `closing` 信号 → `set_enabled(false)` + 侧边栏算法面板取消勾选 + `WA_DeleteOnClose` 自动回收
-4. **主显示帧 ROI 叠加**：`process_algo_results()` 中调用 `draw_roi_overlays()`，遍历所有启用的自研算法（`source == "self"`），对每个 `roi_enabled=true` 的算法在主显示帧上绘制黄色矩形框 + 算法名标注
-5. **ROI 放大视图**（Overlay 算法）：`process_algo_results()` 的 Overlay 分支在主帧上绘制完算法图元（boxes/lines/points/circles/texts）后，若该算法 `roi_enabled=true` 且其 AlgoWindow 已开，则从已标注的主帧裁剪 ROI 区域（`QImage::copy(QRect)`）并推送到 AlgoWindow 的 `EventDisplayWidget`。该窗口以 ROI 尺寸独立显示"放大后的算法结果"，便于用户在小 ROI 区域内观察细节；ROI 未启用时不推送（保持 `QLabel` 等待状态）。
-6. **参数面板**：所有算法参数仅在侧栏 AlgorithmsPanel 调节（含全局 ROI 选择器 + 每个算法的展开参数编辑器），参数变更即时同步到 AlgoInstance。AlgoWindow 显示窗口不含参数控件。
+**GUI 行为（侧栏 AlgorithmsPanel）**：
+1. **算法选择**：侧栏 Algorithms 组的 AlgorithmsPanel 提供算法列表，每个算法有 "Enable" 复选框和参数编辑器。勾选 "Enable" 时启用 AlgoInstance 并自动打开 AlgoWindow（右侧停靠）；取消勾选时关闭 AlgoWindow 并停用算法
+2. **全局 ROI 选择器**：AlgorithmsPanel 顶部提供全局 ROI 控件（x/y/w/h + enabled 复选框），默认中心 128×128。ROI 参数仅应用于 `source == "self"` 的自研算法；OpenEB wrapper 算法（`source == "openeb"`）的 ROI 由 OpenEB filter_chain 处理，跳过以避免污染其 param_values_ 映射（BUG-13 修复）
+3. **共享预处理**：AlgorithmsPanel 提供 "Preprocessing (ROI > filter > downsample)" 控件，包含 Noise filter（8 模式，默认 STCF）和 1/4 Downsample（默认 ON）。预处理参数仅推送到自研算法实例，与主算法不互斥（可叠加）
+4. **使用 `triggered(bool)` 信号**（非 `toggled`）避免程序化 `setChecked` 触发重入
+5. **AlgoWindow**（`gui/widgets/algo_window.h`，继承 `QDockWidget`）：
+   - 停靠在主窗口**右侧**，多个算法窗口标签页叠加；用户可拖拽至任意边缘、浮出或重新排列
+   - 内部 content widget 仅为显示区域，**不含参数控件**——所有参数调节统一在侧栏 AlgorithmsPanel 完成
+   - Standalone 帧类算法安装 `EventDisplayWidget` 显示算法输出帧；自研 Overlay 算法也安装 `EventDisplayWidget`，作为 ROI 放大视图
+   - 关闭 AlgoWindow → `closeEvent` 显式 accept → 触发 `closing` 信号 → `set_enabled(false)` + 侧栏算法面板取消勾选 + `WA_DeleteOnClose` 自动回收
+6. **主显示帧 ROI 叠加**：`process_algo_results()` 中调用 `draw_roi_overlays()`，遍历所有启用的自研算法，对每个 `roi_enabled=true` 的算法在主显示帧上绘制黄色矩形框 + 算法名标注
+7. **ROI 放大视图**（Overlay 算法）：Overlay 分支在主帧上绘制完算法图元后，若该算法 `roi_enabled=true` 且其 AlgoWindow 已开，则从已标注的主帧裁剪 ROI 区域并推送到 AlgoWindow 的 `EventDisplayWidget`
+8. **模式切换保护**：`first_init_` 标志确保 ROI/fps 仅在初始构建时自动设置，用户手动切换算法模式时不重置自定义 ROI/fps（BUG-14 修复）
 
 **手动停用方式**：
 - 侧边栏"算法模块"面板 → 取消勾选算法的 "Enable" 复选框
@@ -1663,7 +1712,7 @@ RAW/HDF5 文件
 
 ### 7.3 国际化
 
-- 界面文字支持中文和英文（语言文件分离，可切换）
+界面语言为纯英文（English-only）。v1.0.9 起不再提供多语言切换，所有 GUI 文本、面板分组名、菜单项均为英文。Qt `tr()` 调用保留为标准实践，但未配置 `.ts`/`.qm` 翻译文件。
 
 ### 7.4 容错处理
 

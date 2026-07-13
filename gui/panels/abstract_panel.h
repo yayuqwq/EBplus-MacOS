@@ -62,6 +62,11 @@ protected:
     /// The currently-bound camera (nullptr until bind_camera is called).
     /// Stored as a raw pointer; MainWindow owns the CameraController.
     CameraController* camera_{nullptr};
+
+    /// @brief Refreshes a widget's styling after a property change so the
+    /// matching QSS rule (e.g. QLabel[class="hint"]) takes effect immediately.
+    /// Extracted from the per-panel anonymous-namespace duplicates (BUG-R9).
+    static void restyle(QWidget* w);
 };
 
 } // namespace gui

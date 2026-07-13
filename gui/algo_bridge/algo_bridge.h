@@ -12,6 +12,7 @@
 #ifndef GUI_ALGO_BRIDGE_ALGO_BRIDGE_H
 #define GUI_ALGO_BRIDGE_ALGO_BRIDGE_H
 
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -177,6 +178,20 @@ public:
     /// selector so a single control updates all enabled algorithms.
     void apply_global_preproc(const std::string& key, const std::string& value);
 
+    /// @brief Applies shared ROI parameters (roi_*) to every live
+    /// self-developed instance and caches them so future instances
+    /// created via create() inherit the current ROI settings (N3).
+    void apply_global_roi(const std::string& enabled, const std::string& x,
+                          const std::string& y, const std::string& w,
+                          const std::string& h);
+
+    /// @brief Caches per-algorithm parameters for an instance that is not
+    /// yet live. The cached values are replayed in create() so that
+    /// parameters loaded from a config file are not lost when the
+    /// algorithm is later enabled (N1).
+    void cache_algo_params(const std::string& name,
+                           const std::map<std::string, std::string>& params);
+
     /// @brief Looks up a live instance by name. Returns nullptr if no live
     /// instance exists (either never created or already destroyed).
     /// Used by ConfigManager to capture/apply runtime parameter values.
@@ -208,6 +223,21 @@ private:
     mutable std::mutex live_mutex_;
     int sensor_w_{1280};
     int sensor_h_{720};
+    /// Cache of the latest global preproc_* parameter values (BUG-R4).
+    /// Replayed in create() so new instances inherit the shared
+    /// preprocessing state even when created by other code paths
+    /// (ConfigManager, calibration wizard).
+    std::unordered_map<std::string, std::string> preproc_cache_;
+
+    /// Cache of the latest global roi_* parameter values (N3). Replayed
+    /// in create() alongside preproc_cache_ so new instances inherit the
+    /// current ROI settings.
+    std::unordered_map<std::string, std::string> roi_cache_;
+
+    /// Per-algorithm parameter cache for instances not yet live (N1).
+    /// Populated by ConfigManager::apply_algo_state when an algorithm has
+    /// no live instance; replayed in create() so saved values are not lost.
+    std::unordered_map<std::string, std::map<std::string, std::string>> algo_param_cache_;
 };
 
 } // namespace gui

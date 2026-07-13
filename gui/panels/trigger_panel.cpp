@@ -28,11 +28,6 @@ QString channel_label(Metavision::I_TriggerIn::Channel ch) {
     }
     return TriggerPanel::tr("Unknown");
 }
-
-void restyle(QWidget* w) {
-    w->style()->unpolish(w);
-    w->style()->polish(w);
-}
 } // namespace
 
 TriggerPanel::TriggerPanel(QWidget* parent) : AbstractPanel(parent) {

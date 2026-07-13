@@ -8,6 +8,7 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QKeySequence>
 #include <QLabel>
 #include <QMessageBox>
 #include <QProgressBar>
@@ -39,6 +40,7 @@ FileToolsPanel::FileToolsPanel(FileConverter* converter, QWidget* parent)
 
     // Recording + Export controls (moved from File menu / toolbar — §14.5).
     btn_record_ = new QPushButton(tr("Start Recording..."), gb);
+    btn_record_->setShortcut(QKeySequence("R"));
     btn_stop_   = new QPushButton(tr("Stop Recording"), gb);
     btn_export_ = new QPushButton(tr("Export..."), gb);
     btn_stop_->setEnabled(false);
@@ -95,6 +97,7 @@ void FileToolsPanel::set_export_enabled(bool enabled) {
 }
 
 void FileToolsPanel::on_convert_hdf5() {
+    if (!converter_) return;
     const QString src = QFileDialog::getOpenFileName(
         this, tr("Source file"), QString(),
         tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));
@@ -110,6 +113,7 @@ void FileToolsPanel::on_convert_hdf5() {
 }
 
 void FileToolsPanel::on_convert_csv() {
+    if (!converter_) return;
     const QString src = QFileDialog::getOpenFileName(
         this, tr("Source file"), QString(),
         tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));
@@ -125,6 +129,7 @@ void FileToolsPanel::on_convert_csv() {
 }
 
 void FileToolsPanel::on_cutter() {
+    if (!converter_) return;
     const QString src = QFileDialog::getOpenFileName(
         this, tr("Source file"), QString(),
         tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));
@@ -160,6 +165,7 @@ void FileToolsPanel::on_cutter() {
 }
 
 void FileToolsPanel::on_info() {
+    if (!converter_) return;
     const QString src = QFileDialog::getOpenFileName(
         this, tr("Source file"), QString(),
         tr("Event files (*.raw *.hdf5 *.h5 *.dat);;All files (*)"));

@@ -73,7 +73,7 @@ TEST(AlgoBridgeRegistry, KeyNamesPresent) {
     EXPECT_NE(bridge.find("util_rate_estimator"), nullptr);
 }
 
-TEST(AlgoBridgeRegistry, NoiseFilterRemovedInV1_1_0) {
+TEST(AlgoBridgeRegistry, NoiseFilterRemovedInV1_0_9) {
     AlgoBridge bridge;
     // noise_filter is now a stackable preprocessing stage, not a standalone
     // algorithm, so it must not be in the registry.

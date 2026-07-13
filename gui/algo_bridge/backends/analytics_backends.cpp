@@ -50,6 +50,7 @@ class EventToVideoBackend final : public AlgoBackend {
     std::unique_ptr<gui_algo::EventToVideo> algo_;
     std::vector<Metavision::EventCD> passthrough_;
     std::vector<gui_algo::Event> roi_events_;
+    bool filtered_active_{false};  ///< true when ROI/preproc modified events (N4)
     Preprocessor preproc_;
 public:
     EventToVideoBackend(int w, int h) : sensor_w_(w), sensor_h_(h) {
@@ -79,9 +80,10 @@ public:
         algo_->set_relaxation_step(relaxation_step_);
         algo_->set_im_iterations(im_iterations_);
         algo_->set_fov_deg(fov_deg_);
-        // E2VID (model reload is intentionally deferred to set_model_path so
-        // an empty path keeps the heuristic fallback; non-empty path triggers
-        // load_model which may fail silently and also fall back).
+        // E2VID: load the ONNX model if a path is set. An empty path keeps
+        // the heuristic fallback; a non-empty path triggers load_model which
+        // may fail silently and also fall back (BUG-G9: comment corrected —
+        // the model IS loaded here in rebuild(), not deferred).
         if (!model_path_.empty()) algo_->set_model_path(model_path_);
         algo_->set_e2vid_num_bins(e2vid_num_bins_);
         algo_->set_e2vid_auto_hdr(e2vid_auto_hdr_);
@@ -99,6 +101,14 @@ public:
             if (k == "preproc_downsample") rebuild();
             return;
         }
+        // Snapshot ROI state BEFORE any param mutation so the rebuild-skip
+        // logic below compares old vs. new against the true prior state.
+        // Without this, roi_enabled toggling would read the NEW roi_.enabled
+        // for both old_aw and new_aw, falsely skipping rebuild() and leaving
+        // the algorithm with mismatched dimensions vs. incoming events (N2).
+        const bool prev_roi_enabled = roi_.enabled;
+        const int prev_roi_rw = roi_.rw;
+        const int prev_roi_rh = roi_.rh;
         bool need_rebuild = false;
         if (k == "mode") {
             int m = to_i(v);
@@ -168,12 +178,34 @@ public:
         } else if (k == "bilateral_sigma") {
             bilateral_sigma_ = static_cast<float>(to_d(v));
             if (algo_) algo_->set_bilateral_sigma(bilateral_sigma_);
+        } else if (k == "downsample") {
+            // Backward compat: the old per-algo "downsample" key is forwarded
+            // to the shared preproc stage (preproc_downsample). The per-algo
+            // flag stays OFF to avoid double-halving (BUG-R2).
+            preproc_.set_param("preproc_downsample", v);
+            need_rebuild = true;
         } else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
         else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
         else if (k == "roi_y") { roi_.y = to_i(v); need_rebuild = true; }
         else if (k == "roi_w") { roi_.w = to_i(v); need_rebuild = true; }
         else if (k == "roi_h") { roi_.h = to_i(v); need_rebuild = true; }
-        if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
+        if (need_rebuild) {
+            // Only rebuild (which reloads the ONNX model) when the effective
+            // dimensions actually change. ROI position changes (x, y) don't
+            // affect the algorithm dimensions — they only shift which events
+            // are cropped — so skip the expensive rebuild (N2).
+            // Use the snapshot taken at entry — roi_.enabled may have been
+            // toggled by this very call, so reading it now would compare the
+            // NEW state against itself and falsely skip rebuild().
+            const int old_aw = prev_roi_enabled ? prev_roi_rw : sensor_w_;
+            const int old_ah = prev_roi_enabled ? prev_roi_rh : sensor_h_;
+            roi_.compute(sensor_w_, sensor_h_);
+            const int new_aw = roi_.enabled ? roi_.rw : sensor_w_;
+            const int new_ah = roi_.enabled ? roi_.rh : sensor_h_;
+            if (new_aw != old_aw || new_ah != old_ah) {
+                rebuild();
+            }
+        }
     }
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
@@ -210,17 +242,30 @@ public:
             roi_events_ = crop_to_roi(ev, n, roi_, &preproc_);
             ev = roi_events_.data();
             n = roi_events_.size();
+            filtered_active_ = true;
         } else if (preproc_.active() && n > 0) {
             auto [p, m] = preproc_.apply(ev, n);
             roi_events_.assign(p, p + m);
             ev = roi_events_.data();
             n = m;
+            filtered_active_ = true;
+        } else {
+            filtered_active_ = false;
         }
         algo_->process(ev, n);
     }
     AlgoResult pull_result() override {
         AlgoResult r;
-        r.filtered_events = passthrough_;
+        // Return the post-ROI/preproc events when filtering was applied;
+        // otherwise return the raw passthrough (N4). gui_algo::Event and
+        // Metavision::EventCD are layout-compatible (static_assert in
+        // as_events), so reinterpret_cast is safe.
+        if (filtered_active_) {
+            const auto* cd = reinterpret_cast<const Metavision::EventCD*>(roi_events_.data());
+            r.filtered_events.assign(cd, cd + roi_events_.size());
+        } else {
+            r.filtered_events = passthrough_;
+        }
         r.has_frame = true;
         cv::Mat frame = algo_->get_frame();
         const int f = preproc_.factor();

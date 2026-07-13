@@ -224,26 +224,23 @@ void AlgorithmsPanel::build_ui() {
                     if (inst) {
                         inst->set_enabled(true);
                         live_instances_[algo_name] = inst;
-                        // Apply the current global ROI to this newly-enabled
-                        // instance so it starts with the right region.
+                        // create() already replayed the cached preproc_* and
+                        // roi_* params (BUG-R4, N3). Refresh the ROI cache from
+                        // the current widget values so the new instance is
+                        // guaranteed to match the sidebar state even if no
+                        // widget signal fired since app start.
                         apply_global_roi();
-                        // Apply the current global preprocessing settings
-                        // (noise filter + 1/4 downsample) so the new instance
-                        // inherits the shared stackable preprocessing stage.
-                        apply_global_preproc("preproc_filter_enabled",
-                            preproc_filter_cb_->isChecked() ? "true" : "false");
-                        apply_global_preproc("preproc_downsample",
-                            preproc_downsample_cb_->isChecked() ? "true" : "false");
-                        apply_global_preproc("preproc_filter_mode",
-                            std::to_string(preproc_filter_mode_combo_->currentIndex()));
+                        emit info_message(tr("Algorithm enabled: %1")
+                                              .arg(QString::fromStdString(a->display_name)));
+                        // Request MainWindow to open the AlgoWindow so Standalone
+                        // algorithms have a display and Overlay algorithms get
+                        // their ROI zoom view. Without this the sidebar-enabled
+                        // algorithm produces no visible output.
+                        // BUG-G4: only emit when inst is non-null — otherwise
+                        // MainWindow would open a window for an algo with no
+                        // live instance (no data, no display).
+                        emit open_algo_window_requested(algo_name);
                     }
-                    emit info_message(tr("Algorithm enabled: %1")
-                                          .arg(QString::fromStdString(a->display_name)));
-                    // Request MainWindow to open the AlgoWindow so Standalone
-                    // algorithms have a display and Overlay algorithms get
-                    // their ROI zoom view. Without this the sidebar-enabled
-                    // algorithm produces no visible output.
-                    emit open_algo_window_requested(algo_name);
                 } else {
                     auto it = live_instances_.find(algo_name);
                     if (it != live_instances_.end() && it->second) {
@@ -308,25 +305,17 @@ void AlgorithmsPanel::build_roi_selector(QVBoxLayout* parent_layout) {
 }
 
 void AlgorithmsPanel::apply_global_roi() {
+    if (!bridge_) return;
     const std::string enabled = roi_enabled_cb_->isChecked() ? "true" : "false";
     const std::string x = std::to_string(roi_x_sp_->value());
     const std::string y = std::to_string(roi_y_sp_->value());
     const std::string w = std::to_string(roi_w_sp_->value());
     const std::string h = std::to_string(roi_h_sp_->value());
-    // Apply to every live self-developed instance. OpenEB wrapper algorithms
-    // (source=="openeb") have backend_==nullptr (pass-through); their ROI is
-    // handled by the OpenEB filter_chain, not by AlgoBridge, so setting
-    // roi_* params on them has no effect and would only pollute their
-    // param_values_ map (BUG-13 fix).
-    for (auto& [name, inst] : live_instances_) {
-        if (!inst) continue;
-        if (inst->info().source != "self") continue;
-        inst->set_param("roi_enabled", enabled);
-        inst->set_param("roi_x", x);
-        inst->set_param("roi_y", y);
-        inst->set_param("roi_w", w);
-        inst->set_param("roi_h", h);
-    }
+    // Delegate to the bridge, which iterates every live self-developed
+    // instance (skipping OpenEB wrappers and calibration algos) AND caches
+    // the values so future instances created via create() inherit the
+    // current ROI (N3).
+    bridge_->apply_global_roi(enabled, x, y, w, h);
 }
 
 void AlgorithmsPanel::apply_global_preproc(const std::string& key,
@@ -515,6 +504,27 @@ void AlgorithmsPanel::apply_param(const std::string& algo_name,
         it = live_instances_.find(algo_name);
     }
     it->second->set_param(param_key, value);
+
+    // BUG-G2: after setting model_path, the E2VID num_bins is dictated by the
+    // loaded ONNX model. Read it back and update the GUI field so the user
+    // sees the actual value the algo will use (not the stale typed value).
+    if (param_key == "model_path") {
+        const std::string nb = it->second->get_param("num_bins");
+        if (!nb.empty()) {
+            auto state_it = algo_panel_state_.find(algo_name);
+            if (state_it != algo_panel_state_.end()) {
+                for (auto& row : state_it->second.rows) {
+                    if (row.key == "num_bins" && row.field) {
+                        QSignalBlocker b(row.field);
+                        if (auto* sp = qobject_cast<QSpinBox*>(row.field)) {
+                            sp->setValue(QString::fromStdString(nb).toInt());
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
 }
 
 void AlgorithmsPanel::refresh_mode_visibility(const std::string& algo_name) {

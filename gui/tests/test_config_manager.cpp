@@ -123,9 +123,10 @@ TEST(ConfigManagerAlgoState, RejectsWrongFormat) {
     EXPECT_FALSE(err.isEmpty());
 }
 
-TEST(ConfigManagerAlgoState, ApplyStateOnlyTouchesLiveInstances) {
+TEST(ConfigManagerAlgoState, ApplyStateCachesParamsForNonLiveAlgos) {
     // A fresh bridge with no live instances: apply_algo_state should succeed
-    // (format ok) but change nothing, since there is nothing to apply to.
+    // and cache the params (N1). When the instance is later created via
+    // find_or_create, the cached params are replayed so they are not lost.
     AlgoBridge bridge;
     ConfigManager cm;
 
@@ -143,11 +144,12 @@ TEST(ConfigManagerAlgoState, ApplyStateOnlyTouchesLiveInstances) {
     QString err;
     EXPECT_TRUE(cm.apply_algo_state(&bridge, obj, err));
 
-    // Now create the instance and apply again — it should pick up the values.
+    // Create the instance — cached params should be replayed by create().
     auto inst = bridge.find_or_create("hot_pixel_filter");
     ASSERT_NE(inst, nullptr);
-    EXPECT_NE(inst->get_param("n_sigma"), "9.9");
+    EXPECT_EQ(inst->get_param("n_sigma"), "9.9");
+
+    // Applying again on the now-live instance should also work.
     EXPECT_TRUE(cm.apply_algo_state(&bridge, obj, err));
     EXPECT_EQ(inst->get_param("n_sigma"), "9.9");
-    EXPECT_TRUE(inst->is_enabled());
 }
