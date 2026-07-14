@@ -409,7 +409,7 @@ GUI-for-openEB/
 | jAER 类 | 算法原理 | 借鉴决策 | 对应本项目模块 |
 |---------|----------|----------|----------------|
 | `Freme<O>` | 泛型 2D 事件驱动状态图容器 | ✅ 移植为模板 | `algo/common/freme.h` |
-| `FremeExtractor` | "事件流→2D 图→RGB→GL 纹理"流水线抽象基类 | ✅ 借鉴架构 | `algo/common/dvs_framer.h` |
+| `FremeExtractor` | "事件流→2D 图→RGB→GL 纹理"流水线抽象基类 | ✅ 借鉴架构 | `algo/common/freme.h` |
 | `OrientationFreme` | 梯度时间法连续朝向图 | ⚠️ 与 SimpleOrientationFilter 重叠 | — |
 
 #### 1.6.5 项目算法源码（`ch/unizh/ini/jaer/projects/`）
