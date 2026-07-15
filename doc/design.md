@@ -1,11 +1,12 @@
 # GUI-for-openEB 需求分析文档
 
-> 版本：2.1  
-> 日期：2026-07-13  
+> 版本：2.2  
+> 日期：2026-07-15  
 > 技术栈：C++17 + Qt 6  
 > 基于：OpenEB SDK v5.2.0（Apache 2.0）  
 > 参考：Metavision Studio（Prophesee Docs 5.3.1）、Metavision SDK Pro 产品页  
-> v2.1: 同步 v1.0.9 GUI 重构（VSCode 风格侧栏、移除工具栏/Algorithm 菜单、纯英文界面）
+> v2.1: 同步 v1.0.9 GUI 重构（VSCode 风格侧栏、移除工具栏/Algorithm 菜单、纯英文界面）  
+> v2.2: 同步 v1.9.0 发布（代码审查修复、E2VID 默认 fps 调整为 30、事件丢弃率遥测、文档与代码对齐）
 
 ---
 
@@ -886,7 +887,7 @@ public:
 | **algo/tests/** | 2 | 🆕 降噪评测框架（注入泊松+漏噪声，统计 TP/FP/TN/FN）、信号/噪声标注事件 |
 | **gui/algo_bridge/** | （封装层） | 🔄 直接调用 openEB 30 项已有能力（10 事件过滤 + 7 帧生成 + 7 预处理器 + 6 工具），不重复实现 |
 
-> **总计**：自研 52 个算法模块 + 封装复用 openEB 30 项能力；openEB 全部 89 项内置功能（见 1.5 节）均需在 GUI 中可访问。`AlgoBridge` 注册全部 29 个自研算法（cv 21 + analytics 7 + calibration 1；common/tests 模块为工具库不注册，noise_filter v1.0.9 起改为共享预处理阶段）+ 30 项 openEB 封装能力，共 59 项可通过 `list_algos()` 枚举。
+> **总计**：`AlgoBridge` 注册全部 29 个自研算法（cv 21 + analytics 7 + calibration 1；common/tests 模块为工具库不注册，noise_filter v1.0.9 起改为共享预处理阶段）+ 30 项 openEB 封装能力，共 59 项可通过 `list_algos()` 枚举。
 > **数据约束**：仅支持单相机纯事件流 (x,y,p,t)，不含 DAVIS APS 帧、IMU、双目立体。所有模块均在纯事件输入下工作。
 > **算法来源**：噪声过滤、跟踪、光流、朝向、霍夫等核心思路借鉴 jAER（见 1.6 节对照表），全部以 C++17 重写并集成到 openEB 事件流回调中，不引入 Java 依赖。
 
