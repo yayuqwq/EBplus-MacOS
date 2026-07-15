@@ -117,9 +117,10 @@ void FileConverter::run_convert(const QString& src, const QString& dst, Format f
         return;
     }
 
-    const auto& g = cam.geometry();
-    const int w = g.get_width();
-    const int h = g.get_height();
+    // Note: cam.geometry() is not needed here — the HDF5 writer extracts
+    // geometry from camera metadata internally, and CSV events carry their
+    // own coordinates. Avoiding the call eliminates a segfault when the
+    // source file format does not provide a geometry facility.
 
     std::unique_ptr<Metavision::HDF5EventFileWriter> hdf5;
     std::unique_ptr<QFile> csvf;
@@ -138,6 +139,11 @@ void FileConverter::run_convert(const QString& src, const QString& dst, Format f
         *csvs << "t,x,y,p\n";
     }
 
+    // callback_error_msg captures the first exception message (e.g. missing
+    // HDF5 ECF compression plugin). It is written before the callback_error
+    // flag (release), so the polling loop observes it after reading the flag
+    // (acquire).
+    std::string callback_error_msg;
     std::atomic<bool> callback_error{false};
     auto id = cam.cd().add_callback(
         [&](const Metavision::EventCD* b, const Metavision::EventCD* e) {
@@ -151,9 +157,12 @@ void FileConverter::run_convert(const QString& src, const QString& dst, Format f
                     }
                 }
             } catch (const std::exception& ex) {
-                // Store error for the polling loop to pick up
+                callback_error_msg = ex.what();
                 callback_error.store(true, std::memory_order_release);
-            } catch (...) {}
+            } catch (...) {
+                callback_error_msg = "Unknown error in conversion callback";
+                callback_error.store(true, std::memory_order_release);
+            }
         });
     // Query total duration so the polling loop can report progress. Files
     // without OfflineStreamingControl (e.g. live streams — though convert is
@@ -186,13 +195,25 @@ void FileConverter::run_convert(const QString& src, const QString& dst, Format f
     }
     try { cam.stop(); } catch (...) {}
     cam.cd().remove_callback(id);
-    if (hdf5) hdf5->close();
+    // hdf5->close() may throw if the ECF compression plugin is missing.
+    if (hdf5) {
+        try {
+            hdf5->close();
+        } catch (const std::exception& ex) {
+            callback_error_msg = ex.what();
+            callback_error.store(true, std::memory_order_release);
+        } catch (...) {
+            callback_error_msg = "Unknown error closing HDF5 file";
+            callback_error.store(true, std::memory_order_release);
+        }
+    }
     if (csvs) csvs->flush();
     if (csvf) csvf->close();
 
     if (callback_error.load(std::memory_order_acquire)) {
-        QMetaObject::invokeMethod(this, [this]() {
-            emit failed(tr("Conversion failed: error in streaming callback."));
+        QMetaObject::invokeMethod(this, [this, msg = callback_error_msg]() {
+            emit failed(msg.empty() ? tr("Conversion failed: error in streaming callback.")
+                                    : QString::fromUtf8(msg.c_str()));
         }, Qt::QueuedConnection);
         return;
     }
@@ -226,9 +247,22 @@ void FileConverter::run_cut(const QString& src, const QString& dst,
         return;
     }
 
-    const auto& g = cam.geometry();
-    Metavision::RAWEvt2EventFileWriter writer(g.get_width(), g.get_height(),
-                                              dst.toStdString());
+    // RAWEvt2EventFileWriter needs the sensor geometry. Wrap in try/catch
+    // since some file formats may not expose a geometry facility (causing
+    // an uncaught exception → std::terminate → crash).
+    int w = 0, h = 0;
+    try {
+        const auto& g = cam.geometry();
+        w = g.get_width();
+        h = g.get_height();
+    } catch (const std::exception& e) {
+        QMetaObject::invokeMethod(this, [this, msg = tr("Source has no geometry: %1")
+                                                          .arg(QString::fromUtf8(e.what()))]() {
+            emit failed(msg);
+        }, Qt::QueuedConnection);
+        return;
+    }
+    Metavision::RAWEvt2EventFileWriter writer(w, h, dst.toStdString());
     bool seeked = false;
     try {
         if (start_us > 0) {

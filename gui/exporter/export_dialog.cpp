@@ -122,11 +122,21 @@ void ExportDialog::on_browse_source() {
 }
 
 void ExportDialog::on_browse_output() {
-    const QString filt = (cmb_format_->currentData().toInt() == static_cast<int>(ExportParams::Format::HDF5))
-                             ? tr("HDF5 (*.h5);;All files (*)")
-                             : tr("AVI (*.avi);;All files (*)");
-    const QString p = QFileDialog::getSaveFileName(this, tr("Select output"), QString(), filt);
-    if (!p.isEmpty()) edt_output_->setText(p);
+    const bool is_hdf5 = (cmb_format_->currentData().toInt() == static_cast<int>(ExportParams::Format::HDF5));
+    const QString filt = is_hdf5 ? tr("HDF5 (*.h5);;All files (*)")
+                                 : tr("AVI (*.avi);;All files (*)");
+    const QString default_suffix = is_hdf5 ? QStringLiteral("h5") : QStringLiteral("avi");
+    // Use a non-static QFileDialog so we can set the default suffix — the
+    // static getSaveFileName overload does not auto-append one, leaving the
+    // user with an extensionless file that CvVideoRecorder/HDF5EventFileWriter
+    // may fail to open.
+    QFileDialog dlg(this, tr("Select output"), QString(), filt);
+    dlg.setAcceptMode(QFileDialog::AcceptSave);
+    dlg.setDefaultSuffix(default_suffix);
+    if (dlg.exec() != QDialog::Accepted) return;
+    const auto files = dlg.selectedFiles();
+    if (files.isEmpty()) return;
+    edt_output_->setText(files.first());
 }
 
 void ExportDialog::on_format_changed(int idx) {
@@ -146,6 +156,15 @@ void ExportDialog::on_start() {
     p.source_path = edt_source_->text();
     p.output_path = edt_output_->text();
     p.format = static_cast<ExportParams::Format>(cmb_format_->currentData().toInt());
+    // Ensure the output path has the correct extension even if the user
+    // typed it manually (the browse dialog already handles this, but a
+    // hand-typed path may not).
+    const QString expected_suffix = (p.format == ExportParams::Format::HDF5)
+                                        ? QStringLiteral(".h5")
+                                        : QStringLiteral(".avi");
+    if (!p.output_path.endsWith(expected_suffix, Qt::CaseInsensitive))
+        p.output_path += expected_suffix;
+    edt_output_->setText(p.output_path);
     p.fps = spn_fps_->value();
     p.accumulation_us = spn_accum_->value();
     p.quality = spn_quality_->value();

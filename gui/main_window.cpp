@@ -1225,7 +1225,31 @@ void MainWindow::on_record_start() {
         this, tr("Record to file"), QString(),
         tr("RAW files (*.raw);;All files (*)"));
     if (path.isEmpty()) return;
-    recorder_.start(&camera_, path);
+    // Ensure the .raw extension is present so downstream tools and the SDK
+    // can identify the file format. QFileDialog's static overload does not
+    // auto-append a suffix from the filter.
+    QString raw_path = path;
+    if (!raw_path.endsWith(".raw", Qt::CaseInsensitive))
+        raw_path += ".raw";
+    // Save the current bias configuration alongside the RAW recording so
+    // the file is reproducible — the event stream depends on the bias
+    // settings at record time (matching Metavision Viewer behavior).
+    // This is best-effort: cameras without a bias facility are silently
+    // skipped.
+    auto* biases = camera_.biases_facility();
+    if (biases) {
+        QFileInfo fi(raw_path);
+        QString bias_path = fi.absolutePath() + "/" + fi.completeBaseName() + ".bias";
+        try {
+            biases->save_to_file(std::filesystem::path(bias_path.toStdString()));
+            statusBar()->showMessage(
+                tr("Biases saved to %1").arg(bias_path), 5000);
+        } catch (const std::exception& e) {
+            statusBar()->showMessage(
+                tr("Warning: could not save biases: %1").arg(QString::fromUtf8(e.what())), 5000);
+        }
+    }
+    recorder_.start(&camera_, raw_path);
 }
 
 void MainWindow::on_record_stop() {

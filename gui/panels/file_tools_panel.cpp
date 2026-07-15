@@ -105,11 +105,15 @@ void FileToolsPanel::on_convert_hdf5() {
     const QString dst = QFileDialog::getSaveFileName(
         this, tr("Output HDF5"), QString(), tr("HDF5 (*.h5);;All files (*)"));
     if (dst.isEmpty()) return;
+    // Ensure .h5 extension so HDF5EventFileWriter can identify the format.
+    QString final_dst = dst;
+    if (!final_dst.endsWith(".h5", Qt::CaseInsensitive))
+        final_dst += ".h5";
     progress_->setVisible(true);
     progress_->setValue(0);
     lbl_status_->setText(tr("Converting to HDF5..."));
     set_buttons_enabled(false);
-    converter_->convert(src, dst, FileConverter::Format::HDF5);
+    converter_->convert(src, final_dst, FileConverter::Format::HDF5);
 }
 
 void FileToolsPanel::on_convert_csv() {
@@ -121,11 +125,14 @@ void FileToolsPanel::on_convert_csv() {
     const QString dst = QFileDialog::getSaveFileName(
         this, tr("Output CSV"), QString(), tr("CSV (*.csv);;All files (*)"));
     if (dst.isEmpty()) return;
+    QString final_dst = dst;
+    if (!final_dst.endsWith(".csv", Qt::CaseInsensitive))
+        final_dst += ".csv";
     progress_->setVisible(true);
     progress_->setValue(0);
     lbl_status_->setText(tr("Converting to CSV..."));
     set_buttons_enabled(false);
-    converter_->convert(src, dst, FileConverter::Format::CSV);
+    converter_->convert(src, final_dst, FileConverter::Format::CSV);
 }
 
 void FileToolsPanel::on_cutter() {
@@ -155,13 +162,16 @@ void FileToolsPanel::on_cutter() {
     const QString dst = QFileDialog::getSaveFileName(
         this, tr("Output RAW"), QString(), tr("RAW (*.raw);;All files (*)"));
     if (dst.isEmpty()) return;
+    QString final_dst = dst;
+    if (!final_dst.endsWith(".raw", Qt::CaseInsensitive))
+        final_dst += ".raw";
     const auto start_us = static_cast<Metavision::timestamp>(spStart->value() * 1e6);
     const auto end_us = static_cast<Metavision::timestamp>(spEnd->value() * 1e6);
     progress_->setVisible(true);
     progress_->setValue(0);
     lbl_status_->setText(tr("Cutting..."));
     set_buttons_enabled(false);
-    converter_->cut(src, dst, start_us, end_us);
+    converter_->cut(src, final_dst, start_us, end_us);
 }
 
 void FileToolsPanel::on_info() {

@@ -73,18 +73,26 @@ void ExporterController::run_hdf5(const ExportParams& p) {
         if (osc.is_ready()) dur_us = osc.get_duration();
     } catch (...) {}
 
+    // callback_error captures the first exception message from the writer
+    // callback (e.g. missing HDF5 ECF compression plugin). It is written
+    // before cancel_ is set (release), so the polling loop observes it after
+    // reading cancel_ (acquire). Without this, a genuine failure would be
+    // silently reported as "Export cancelled" — hiding the real cause.
+    std::string callback_error;
     Metavision::HDF5EventFileWriter writer(p.output_path.toStdString());
     std::atomic<Metavision::timestamp> last_ts{0};
     auto id = cam.cd().add_callback(
-        [&writer, &last_ts, this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+        [&writer, &last_ts, &callback_error, this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
             try {
                 if (cancel_) return;
                 writer.add_events(b, e);
                 if (b != e) last_ts.store((e - 1)->t, std::memory_order_relaxed);
-            } catch (const std::exception&) {
-                cancel_ = true;  // convert failure to graceful cancel
+            } catch (const std::exception& ex) {
+                callback_error = ex.what();
+                cancel_.store(true, std::memory_order_release);
             } catch (...) {
-                cancel_ = true;
+                callback_error = "Unknown error in HDF5 writer";
+                cancel_.store(true, std::memory_order_release);
             }
         });
     cam.start();
@@ -106,13 +114,25 @@ void ExporterController::run_hdf5(const ExportParams& p) {
     }
     try { cam.stop(); } catch (...) {}
     cam.cd().remove_callback(id);
-    writer.close();
+    // writer.close() may throw if the ECF compression plugin is missing or
+    // the file system is full. Capture the error so the user sees the cause
+    // rather than a generic abort.
+    try {
+        writer.close();
+    } catch (const std::exception& ex) {
+        callback_error = ex.what();
+        cancel_.store(true, std::memory_order_release);
+    } catch (...) {
+        callback_error = "Unknown error closing HDF5 file";
+        cancel_.store(true, std::memory_order_release);
+    }
 
     // Distinguish cancel from completion: a cancelled export must not emit
     // completed (the output file is partial/truncated).
-    if (cancel_) {
-        QMetaObject::invokeMethod(this, [this]() {
-            emit failed(tr("Export cancelled."));
+    if (cancel_.load(std::memory_order_acquire)) {
+        QMetaObject::invokeMethod(this, [this, msg = callback_error]() {
+            emit failed(msg.empty() ? tr("Export cancelled.")
+                                    : QString::fromUtf8(msg.c_str()));
         }, Qt::QueuedConnection);
         return;
     }
@@ -142,9 +162,29 @@ void ExporterController::run_avi(const ExportParams& p) {
         if (osc.is_ready()) dur_us = osc.get_duration();
     } catch (...) {}
 
-    const auto& g = cam.geometry();
-    const int w = g.get_width();
-    const int h = g.get_height();
+    // Geometry may be unavailable for certain file formats (e.g. DAT without
+    // embedded geometry metadata). Querying it outside a try/catch would
+    // crash via std::terminate on an uncaught exception. Likewise, w/h == 0
+    // would make cv::VideoWriter segfault on cv::Size(0,0).
+    int w = 0, h = 0;
+    try {
+        const auto& g = cam.geometry();
+        w = g.get_width();
+        h = g.get_height();
+    } catch (const std::exception& e) {
+        QMetaObject::invokeMethod(this, [this, msg = tr("Source file has no geometry: %1")
+                                                              .arg(QString::fromUtf8(e.what()))]() {
+            emit failed(msg);
+        }, Qt::QueuedConnection);
+        return;
+    }
+    if (w <= 0 || h <= 0) {
+        QMetaObject::invokeMethod(this, [this, w, h]() {
+            emit failed(tr("Source file has invalid geometry (%1x%2). Cannot export.")
+                            .arg(w).arg(h));
+        }, Qt::QueuedConnection);
+        return;
+    }
 
     const int fourcc = (p.quality >= 50) ? cv::VideoWriter::fourcc('H', '2', '6', '4')
                                          : cv::VideoWriter::fourcc('M', 'J', 'P', 'G');
@@ -152,7 +192,7 @@ void ExporterController::run_avi(const ExportParams& p) {
                                          static_cast<uint32_t>(p.fps), cv::Size(w, h), p.color);
     if (!recorder.start()) {
         QMetaObject::invokeMethod(this, [this]() {
-            emit failed(tr("Failed to open AVI writer."));
+            emit failed(tr("Failed to open AVI writer. Check the output path and codec."));
         }, Qt::QueuedConnection);
         return;
     }
@@ -162,6 +202,11 @@ void ExporterController::run_avi(const ExportParams& p) {
     gen->set_display_accumulation_time_us(
         static_cast<Metavision::timestamp>(p.accumulation_us));
 
+    // callback_error captures the first exception message from any callback.
+    // It is written before cancel_ is set (release), so the polling loop
+    // observes it after reading cancel_ (acquire). This lets us distinguish
+    // a real error from a user-initiated cancel and show the actual cause.
+    std::string callback_error;
     std::atomic<bool> done{false};
     // start() takes (fps, callback). The callback receives (timestamp, frame).
     // It returns false if the generator thread failed to start.
@@ -174,7 +219,7 @@ void ExporterController::run_avi(const ExportParams& p) {
     // otherwise. cv::VideoWriter with isColor=false fed a 3-channel image
     // (or vice versa) produces corrupted output or an OpenCV assertion.
     if (!gen->start(static_cast<std::uint16_t>(p.fps),
-                    [&recorder, &done, this, color = p.color](Metavision::timestamp, cv::Mat& frame) {
+                    [&recorder, &done, &callback_error, this, color = p.color](Metavision::timestamp, cv::Mat& frame) {
                         try {
                             if (cancel_ || done) return;
                             if (frame.empty()) return;
@@ -193,10 +238,12 @@ void ExporterController::run_avi(const ExportParams& p) {
                                 }
                             }
                             recorder.write(out);
-                        } catch (const std::exception&) {
-                            cancel_ = true;  // convert failure to graceful cancel
+                        } catch (const std::exception& e) {
+                            callback_error = e.what();
+                            cancel_.store(true, std::memory_order_release);
                         } catch (...) {
-                            cancel_ = true;
+                            callback_error = "Unknown error in frame writer";
+                            cancel_.store(true, std::memory_order_release);
                         }
                     })) {
         QMetaObject::invokeMethod(this, [this]() {
@@ -208,14 +255,16 @@ void ExporterController::run_avi(const ExportParams& p) {
 
     std::atomic<Metavision::timestamp> last_ts{0};
     auto id = cam.cd().add_callback(
-        [&gen, &last_ts, this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
+        [&gen, &last_ts, &callback_error, this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
             try {
                 gen->add_events(b, e);
                 if (b != e) last_ts.store((e - 1)->t, std::memory_order_relaxed);
-            } catch (const std::exception&) {
-                cancel_ = true;  // convert failure to graceful cancel
+            } catch (const std::exception& e2) {
+                callback_error = e2.what();
+                cancel_.store(true, std::memory_order_release);
             } catch (...) {
-                cancel_ = true;
+                callback_error = "Unknown error in event callback";
+                cancel_.store(true, std::memory_order_release);
             }
         });
 
@@ -236,9 +285,10 @@ void ExporterController::run_avi(const ExportParams& p) {
     gen->stop();
     recorder.stop();
 
-    if (cancel_) {
-        QMetaObject::invokeMethod(this, [this]() {
-            emit failed(tr("Export cancelled."));
+    if (cancel_.load(std::memory_order_acquire)) {
+        QMetaObject::invokeMethod(this, [this, msg = callback_error]() {
+            emit failed(msg.empty() ? tr("Export cancelled.")
+                                    : QString::fromUtf8(msg.c_str()));
         }, Qt::QueuedConnection);
         return;
     }
