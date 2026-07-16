@@ -40,20 +40,21 @@ std::vector<EventCD> make_events(std::size_t n, int w = 1280, int h = 720) {
 
 // ---------------------------------------------------------------------------
 // Registry completeness (§3.11.2: 30 self + 30 openEB). noise_filter was
-// removed in v1.0.9 (now a stackable preprocessing stage), so the live
-// registry holds 29 self-developed + 30 OpenEB-wrapped = 59 entries.
+// removed in v1.0.9 (now a stackable preprocessing stage); sensor_self_test
+// was added in §4.4.8, so the live registry holds 30 self-developed + 30
+// OpenEB-wrapped = 60 entries.
 // ---------------------------------------------------------------------------
 TEST(AlgoBridgeRegistry, ListsAllRegisteredAlgos) {
     AlgoBridge bridge;
     const auto algos = bridge.list_algos();
-    EXPECT_EQ(algos.size(), 59u);
+    EXPECT_EQ(algos.size(), 60u);
 
     std::size_t self_count = 0, openeb_count = 0;
     for (const auto& a : algos) {
         if (a.source == "self") ++self_count;
         else if (a.source == "openeb") ++openeb_count;
     }
-    EXPECT_EQ(self_count, 29u);
+    EXPECT_EQ(self_count, 30u);
     EXPECT_EQ(openeb_count, 30u);
 }
 
@@ -66,6 +67,7 @@ TEST(AlgoBridgeRegistry, KeyNamesPresent) {
     EXPECT_NE(bridge.find("hough_line"), nullptr);
     EXPECT_NE(bridge.find("time_surface"), nullptr);
     EXPECT_NE(bridge.find("blob_detector"), nullptr);
+    EXPECT_NE(bridge.find("sensor_self_test"), nullptr);
     // OpenEB-wrapped algorithms.
     EXPECT_NE(bridge.find("roi_filter"), nullptr);
     EXPECT_NE(bridge.find("frame_integration"), nullptr);

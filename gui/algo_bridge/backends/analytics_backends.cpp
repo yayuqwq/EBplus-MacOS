@@ -14,6 +14,7 @@
 #include "algo/analytics/event_to_video.h"
 #include "algo/analytics/flow_statistics.h"
 #include "algo/analytics/isi_analyzer.h"
+#include "algo/analytics/sensor_self_test.h"
 
 using namespace gui::backend_detail;
 
@@ -450,12 +451,99 @@ public:
     }
 };
 
+/// SensorSelfTest backend — per-pixel refractory-period heatmap + bad-pixel
+/// detection (design §4.4.8). Processes the FULL sensor (no ROI, no
+/// preprocessing) because the self-test must cover every pixel. Produces a
+/// CV_8UC3 heatmap frame: red = never triggered (suspected bad pixel),
+/// grayscale = exponential mapping of min inter-event interval (brighter =
+/// shorter refractory period).
+class SensorSelfTestBackend final : public AlgoBackend {
+    int sensor_w_{0}, sensor_h_{0};
+    std::unique_ptr<gui_algo::SensorSelfTest> algo_;
+    std::vector<Metavision::EventCD> passthrough_;
+    // The full report (with bad-pixel coordinates) is expensive to compute
+    // (O(N log N) for the median/p90 sort), so it is cached and recomputed
+    // every ~30 frames (~0.5s at 60fps). The per-frame AlgoWindow status
+    // label uses a concise one-line summary (via count_pixels(), O(N) with
+    // a trivial constant) instead of the full multi-line report.
+    int frame_counter_{0};
+    std::string cached_report_;
+    // Flag set by the close handler via set_param("__final_report", "1")
+    // so the next pull_result() returns the full report in r.status for
+    // the close dialog. Cleared after one use.
+    bool final_report_requested_{false};
+public:
+    explicit SensorSelfTestBackend(int w, int h) : sensor_w_(w), sensor_h_(h) {
+        rebuild();
+    }
+    void rebuild() {
+        algo_ = std::make_unique<gui_algo::SensorSelfTest>(sensor_w_, sensor_h_);
+        cached_report_.clear();
+        frame_counter_ = 0;
+        final_report_requested_ = false;
+    }
+    void set_param(const std::string& k, const std::string& v) override {
+        // No user-tunable parameters — the self-test is fully automatic.
+        // The close handler uses "__final_report" to request the full report.
+        if (k == "__final_report" && v == "1") {
+            final_report_requested_ = true;
+        }
+    }
+    std::string get_param(const std::string& /*k*/) const override {
+        return {};
+    }
+    void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
+        passthrough_.assign(b, e);
+        algo_->process(as_events(passthrough_.data()), passthrough_.size());
+    }
+    AlgoResult pull_result() override {
+        AlgoResult r;
+        r.filtered_events = passthrough_;
+        r.has_frame = true;
+        r.frame = algo_->render().clone();
+        // Close handler requested the full report — compute it fresh and
+        // return it in r.status for the dialog. This is a one-shot flag.
+        if (final_report_requested_) {
+            final_report_requested_ = false;
+            cached_report_ = algo_->report();
+            r.status = cached_report_;
+            return r;
+        }
+        // Recompute the cached report periodically for potential future use.
+        if (cached_report_.empty() || frame_counter_ % 30 == 0) {
+            cached_report_ = algo_->report();
+        }
+        ++frame_counter_;
+        // Per-frame status: concise one-line summary (not the full report,
+        // which would flood the AlgoWindow status label every frame).
+        const auto c = algo_->count_pixels();
+        r.status = "Triggered: " + std::to_string(c.triggered) + "/" +
+                   std::to_string(c.total) + " | Measured: " +
+                   std::to_string(c.measured) + " | Bad: " +
+                   std::to_string(c.bad);
+        return r;
+    }
+    void reset() override {
+        if (algo_) algo_->reset();
+        passthrough_.clear();
+        cached_report_.clear();
+        frame_counter_ = 0;
+        final_report_requested_ = false;
+    }
+    void set_sensor_dimensions(int w, int h) override {
+        sensor_w_ = w;
+        sensor_h_ = h;
+        rebuild();
+    }
+};
+
 // --- Per-category factory (called by create_algo_backend in backend_factory.cpp)
 std::unique_ptr<AlgoBackend> create_analytics_backend(const std::string& name,
                                           int width, int height) {
     if (name == "event_to_video")              return std::make_unique<EventToVideoBackend>(width, height);
     if (name == "flow_statistics")             return std::make_unique<FlowStatisticsBackend>(width, height);
     if (name == "isi_analyzer")                return std::make_unique<ISIAnalyzerBackend>(width, height);
+    if (name == "sensor_self_test")            return std::make_unique<SensorSelfTestBackend>(width, height);
     return nullptr;
 }
 

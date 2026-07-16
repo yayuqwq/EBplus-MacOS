@@ -644,6 +644,15 @@ void MainWindow::wire_signals() {
                 camera_.connect_serial(serial.toStdString());
             });
     connect(dp, &DevicesPanel::disconnect_requested, this, &MainWindow::on_disconnect);
+    // Sensor self-test — opens a Standalone AlgoWindow with the refractory-
+    // period heatmap. On close, a report dialog is shown (design §4.4.8).
+    connect(dp, &DevicesPanel::self_test_requested, this, [this]() {
+        if (!camera_.is_connected()) {
+            statusBar()->showMessage(tr("Connect a camera first."), 3000);
+            return;
+        }
+        on_open_algo_window("sensor_self_test");
+    });
 
     // Phase 2 (§3.3.2): bind every registered panel to the camera so each
     // panel auto-receives connected/disconnected events via its
@@ -1724,7 +1733,7 @@ void MainWindow::on_about() {
            "Bias / ROI / ESP / Trigger panels, recording & playback, HDF5 / AVI "
            "export, JSON config with presets, OpenEB filter-chain preprocessing, "
            "file conversion tools, calibration wizard, "
-           "29 self-developed CV/analytics algorithms with overlay/replace/"
+           "30 self-developed CV/analytics algorithms with overlay/replace/"
            "standalone display modes, XYT 3D point cloud, and more.</p>"));
 }
 
@@ -1754,6 +1763,13 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
     }
     algo_windows_[algo_name] = w;
 
+    // sensor_self_test: reset on (re)open so each session starts fresh
+    // (set_enabled(true) in the AlgoWindow constructor preserves prior state
+    // for pause-resume workflows, but the self-test should start clean).
+    if (algo_name == "sensor_self_test" && w->instance()) {
+        w->instance()->reset();
+    }
+
     // For Standalone frame-producing algorithms, install an EventDisplayWidget
     // so process_algo_results() can push frames to it. The frame size may be
     // the ROI dimensions (e.g. event_to_video at 128×128) and the widget
@@ -1767,7 +1783,8 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
     const auto* info = algo_bridge_.find(algo_name);
     if (info && info->display_mode == AlgoDisplayMode::Standalone) {
         if (algo_name == "time_surface" || algo_name == "event_to_video" ||
-            algo_name == "isi_analyzer" || algo_name == "background_mask") {
+            algo_name == "isi_analyzer" || algo_name == "background_mask" ||
+            algo_name == "sensor_self_test") {
             auto* disp = new EventDisplayWidget(nullptr);
             w->set_display_widget(disp);
         }
@@ -1816,7 +1833,20 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
     connect(w, &AlgoWindow::closing, this, [this, algo_name](const std::string&) {
         algo_windows_.remove(algo_name);
         auto inst = algo_bridge_.find_live(algo_name);
-        if (inst) inst->set_enabled(false);
+        // sensor_self_test: request the full report before disabling so the
+        // close dialog shows the latest analysis (design §4.4.8). The
+        // "__final_report" flag tells the backend to compute and return the
+        // full multi-line report (with stats + bad-pixel coords) in the next
+        // pull_result().status, instead of the concise per-frame summary.
+        if (algo_name == "sensor_self_test" && inst) {
+            inst->set_param("__final_report", "1");
+            auto r = inst->pull_result();
+            inst->set_enabled(false);
+            QMessageBox::information(this, tr("Sensor Self-Test Report"),
+                QString::fromStdString(r.status));
+        } else {
+            if (inst) inst->set_enabled(false);
+        }
         // Sync the AlgorithmsPanel checkbox (blocked, no re-entry).
         if (auto* ap = settings_->algorithms_panel()) {
             ap->set_algo_enabled(algo_name, false);

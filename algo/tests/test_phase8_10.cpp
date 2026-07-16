@@ -38,6 +38,7 @@
 #include "algo/analytics/particle_counter.h"
 #include "algo/analytics/auto_bias_controller.h"
 #include "algo/analytics/freq_detector.h"
+#include "algo/analytics/sensor_self_test.h"
 
 using gui_algo::Event;
 using gui_algo::EventPacket;
@@ -62,6 +63,7 @@ using gui_algo::ISIAnalyzer;
 using gui_algo::ParticleCounter;
 using gui_algo::AutoBiasController;
 using gui_algo::FreqDetector;
+using gui_algo::SensorSelfTest;
 
 static std::vector<Event> make_events(int w, int h, int count, int t0 = 0) {
     std::vector<Event> ev;
@@ -777,4 +779,148 @@ TEST(FreqDetectorTest, ProcessAndAnalyze) {
     auto sources = d.analyze();
     // May or may not find light sources.
     SUCCEED();
+}
+
+// --- 4.4.8 SensorSelfTest ---
+
+TEST(SensorSelfTestTest, Construction) {
+    SensorSelfTest s(64, 48);
+    EXPECT_EQ(s.width(), 64);
+    EXPECT_EQ(s.height(), 48);
+}
+
+TEST(SensorSelfTestTest, NoEventsAllBadPixels) {
+    // With no events fed, every pixel is a suspected bad pixel.
+    SensorSelfTest s(8, 4);
+    auto stats = s.compute_stats();
+    EXPECT_EQ(stats.total_pixels, 32u);
+    EXPECT_EQ(stats.triggered_pixels, 0u);
+    EXPECT_EQ(stats.measured_pixels, 0u);
+    EXPECT_EQ(stats.bad_pixels, 32u);
+    auto coords = s.bad_pixel_coords();
+    EXPECT_EQ(coords.size(), 32u);
+}
+
+TEST(SensorSelfTestTest, SingleEventNoInterval) {
+    // A pixel with only one event has no interval (measured_pixels == 0).
+    SensorSelfTest s(4, 4);
+    Event ev[1] = {{2, 2, 1, 1000}};
+    s.process(ev, 1);
+    auto stats = s.compute_stats();
+    EXPECT_EQ(stats.triggered_pixels, 1u);
+    EXPECT_EQ(stats.measured_pixels, 0u);
+    EXPECT_EQ(stats.bad_pixels, 15u);
+}
+
+TEST(SensorSelfTestTest, MinIntervalTracked) {
+    // Feed three events at the same pixel with intervals 500us and 200us.
+    // The per-pixel min interval should be 200us (the shorter of the two).
+    // Stats operate on per-pixel minimums, so min=max=mean=200 for one pixel.
+    SensorSelfTest s(4, 4);
+    Event ev[3] = {{2, 2, 1, 1000}, {2, 2, 1, 1500}, {2, 2, 1, 1700}};
+    s.process(ev, 3);
+    auto stats = s.compute_stats();
+    EXPECT_EQ(stats.triggered_pixels, 1u);
+    EXPECT_EQ(stats.measured_pixels, 1u);
+    EXPECT_EQ(stats.min_us, 200);
+    EXPECT_EQ(stats.max_us, 200);
+    EXPECT_EQ(stats.mean_us, 200.0);
+}
+
+TEST(SensorSelfTestTest, MinIntervalUpdatedOnShorter) {
+    // First interval = 1000us, then 500us → min should be 500us.
+    SensorSelfTest s(4, 4);
+    Event ev1[2] = {{0, 0, 1, 0}, {0, 0, 1, 1000}};
+    s.process(ev1, 2);
+    Event ev2[2] = {{0, 0, 1, 2000}, {0, 0, 1, 2500}};
+    s.process(ev2, 2);
+    auto stats = s.compute_stats();
+    EXPECT_EQ(stats.min_us, 500);
+    EXPECT_EQ(stats.measured_pixels, 1u);
+}
+
+TEST(SensorSelfTestTest, OutOfBoundsEventsIgnored) {
+    SensorSelfTest s(4, 4);
+    Event ev[2] = {{10, 10, 1, 100}, {3, 3, 1, 200}};
+    s.process(ev, 2);
+    auto stats = s.compute_stats();
+    EXPECT_EQ(stats.triggered_pixels, 1u);  // only (3,3) is in bounds
+}
+
+TEST(SensorSelfTestTest, ResetClearsState) {
+    SensorSelfTest s(4, 4);
+    Event ev[2] = {{0, 0, 1, 0}, {0, 0, 1, 500}};
+    s.process(ev, 2);
+    EXPECT_EQ(s.compute_stats().triggered_pixels, 1u);
+    s.reset();
+    auto stats = s.compute_stats();
+    EXPECT_EQ(stats.triggered_pixels, 0u);
+    EXPECT_EQ(stats.bad_pixels, 16u);
+}
+
+TEST(SensorSelfTestTest, RenderProducesCorrectSize) {
+    SensorSelfTest s(16, 8);
+    cv::Mat img = s.render();
+    ASSERT_FALSE(img.empty());
+    EXPECT_EQ(img.cols, 16);
+    EXPECT_EQ(img.rows, 8);
+    EXPECT_EQ(img.type(), CV_8UC3);
+}
+
+TEST(SensorSelfTestTest, RenderBadPixelIsRed) {
+    // With no events, all pixels should be red (BGR 0,0,255).
+    SensorSelfTest s(4, 2);
+    cv::Mat img = s.render();
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            const auto& px = img.at<cv::Vec3b>(y, x);
+            EXPECT_EQ(px[0], 0);    // B
+            EXPECT_EQ(px[1], 0);    // G
+            EXPECT_EQ(px[2], 255);  // R
+        }
+    }
+}
+
+TEST(SensorSelfTestTest, RenderTriggeredPixelIsGrayscale) {
+    // A pixel with two events (interval=1us) should render bright (non-red,
+    // non-black). Bad pixels remain red.
+    SensorSelfTest s(4, 4);
+    Event ev[2] = {{0, 0, 1, 100}, {0, 0, 1, 101}};
+    s.process(ev, 2);
+    cv::Mat img = s.render();
+    const auto& triggered = img.at<cv::Vec3b>(0, 0);
+    // Grayscale: R == G == B, and bright (interval=1us → ~255).
+    EXPECT_EQ(triggered[0], triggered[1]);
+    EXPECT_EQ(triggered[1], triggered[2]);
+    EXPECT_GT(triggered[0], 200);
+    // An untriggered pixel is still red.
+    const auto& bad = img.at<cv::Vec3b>(1, 1);
+    EXPECT_EQ(bad[2], 255);
+    EXPECT_EQ(bad[0], 0);
+}
+
+TEST(SensorSelfTestTest, ReportNotEmpty) {
+    SensorSelfTest s(4, 4);
+    Event ev[3] = {{0, 0, 1, 0}, {0, 0, 1, 100}, {0, 0, 1, 150}};
+    s.process(ev, 3);
+    const std::string r = s.report();
+    EXPECT_FALSE(r.empty());
+    EXPECT_NE(r.find("Sensor Self-Test Report"), std::string::npos);
+    EXPECT_NE(r.find("bad"), std::string::npos);
+}
+
+TEST(SensorSelfTestTest, MultiplePixelsStats) {
+    // Two pixels: one with min interval 100us, one with 200us.
+    SensorSelfTest s(4, 4);
+    Event ev[4] = {{0, 0, 1, 0}, {0, 0, 1, 100},
+                   {1, 1, 1, 0}, {1, 1, 1, 200}};
+    s.process(ev, 4);
+    auto stats = s.compute_stats();
+    EXPECT_EQ(stats.measured_pixels, 2u);
+    EXPECT_EQ(stats.min_us, 100);
+    EXPECT_EQ(stats.max_us, 200);
+    EXPECT_EQ(stats.mean_us, 150.0);
+    // Sorted intervals: [100, 200]. median = intervals[1] = 200.
+    EXPECT_EQ(stats.median_us, 200.0);
+    EXPECT_EQ(stats.bad_pixels, 14u);  // 16 - 2 triggered
 }

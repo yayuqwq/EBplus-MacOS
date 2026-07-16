@@ -31,6 +31,7 @@ signals:
     void connect_first_requested();
     void connect_serial_requested(const QString& serial);
     void disconnect_requested();
+    void self_test_requested();
 
 private:
     QListWidget* list_{nullptr};
@@ -38,6 +39,7 @@ private:
     QPushButton* btn_connect_first_{nullptr};
     QPushButton* btn_connect_selected_{nullptr};
     QPushButton* btn_disconnect_{nullptr};
+    QPushButton* btn_self_test_{nullptr};
 };
 
 } // namespace gui

@@ -175,7 +175,8 @@ GUI-for-openEB/
 │   │   ├── isi_analyzer.h                  🆕 ISI 直方图分析（像素间事件间隔分布）
 │   │   ├── particle_counter.h              🆕 通用颗粒计数器（参考 jAER ParticleCounter）
 │   │   ├── auto_bias_controller.h          🆕 自适应 Bias 控制（事件率反馈 PID 调节，借鉴 AutoExposureController 思路）
-│   │   └── freq_detector.h                🆕 闪烁光源频率检测（参考 freq_analyzer 热图+FFT）
+│   │   ├── freq_detector.h                🆕 闪烁光源频率检测（参考 freq_analyzer 热图+FFT）
+│   │   └── sensor_self_test.h            🆕 Sensor 自检（坏点检测 + 不应期估计，O(1)/事件）
 │   ├── calibration/            # 相机标定
 │   │   └── intrinsic.h / .cpp              # 内参标定（含事件去畸变 LUT）
 │   └── tests/                  # 🆕 自研测试基建
@@ -201,7 +202,7 @@ GUI-for-openEB/
 
 - **gui/**：相机控制、事件可视化（OpenGL 渲染）、数据录制/回放/导出、配置管理（JSON）、ESP、Trigger
 - **algo/cv/**（自研）：噪声过滤、光流估计、团块检测、事件级跟踪、角点检测、线段/霍夫检测、朝向/方向滤波、超高速回放、XYT 3D 事件点云、可视化叠加
-- **algo/analytics/**（自研）：主动标记跟踪（滑动窗口聚类）、事件→灰度图像重建（2 种非 DL + DL 可选）、光流评估、ISI 直方图、颗粒计数、闪烁频率检测、自适应 Bias
+- **algo/analytics/**（自研）：主动标记跟踪（滑动窗口聚类）、事件→灰度图像重建（2 种非 DL + DL 可选）、光流评估、ISI 直方图、颗粒计数、闪烁频率检测、自适应 Bias、Sensor 自检（坏点 + 不应期）
 - **algo/calibration/**（自研）：单相机内参标定（含事件去畸变 LUT）
 - **gui/algo_bridge/**（封装复用）：直接调用 openEB 已有的 27 项算法/处理器/工具（ROI 过滤、极性过滤、7 种帧生成、5 种预处理器等，见 1.5 节），不重复实现
 - **明确不在范围内**：ML 训练管线、ML 检测/分类/光流推理（Detection/Gesture/OpticalFlow Inference）、CV3D 边缘跟踪、企业级监测（颗粒/振动/飞溅）、双目立体视觉、DAVIS APS/IMU 依赖模块
@@ -882,12 +883,12 @@ public:
 |--------|-----------|------|
 | **algo/common/** | 20 | 事件 POD/包、环形/LIFO 缓冲、帧生成器与事件分帧器、FREME 模板、数据加载器（HDF5/RAW）、IIR 滤波器集、Kalman/KMeans/粒子滤波、周期样条、环形直方图、LIF 积分器、性能剖析、时间限制器、事件率估计 |
 | **algo/cv/** | 22 | 🆕 全部自研：噪声过滤（8 模式）、热像素过滤、4 朝向边缘检测、8 方向运动估计、光流估计（4 模式）、团块检测、目标跟踪（4 模式）、角点检测（3 模式）、ELiSeD 线段、霍夫直线/圆跟踪、方向共识、LIF 神经元聚类、背景掩码、透视去畸变、触发同步、带通滤波、电子稳定 EIS、超高速回放、XYT 3D 事件点云、Time Surface 窗口、可视化叠加（详见 4.3） |
-| **algo/analytics/** | 7 | 🆕 主动标记跟踪（滑动窗口聚类）、事件→灰度重建（2 种非 DL + DL 可选）、光流评估、ISI 直方图、颗粒计数器、闪烁频率检测、自适应 Bias |
+| **algo/analytics/** | 8 | 🆕 主动标记跟踪（滑动窗口聚类）、事件→灰度重建（2 种非 DL + DL 可选）、光流评估、ISI 直方图、颗粒计数器、闪烁频率检测、自适应 Bias、Sensor 自检（坏点 + 不应期） |
 | **algo/calibration/** | 1 | 🆕 单相机内参标定（含事件去畸变 LUT） |
 | **algo/tests/** | 2 | 🆕 降噪评测框架（注入泊松+漏噪声，统计 TP/FP/TN/FN）、信号/噪声标注事件 |
 | **gui/algo_bridge/** | （封装层） | 🔄 直接调用 openEB 30 项已有能力（10 事件过滤 + 7 帧生成 + 7 预处理器 + 6 工具），不重复实现 |
 
-> **总计**：`AlgoBridge` 注册全部 29 个自研算法（cv 21 + analytics 7 + calibration 1；common/tests 模块为工具库不注册，noise_filter v1.0.9 起改为共享预处理阶段）+ 30 项 openEB 封装能力，共 59 项可通过 `list_algos()` 枚举。
+> **总计**：`AlgoBridge` 注册全部 30 个自研算法（cv 21 + analytics 8 + calibration 1；common/tests 模块为工具库不注册，noise_filter v1.0.9 起改为共享预处理阶段）+ 30 项 openEB 封装能力，共 60 项可通过 `list_algos()` 枚举。
 > **数据约束**：仅支持单相机纯事件流 (x,y,p,t)，不含 DAVIS APS 帧、IMU、双目立体。所有模块均在纯事件输入下工作。
 > **算法来源**：噪声过滤、跟踪、光流、朝向、霍夫等核心思路借鉴 jAER（见 1.6 节对照表），全部以 C++17 重写并集成到 openEB 事件流回调中，不引入 Java 依赖。
 
@@ -1364,6 +1365,26 @@ openEB 未提供光流算法，需自研。结果以箭头/颜色图叠加到主
 
 **可视化**：热图 colormap（Inferno）+ 光源位置圆圈标注 + 频率文本（Hz）。
 
+#### 4.4.8 🆕 Sensor 自检 (SensorSelfTest)
+
+对相机 sensor 进行坏点检测与不应期（refractory period）估计的自检算法。用户主动摇晃相机以刺激全 sensor 事件生成；算法对每个像素独立统计两次事件之间的历史最小间隔时间，作为该像素不应期估计。若某像素从未触发事件，则判定为疑似坏点。
+
+| 子模块 | 方案 |
+|--------|------|
+| 逐像素追踪 | 两个 HxW 数组：`last_ts_`（上次事件时间戳，哨兵 `kNeverSeen`）+ `min_interval_`（历史最小间隔，哨兵 `kNoInterval`）。每个事件 O(1)：读上次时间戳 → 计算间隔 → 与当前最小值比较 → 更新 |
+| 指数 LUT 渲染 | 预计算 `v = 255 * exp(-dt / 2000.0)` 的 0~10000us 查找表，`render()` 时按 `min_interval_` 查表生成灰度热图；未触发像素染红 `(0,0,255)`，仅 1 次事件像素染黑 |
+| 统计报告 | `compute_stats()` 一次性 O(N log N) 排序计算 min/max/mean/median/p90；`bad_pixel_coords()` 收集坏点坐标（上限 200） |
+
+**复杂度**：事件处理 O(1)/事件（两次数组读 + 一次写 + 一次比较）；渲染 O(N)（N = 像素数）；统计 O(N log N)（仅报告时调用，每 30 帧缓存一次）。
+
+**参数与合法范围**：无参数 —— 完全自动，覆盖全 sensor（不应用 ROI/预处理，确保坏点检测覆盖每个像素）。
+
+**触发方式**：硬件面板（DevicesPanel）"Sensor Self-Test" 按钮，需先连接相机。点击后弹出独立窗口显示热图；每次（重新）打开窗口自动 `reset()`，确保每次会话从零开始。
+
+**可视化**：HxW `CV_8UC3` 灰度热图 —— 红色 `(0,0,255)` = 未触发（疑似坏点），黑色 = 仅 1 次事件（数据不足），灰度 = 指数映射的不应期（越亮 = 不应期越短，范围 1us~10000us 映射到 0~255）。
+
+**关闭行为**：用户关闭显示窗口时自动停用算法实例，并弹出 `QMessageBox` 报告：不应期统计（min/max/mean/median/p90，单位 us）+ 触发/测量/坏点像素数 + 疑似坏点坐标列表（上限 50 个，超出则显示"还有 N 个"）。
+
 ### 4.5 algo/calibration/ — 相机标定
 
 #### 4.5.1 内参标定 (IntrinsicCalibration)
@@ -1526,7 +1547,7 @@ v1.0.9 起菜单栏由 CustomTitleBar 实现（下拉菜单替代 QMenuBar）。
 | **被动型 (Passive)** | 原地过滤事件，不绘制叠加层 | 噪声过滤、热像素过滤、超高速回放、带通滤波 | 不开新窗口，仅修改事件流；AlgoWindow 打开时显示状态文字 |
 | **叠加型 (Overlay)** | 结果叠加到主显示帧上 | 朝向/方向滤波、光流、团块检测、目标跟踪、角点、计数、霍夫直线/圆、EIS（电子稳定） | 不开新窗口，直接绘制在主显示区 |
 | **主显示替换型 (Replace)** | 替换主显示区内容 | 事件重建（EventToVideo） | 占用主显示区 |
-| **独立窗口型 (Standalone)** | 在新窗口独立显示 | Time Surface、XYT 3D 可视化、频率检测（FreqDetector）、ISI 直方图（ISI Analyzer） | 弹出独立子窗口 |
+| **独立窗口型 (Standalone)** | 在新窗口独立显示 | Time Surface、XYT 3D 可视化、频率检测（FreqDetector）、ISI 直方图（ISI Analyzer）、Sensor 自检（SensorSelfTest） | 弹出独立子窗口 |
 
 #### 5.6.2 多窗口布局行为
 
@@ -1585,15 +1606,15 @@ v1.0.9 起菜单栏由 CustomTitleBar 实现（下拉菜单替代 QMenuBar）。
 
 #### 5.6.6 🆕 算法 ROI 处理区（全算法支持，128×128 中心默认）
 
-**核心需求**：全部 29 个自研算法注册（21 个 CV + 7 个 Analytics + 1 个 Calibration）均支持"算法 ROI"处理区；noise_filter 模块仍存在于 algo/cv/ 但 v1.0.9 起从独立算法改为共享预处理阶段。GUI 默认启用 ROI 且默认区域为中心 128×128 内侧，使算法只处理 ROI 内事件、GUI 只渲染 ROI 区域的输出。用户可在侧栏"算法模块"面板顶部的全局 ROI 选择器中调节 ROI 坐标/尺寸，并在每个算法的展开参数编辑器中调节全部算法参数（AlgoWindow 显示窗口仅展示输出，不含参数控件）。
+**核心需求**：全部 30 个自研算法注册（21 个 CV + 8 个 Analytics + 1 个 Calibration）均支持"算法 ROI"处理区；noise_filter 模块仍存在于 algo/cv/ 但 v1.0.9 起从独立算法改为共享预处理阶段。GUI 默认启用 ROI 且默认区域为中心 128×128 内侧，使算法只处理 ROI 内事件、GUI 只渲染 ROI 区域的输出。用户可在侧栏"算法模块"面板顶部的全局 ROI 选择器中调节 ROI 坐标/尺寸，并在每个算法的展开参数编辑器中调节全部算法参数（AlgoWindow 显示窗口仅展示输出，不含参数控件）。**例外**：§4.4.8 Sensor 自检（SensorSelfTest）必须覆盖全 sensor 以检测每个像素，注册时不追加 ROI/预处理参数。
 
-**适用算法**：全部 29 个自研算法（包括 Overlay / Replace / Standalone / Passive 四种显示模式）。每个算法在 `algo_bridge.cpp` 注册时由 `add()` lambda 自动追加 5 个 ROI 参数；每个 `AlgoBackend` 通过 `RoiFilter` helper（或等价的 `ProcessRegion` 成员）实现事件过滤。
+**适用算法**：全部 30 个自研算法（包括 Overlay / Replace / Standalone / Passive 四种显示模式）。除 SensorSelfTest 外，每个算法在 `algo_bridge.cpp` 注册时由 `add()` lambda 自动追加 5 个 ROI 参数；每个 `AlgoBackend` 通过 `RoiFilter` helper（或等价的 `ProcessRegion` 成员）实现事件过滤。
 
 **两种后端过滤模式**：
 - **In-place compaction**（用于输出事件向量的滤波器，Group A/F/G）：在原缓冲区上将 ROI 外事件覆盖式压缩，算法仅处理压缩后的事件子集；`filtered_events` 输出仅含 ROI 内事件
 - **Apply / keep-coords**（用于 Overlay 检测器、分析器、帧生成器，Group B/C/D/E/H）：将 ROI 内事件拷贝到独立缓冲区供算法处理，`filtered_events` 输出全部事件（passthrough），叠加层坐标保持传感器尺度
 
-**参数（29 个算法共用同一组参数键，自动追加）**：
+**参数（30 个算法共用同一组参数键，自动追加；SensorSelfTest 例外，无参数）**：
 
 | 参数 | 类型 | 默认 | 范围 | 说明 |
 |------|------|------|------|------|
@@ -1650,7 +1671,7 @@ v1.0.9 起菜单栏由 CustomTitleBar 实现（下拉菜单替代 QMenuBar）。
 
 **XYT 缓冲区硬上限**：`XYTVisualizer`（`algo/cv/xyt_visualizer.h`）额外维护 `kMaxBuffer = 200000` 的环形缓冲区硬上限，即使 flood guard 仍允许事件通过，缓冲区超出上限时也会丢弃最旧事件（`pop_front`），防止 3D 点云内存无界增长。
 
-**保护范围**：所有 29 个自研算法均通过 `AlgoInstance` 统一获得 flood guard 保护；OpenEB 内置算法因在 SDK 内部线程处理，不受此机制约束。
+**保护范围**：所有 30 个自研算法均通过 `AlgoInstance` 统一获得 flood guard 保护；OpenEB 内置算法因在 SDK 内部线程处理，不受此机制约束。
 
 ---
 
@@ -1801,7 +1822,7 @@ RAW/HDF5 文件
 - [x] 4.3.26 可视化叠加（Overlay）
 - [x] 4.3.27 Time Surface 窗口（独立窗口，openEB `TimeSurfaceProcessor` 封装）
 
-### Phase 10：分析模块 (algo/analytics/ 7 个)
+### Phase 10：分析模块 (algo/analytics/ 8 个)
 借鉴 jAER `DvsFramer`、`particlecounter`、`freq_analyzer` 等：
 - [x] 4.4.1 主动标记跟踪（滑动窗口聚类 + 事件数颜色映射）
 - [x] 4.4.2 事件→灰度图像重建（非 DL：BardowVariational 完整复现（联合光流+亮度估计，λ1-6，Chambolle-Pock，λ6=1.0 论文值 + 条件先验仅作用于无新事件像素）/ InteractingMaps 严格复现（六图交替松弛 I/G/V/F/C/R + 旋转最小二乘 + Poisson 梯度积分，带 V/F/R/I 钳位与首帧温启动稳定性修复）/ DL：E2VID 已移植且为默认模式，含 ONNX Runtime 推理 + 启发式回退）
@@ -1810,13 +1831,14 @@ RAW/HDF5 文件
 - [x] 4.4.5 通用颗粒计数器
 - [x] 4.4.6 自适应 Bias 控制（PID 反馈）
 - [x] 4.4.7 闪烁光源频率检测（热图 + FFT，参考 `freq_analyzer`）
+- [x] 4.4.8 Sensor 自检（坏点检测 + 不应期估计，硬件面板触发，关闭弹报告）
 
 ### Phase 11：标定模块 (algo/calibration/ 1 个)
 - [x] 4.5.1 内参标定（含事件去畸变 LUT 预计算，借鉴 jAER `SingleCameraCalibration`）
 
 ### Phase 12：测试基建 (algo/tests/ 2 个)
 借鉴 jAER `NoiseTesterFilter`：
-- [x] 4.6.0 GTest + CTest 单元测试框架（已覆盖 Phase 6–10 全部模块，241 项测试 100% 通过）
+- [x] 4.6.0 GTest + CTest 单元测试框架（已覆盖 Phase 6–10 全部模块，295 项测试 100% 通过）
 - [x] 4.6.1 降噪评测框架（注入泊松 + 漏噪声，统计 TP/FP/TN/FN）
 - [x] 4.6.2 信号/噪声标注事件类型
 

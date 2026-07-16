@@ -948,6 +948,20 @@ void AlgoBridge::register_self_analytics() {
          AlgoDisplayMode::Standalone,
          {pfloat("update_interval_s", "Update interval (s)", "0.5", "0.1", "10"),
           pint("min_events", "Min events", "50", "10", "1000")}});
+
+    // §4.4.8 Sensor Self-Test — per-pixel refractory-period heatmap + bad-pixel
+    // detection. Registered WITHOUT roi_params/preproc_params (the self-test
+    // must cover the full sensor, not a 128×128 ROI). No user-tunable params.
+    // Triggered from the Devices panel (hardware module) as a sensor diagnostic.
+    {
+        AlgoInfo a;
+        a.name = "sensor_self_test";
+        a.display_name = "Sensor Self-Test";
+        a.category = "analytics";
+        a.source = "self";
+        a.display_mode = AlgoDisplayMode::Standalone;
+        registry_[a.name] = std::move(a);
+    }
 }
 
 // ---------------------------------------------------------------------------
