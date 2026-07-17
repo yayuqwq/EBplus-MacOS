@@ -49,6 +49,14 @@ cmake --build build -- -j$(nproc)
 
 > **环境要求**：Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4。详见 [doc/compile.md](doc/compile.md)。
 
+## 开发文档
+
+macOS 支持目前正在开发中，尚未达到正式发布状态。以上构建和运行说明仍是当前的 Linux 工作流。
+
+- [仓库工作流与协作规则](AGENTS.md)
+- [macOS 移植路线](docs/macos_porting_plan.md)
+- [OpenEB 版本隔离规范](docs/openeb_version_isolation.md)
+
 ---
 
 ## 功能特性

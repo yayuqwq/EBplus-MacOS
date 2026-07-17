@@ -47,6 +47,14 @@ That's it. The launcher handles Wayland compatibility, HAL plugin paths, and Ope
 
 > **Requirements**: Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4. See [doc/compile.md](doc/compile.md) for details.
 
+## Development Documentation
+
+macOS support is under active development and is not yet a released platform. The build and run instructions above remain the current Linux workflow.
+
+- [Repository workflow and contribution rules](AGENTS.md)
+- [macOS porting plan](docs/macos_porting_plan.md)
+- [OpenEB version isolation](docs/openeb_version_isolation.md)
+
 ---
 
 ## Features
