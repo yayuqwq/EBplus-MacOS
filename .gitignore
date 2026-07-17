@@ -3,6 +3,11 @@ build/
 cmake-build-*/
 out/
 
+# ---- Project-local isolated build and install trees ----
+/.build/
+/.deps/
+/build-*/
+
 # ---- CMake generated (in case build/ is not used) ----
 CMakeCache.txt
 CMakeFiles/
@@ -26,6 +31,10 @@ compile_commands.json
 # ---- OS ----
 .DS_Store
 Thumbs.db
+
+# ---- macOS generated bundles and debug symbols ----
+*.app/
+*.dSYM/
 
 # ---- Logs & temp ----
 *.log
