@@ -1,10 +1,10 @@
 # OpenEB 5.2.0 macOS build command draft
 
-> **Status: Not ready to execute**
+> **Status: Dependency prerequisite resolved; configure not yet executed**
 >
-> The repository-local `hdf5_ecf` gitlink is empty and the EBplus root repository does not yet have a reproducible mapping for its pinned source. Resolve that prerequisite and obtain explicit authorization for the selected dependency-recovery operation and any network/download it entails before running any configure command below.
+> The root repository now declares the complete `hdf5_ecf` submodule path and the current worktree is checked out at the pinned gitlink commit. These commands remain candidates only: the dependency-recovery milestone did not authorize or execute configure, build or install. Re-run every Git, dependency and disk preflight and obtain separate build-stage authorization before executing them.
 
-These are candidate Milestone 2B commands only. They were not executed during Milestone 2A.
+These are candidate Milestone 2B commands only. They were not executed during Milestone 2A or the dependency-recovery milestone.
 
 The primary profile below preserves the current Milestone 2 requirement for built-in OpenEB CLI validation. Because OpenEB has no fine-grained CLI switch, this requires `BUILD_SAMPLES=ON` and the `ui` module in addition to `base`, `core`, and `stream`.
 
@@ -45,18 +45,31 @@ find "$REPO_ROOT" -maxdepth 1 \
 
 Before creating any directory, report current sizes, expected growth, duplicate-tree risk and the remaining-space protection calculation. The evidence-based conservative Milestone 2A estimate is 0.75 GiB and does not itself reach the 1 GiB authorization threshold. If the refreshed expected or upper estimate reaches 1 GiB, obtain separate operation-specific authorization before continuing.
 
-## Source completeness prerequisite
+## Dependency verification preflight
 
-The dependency recovery must be handled as a separate reviewed and approved step. Do not allow configure to perform an implicit download.
+The locked dependency is present in the current recovery worktree. Any new clone and every future M2B build branch must repeat these checks before configure; do not rely on configure to repair or download the dependency implicitly.
 
-After the approved recovery, verify all of the following before continuing:
+Verify all of the following before continuing:
 
 ```bash
 HDF5_ECF_SOURCE="$OPENEB_SOURCE/sdk/modules/stream/cpp/3rdparty/hdf5_ecf"
 HDF5_ECF_COMMIT="b982d908a0bc0afd9104d226607bedb1a11b2a95"
 
-git ls-files --stage \
-  openeb/sdk/modules/stream/cpp/3rdparty/hdf5_ecf
+HDF5_ECF_INDEX_ENTRY="$(
+  git ls-files --stage \
+    openeb/sdk/modules/stream/cpp/3rdparty/hdf5_ecf
+)" || exit 1
+
+printf '%s\n' "$HDF5_ECF_INDEX_ENTRY"
+
+HDF5_ECF_INDEX_MODE="$(printf '%s\n' "$HDF5_ECF_INDEX_ENTRY" | awk '{print $1}')"
+HDF5_ECF_INDEX_COMMIT="$(printf '%s\n' "$HDF5_ECF_INDEX_ENTRY" | awk '{print $2}')"
+
+if [ "$HDF5_ECF_INDEX_MODE" != "160000" ] || \
+   [ "$HDF5_ECF_INDEX_COMMIT" != "$HDF5_ECF_COMMIT" ]; then
+  echo "Root hdf5_ecf gitlink does not match the locked dependency" >&2
+  exit 1
+fi
 
 if [ ! -f "$HDF5_ECF_SOURCE/CMakeLists.txt" ]; then
   echo "hdf5_ecf source is incomplete" >&2
@@ -80,11 +93,35 @@ if [ "$RECOVERED_HDF5_ECF_COMMIT" != "$HDF5_ECF_COMMIT" ]; then
   exit 1
 fi
 
-git submodule status \
-  openeb/sdk/modules/stream/cpp/3rdparty/hdf5_ecf || exit 1
+if [ -n "$(git -C "$HDF5_ECF_SOURCE" status --porcelain)" ]; then
+  echo "hdf5_ecf worktree is not clean" >&2
+  exit 1
+fi
+
+HDF5_ECF_SUBMODULE_STATUS="$(
+  git submodule status \
+    openeb/sdk/modules/stream/cpp/3rdparty/hdf5_ecf
+)" || exit 1
+
+case "$HDF5_ECF_SUBMODULE_STATUS" in
+  " $HDF5_ECF_COMMIT "*) ;;
+  *)
+    echo "Unexpected hdf5_ecf submodule status: $HDF5_ECF_SUBMODULE_STATUS" >&2
+    exit 1
+    ;;
+esac
+
+HDF5_ECF_GIT_DIR="$(git -C "$HDF5_ECF_SOURCE" rev-parse --absolute-git-dir)" || exit 1
+case "$HDF5_ECF_GIT_DIR" in
+  "$REPO_ROOT/.git/modules/"*) ;;
+  *)
+    echo "Unexpected submodule git directory: $HDF5_ECF_GIT_DIR" >&2
+    exit 1
+    ;;
+esac
 ```
 
-The checks above apply to the preferred restored-submodule design. If the approved design vendors ordinary tracked source instead, replace them with a separately reviewed tree/checksum verification tied to the same pinned source; do not let `git -C` resolve upward to the EBplus repository. Document and review any different dependency-management design before configure.
+The approved design is the root-declared locked submodule. Do not replace it with vendored source or another dependency-management design without separate review. The toplevel and Git-directory guards prevent `git -C` from resolving upward to the EBplus repository or using metadata outside the repository.
 
 ## Dependency inputs
 
@@ -155,7 +192,7 @@ CMake will create the single approved build tree. Installation must remain insid
 
 ## Configure
 
-> **Not ready to execute until `hdf5_ecf` is complete.**
+> **Candidate only. The dependency prerequisite is resolved, but configure, build and install were not executed or authorized in the dependency-recovery milestone. Re-run all preflight checks and obtain separate authorization before executing this section.**
 
 Primary M2B CLI-validation profile:
 

@@ -1,0 +1,3 @@
+[submodule "openeb/sdk/modules/stream/cpp/3rdparty/hdf5_ecf"]
+	path = openeb/sdk/modules/stream/cpp/3rdparty/hdf5_ecf
+	url = https://github.com/prophesee-ai/hdf5_ecf.git

@@ -364,3 +364,25 @@ Reasons:
 - M2B must receive explicit authorization for the selected dependency-recovery operation and any required network/download, and must account for samples/UI scope, dependency-version risk and target-camera vendor support.
 
 Milestone 2B must not begin configure until the HDF5 source prerequisite is resolved and the refreshed disk estimate is recorded; separate size-based authorization is required if that estimate reaches 1 GiB.
+
+## 12. Post-audit dependency recovery status
+
+This section is a chronological follow-up to the original Milestone 2A snapshot above. It does not remove or rewrite the evidence and conclusions recorded at audit time.
+
+On branch `build/macos-openeb-5.2-hdf5-dependency`, the root repository gained a tracked `.gitmodules` mapping for:
+
+```text
+Path: openeb/sdk/modules/stream/cpp/3rdparty/hdf5_ecf
+URL: https://github.com/prophesee-ai/hdf5_ecf.git
+Pinned commit: b982d908a0bc0afd9104d226607bedb1a11b2a95
+```
+
+The path-limited `git submodule update --init -- <path>` operation checked out that exact commit. The submodule worktree is clean and detached, its remote URL matches the audited upstream, and its absolute Git directory is inside `$REPO_ROOT/.git/modules/`. The root gitlink remains mode `160000` at the same pinned commit.
+
+The source-completeness portion of the original blocker is therefore resolved locally: the root mapping exists and the checked-out source no longer depends on configure-time implicit submodule initialization. The dependency uses Apache License 2.0; the recovered worktree measured 128 KiB and its Git metadata measured 148 KiB at recovery time.
+
+Fresh-clone submodule configuration was statically validated from the root mapping, URL, gitlink and checked-out pinned commit. A separate fresh clone was not executed in this milestone.
+
+That static cross-check was performed in the dependency-recovery worktree before commit. The same recovery revision now tracks the root mapping, but fresh-clone behavior remains unexecuted and must not be reported as an actual clone test.
+
+Configure and build readiness remain unproven. This recovery did not run CMake configure, build or install, and it did not validate current CMake/Boost/OpenCV/Protobuf/HDF5 compatibility, ECF codec/plugin integration, HAL/plugin behavior, RAW/HDF5 I/O, CLI, live camera or CenturyArks support. The next build stage still requires renewed Git/dependency/disk preflight and separate user authorization.

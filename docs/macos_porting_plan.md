@@ -127,13 +127,15 @@ C++17
 **状态：** `In progress`
 **Milestone 2A：** `Complete`
 **Milestone 2A 分支：** `build/macos-openeb-5.2-audit`
-**Milestone 2B：** `Not started`
+**Milestone 2B prerequisite：** `Complete`
+**Milestone 2B prerequisite 分支：** `build/macos-openeb-5.2-hdf5-dependency`
+**Milestone 2B configure/build：** `Not started`
 **Milestone 2B 计划分支：** `build/macos-openeb-5.2-isolation`
 
 **Milestone 2A 输出**
 
 - [`openeb_5_2_macos_build_audit.md`](openeb_5_2_macos_build_audit.md)：OpenEB 5.2 源码身份、HDF5 gitlink、构建选项、5.1.1 patch、系统依赖和磁盘预算审计。
-- [`openeb_5_2_macos_build_command_draft.md`](openeb_5_2_macos_build_command_draft.md)：Milestone 2B 的仓库内隔离构建候选命令；依赖完整前标记为 `Not ready to execute`。
+- [`openeb_5_2_macos_build_command_draft.md`](openeb_5_2_macos_build_command_draft.md)：Milestone 2B 的仓库内隔离构建候选命令；依赖前置已恢复，但 configure/build 尚未执行或授权。
 
 **Milestone 2A 完成标准**
 
@@ -142,9 +144,13 @@ C++17
 - 已建立 OpenEB 5.2 CMake 选项、built-in CLI 约束、5.1.1 macOS patch 映射、现有依赖及三档空间预算。
 - 本阶段未执行 configure、build、install、下载、submodule init/update 或程序运行，且未修改 OpenEB、Linux 行为或稳定 5.1.1 环境。
 
+**Milestone 2B prerequisite 输出**
+
+- [`hdf5_ecf_dependency_recovery.md`](hdf5_ecf_dependency_recovery.md)：根级 submodule mapping、锁定提交恢复、Git metadata 边界和静态 fresh-clone 配置验证记录。
+
 **进入 Milestone 2B**
 
-审计结论为 `Go with prerequisites`。开始 2B 前必须先形成可复现的 HDF5 ECF 依赖管理方案，并对所选恢复操作及其可能需要的网络/下载取得明确授权。当前证据支持的保守增长上限为 `0.75 GiB`，未触发 1 GiB 阈值；2B 创建目录前必须重新估算，若届时 expected 或 upper estimate 达到 1 GiB，再取得单独的磁盘授权。若目标相机为 CenturyArks VID `31f7` 设备，还必须先审核 5.1.1 vendor patch 在 5.2 中的最小适配范围。整个 Milestone 2 尚未完成。
+HDF5 ECF 的根级 mapping 和锁定工作树已在 prerequisite 分支恢复；这只解决 source-completeness prerequisite，不代表 configure/build 可用。进入实际 2B configure/build 前仍需重新检查 Git、依赖和磁盘，并取得单独的构建阶段授权。当前证据支持的保守增长上限为 `0.75 GiB`，未触发 1 GiB 阈值；若下一轮 expected 或 upper estimate 达到 1 GiB，再取得单独的磁盘授权。若目标相机为 CenturyArks VID `31f7` 设备，还必须先审核 5.1.1 vendor patch 在 5.2 中的最小适配范围。整个 Milestone 2 尚未完成。
 
 **范围**
 
@@ -403,7 +409,7 @@ Export
 - 仓库已有 `doc/`，本路线及版本隔离文档按要求位于新增的 `docs/`；两个目录暂时并存，本轮不重命名旧目录。
 - `README.md` 与 `README_CN.md` 写明 Ubuntu 22.04+，而 `doc/compile.md` 记录 Ubuntu 26.04；Milestone 1 应核实支持基线，本轮不修改既有 Linux 文档。
 - `doc/compile.md` 的直接运行示例使用 `./build/gui_for_openeb`，而 `run.sh` 和当前 CMake 目标布局指向 `build/gui/gui_for_openeb`；Milestone 1 应核实并记录正确入口，本轮不顺带修复。
-- 根仓库跟踪 `$REPO_ROOT/openeb/sdk/modules/stream/cpp/3rdparty/hdf5_ecf` gitlink，但根级缺少对应 `.gitmodules` mapping；当前从根运行 `git submodule status` 会失败。Milestone 2 开始前必须审计并明确修复策略。
+- 根仓库的 HDF5 ECF gitlink 已建立完整根级 `.gitmodules` mapping，并在 prerequisite 分支检出锁定提交；该静态依赖完整性恢复尚未经过独立 fresh clone、configure、build 或运行验证。
 - `run.sh`、`gui/main.cpp` 和 `algo/CMakeLists.txt` 存在 Linux 系统路径、动态库和显示后端假设；它们是后续平台隔离热点，本轮仅记录，不修改。
 - 现有 Linux README、`run.sh` 和 `doc/compile.md` 仍包含传统 `build/`、系统 `/tmp` 或 `/usr/local` 流程。这些是需要后续协调的 legacy baseline，本轮保持原文以避免改变 Linux 指引，但不构成未来任务绕过仓库内工作区规范的授权。
 - OpenEB 5.1.1 是已验证的稳定 macOS 环境，但 EBplus 的目标版本是 5.2.0；任何比较结果都不能成为覆盖 5.1.1 或将 EBplus 降级到 5.1.1 的理由。
