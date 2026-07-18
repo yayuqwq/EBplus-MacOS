@@ -55,6 +55,7 @@ C++17
 状态值使用以下含义：
 
 - `Complete (merged via PR #1)`：Milestone 0 的基础建设已经通过 fork 内 PR #1 合并到 `main`。
+- `Complete`：当前 milestone 的范围和规定检查已经完成；具体 commit、push 和 PR 状态在任务报告或 Git 历史中单独记录。
 - `Planned`：已定义范围，尚未开始实施。
 - 后续实施时可使用 `In progress` 或 `Blocked`，但必须附上当前证据和阻塞原因。
 
@@ -89,8 +90,13 @@ C++17
 
 ### Milestone 1: Linux baseline inventory
 
-**状态：** `Planned`
+**状态：** `Complete`
 **独立分支：** `docs/linux-baseline-inventory`
+
+**输出文档**
+
+- [`linux_baseline_inventory.md`](linux_baseline_inventory.md)：当前 Linux 源码、构建入口、功能接线、平台热点、证据等级和运行验证 backlog。
+- [`platform_parity_matrix.md`](platform_parity_matrix.md)：Linux/macOS 功能对齐状态、证据、所需验证和目标 milestone。
 
 **范围**
 
@@ -105,14 +111,15 @@ C++17
 **检查方法**
 
 - 对 CMake、脚本、GUI、算法注册、模型加载、导出和配置代码进行只读审计。
-- 在受支持的 Linux 环境执行 configure、build、CTest 和可用的功能 smoke test。
-- 分别记录无需硬件、需要 RAW 样本、需要模型和需要真实相机的检查。
-- 保存平台、架构、依赖版本、命令、输入和实际结果，不以 README 描述替代实测。
+- 依据当前 tracked source 重新统计算法注册项，并为功能清单逐项记录实现路径和证据等级。
+- 建立无需硬件、需要 RAW 样本、需要模型和需要真实相机的运行验证 backlog。
+- 本 milestone 不执行 configure、build、CTest 或功能 smoke test；不得以 README 描述或静态源码存在替代实测结论。
 
 **完成标准**
 
-- 形成可追踪的 Linux 功能基线和测试矩阵，每项标明已验证、未验证或已知限制。
-- 所有后续 parity milestone 均有明确的 Linux 对照行为和完成判据。
+- 已完成可追踪的 Linux 静态功能清单，并为每项记录实现路径、证据等级、已知限制和运行验证需求。
+- 已建立 Linux/macOS 平台对齐矩阵，为后续 parity milestone 提供 Linux 源码基线和完成判据。
+- 本 milestone 未执行运行验证；configure、build、CTest、GUI、RAW、模型、导出和真实相机检查均明确进入 runtime verification backlog。
 - Linux 专用逻辑及其原因已定位，但本 milestone 不实施平台重构。
 
 ### Milestone 2: Isolated OpenEB 5.2.0 on macOS
