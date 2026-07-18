@@ -3,9 +3,15 @@ build/
 cmake-build-*/
 out/
 
-# ---- Project-local isolated build and install trees ----
+# ---- Project-local workspace, build, and install trees ----
 /.build/
 /.deps/
+/.venv/
+/.cache/
+/.tmp/
+/.logs/
+/.downloads/
+/.artifacts/
 /build-*/
 
 # ---- CMake generated (in case build/ is not used) ----
@@ -51,7 +57,6 @@ run.local.sh
 __pycache__/
 *.py[cod]
 *.egg-info/
-.venv/
 
 # ---- Reference materials (third-party repos, not committed) ----
 ref/

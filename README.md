@@ -54,6 +54,7 @@ macOS support is under active development and is not yet a released platform. Th
 - [Repository workflow and contribution rules](AGENTS.md)
 - [macOS porting plan](docs/macos_porting_plan.md)
 - [OpenEB version isolation](docs/openeb_version_isolation.md)
+- [Repository-local workspace and storage policy](docs/local_workspace_policy.md)
 
 ---
 
