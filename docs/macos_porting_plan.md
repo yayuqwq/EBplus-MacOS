@@ -124,8 +124,27 @@ C++17
 
 ### Milestone 2: Isolated OpenEB 5.2.0 on macOS
 
-**状态：** `Planned`
-**独立分支：** `build/macos-openeb-5.2-isolation`
+**状态：** `In progress`
+**Milestone 2A：** `Complete`
+**Milestone 2A 分支：** `build/macos-openeb-5.2-audit`
+**Milestone 2B：** `Not started`
+**Milestone 2B 计划分支：** `build/macos-openeb-5.2-isolation`
+
+**Milestone 2A 输出**
+
+- [`openeb_5_2_macos_build_audit.md`](openeb_5_2_macos_build_audit.md)：OpenEB 5.2 源码身份、HDF5 gitlink、构建选项、5.1.1 patch、系统依赖和磁盘预算审计。
+- [`openeb_5_2_macos_build_command_draft.md`](openeb_5_2_macos_build_command_draft.md)：Milestone 2B 的仓库内隔离构建候选命令；依赖完整前标记为 `Not ready to execute`。
+
+**Milestone 2A 完成标准**
+
+- 已通过根仓库 Git 证据确认 `openeb/` 的版本、源码形态、dirty 状态、导入历史和 EBplus 集成方式。
+- 已确认 HDF5 ECF gitlink 的锁定提交和上游声明来源，并记录根 mapping/工作树内容缺失对 HDF5-enabled configure 的影响。
+- 已建立 OpenEB 5.2 CMake 选项、built-in CLI 约束、5.1.1 macOS patch 映射、现有依赖及三档空间预算。
+- 本阶段未执行 configure、build、install、下载、submodule init/update 或程序运行，且未修改 OpenEB、Linux 行为或稳定 5.1.1 环境。
+
+**进入 Milestone 2B**
+
+审计结论为 `Go with prerequisites`。开始 2B 前必须先形成可复现的 HDF5 ECF 依赖管理方案，并对所选恢复操作及其可能需要的网络/下载取得明确授权。当前证据支持的保守增长上限为 `0.75 GiB`，未触发 1 GiB 阈值；2B 创建目录前必须重新估算，若届时 expected 或 upper estimate 达到 1 GiB，再取得单独的磁盘授权。若目标相机为 CenturyArks VID `31f7` 设备，还必须先审核 5.1.1 vendor patch 在 5.2 中的最小适配范围。整个 Milestone 2 尚未完成。
 
 **范围**
 
