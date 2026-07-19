@@ -57,6 +57,8 @@ macOS support is under active development and is not yet a released platform. Th
 - [OpenEB 5.2 macOS build audit](docs/openeb_5_2_macos_build_audit.md)
 - [HDF5 ECF dependency recovery](docs/hdf5_ecf_dependency_recovery.md)
 - [OpenEB 5.2 macOS build command draft](docs/openeb_5_2_macos_build_command_draft.md)
+- [CenturyArks OpenEB 5.x source audit](docs/centuryarks_openeb_5x_source_audit.md) — design/audit only; integration not yet implemented
+- [CenturyArks OpenEB 5.2 integration plan](docs/centuryarks_openeb_5_2_integration_plan.md) — design/audit only; integration not yet implemented
 - [Repository-local workspace and storage policy](docs/local_workspace_policy.md)
 - [Linux feature baseline](docs/linux_baseline_inventory.md)
 - [Linux/macOS platform parity matrix](docs/platform_parity_matrix.md)
