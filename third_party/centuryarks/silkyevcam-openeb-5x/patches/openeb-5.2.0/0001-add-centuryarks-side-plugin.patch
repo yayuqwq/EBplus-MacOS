@@ -1,0 +1,10 @@
+diff --git a/hal_psee_plugins/lib/CMakeLists.txt b/hal_psee_plugins/lib/CMakeLists.txt
+--- a/hal_psee_plugins/lib/CMakeLists.txt
++++ b/hal_psee_plugins/lib/CMakeLists.txt
+@@ -185,0 +186 @@
++    hal_plugin_centuryarks
+diff --git a/hal_psee_plugins/src/plugin/CMakeLists.txt b/hal_psee_plugins/src/plugin/CMakeLists.txt
+--- a/hal_psee_plugins/src/plugin/CMakeLists.txt
++++ b/hal_psee_plugins/src/plugin/CMakeLists.txt
+@@ -12,0 +13 @@
++target_sources(hal_plugin_centuryarks PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/centuryarks_plugin.cpp)
