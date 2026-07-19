@@ -271,6 +271,12 @@ function(MetavisionSDK_add_module module_name)
                 VERSION ${PROJECT_VERSION_FULL}
                 SOVERSION ${PROJECT_VERSION_MAJOR}
         )
+        if(APPLE)
+            # Installed SDK dylibs resolve their repository-local dependencies from the same directory.
+            set_property(TARGET metavision_sdk_${module_name} APPEND PROPERTY
+                INSTALL_RPATH "@loader_path"
+            )
+        endif()
     endif(PARSED_ARGS_INTERFACE_LIBRARY)
 
     # Create library alias:
