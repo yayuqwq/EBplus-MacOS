@@ -129,13 +129,19 @@ C++17
 **Milestone 2A 分支：** `build/macos-openeb-5.2-audit`
 **Milestone 2B prerequisite：** `Complete`
 **Milestone 2B prerequisite 分支：** `build/macos-openeb-5.2-hdf5-dependency`
-**Milestone 2B configure/build：** `Not started`
-**Milestone 2B 计划分支：** `build/macos-openeb-5.2-isolation`
+**Milestone 2B base build：** `Complete`
+**Milestone 2B RPATH portability：** `Complete`
+**Milestone 2B 分支：** `build/macos-openeb-5.2-isolation`
+**Milestone 2C CenturyArks integration：** `Not started`
 
 **Milestone 2A 输出**
 
 - [`openeb_5_2_macos_build_audit.md`](openeb_5_2_macos_build_audit.md)：OpenEB 5.2 源码身份、HDF5 gitlink、构建选项、5.1.1 patch、系统依赖和磁盘预算审计。
-- [`openeb_5_2_macos_build_command_draft.md`](openeb_5_2_macos_build_command_draft.md)：Milestone 2B 的仓库内隔离构建候选命令；依赖前置已恢复，但 configure/build 尚未执行或授权。
+- [`openeb_5_2_macos_build_command_draft.md`](openeb_5_2_macos_build_command_draft.md)：已验证的仓库内隔离构建、安装、无 DYLD 运行和 RPATH 检查命令；未来执行仍需重新通过 preflight。
+
+**Milestone 2B validation 输出**
+
+- [`openeb_5_2_macos_build_validation.md`](openeb_5_2_macos_build_validation.md)：base build、Apple-only RPATH 修复、RAW/HDF5、discovery smoke、动态链接和剩余范围记录。
 
 **Milestone 2A 完成标准**
 
@@ -150,7 +156,9 @@ C++17
 
 **进入 Milestone 2B**
 
-HDF5 ECF 的根级 mapping 和锁定工作树已在 prerequisite 分支恢复；这只解决 source-completeness prerequisite，不代表 configure/build 可用。进入实际 2B configure/build 前仍需重新检查 Git、依赖和磁盘，并取得单独的构建阶段授权。当前证据支持的保守增长上限为 `0.75 GiB`，未触发 1 GiB 阈值；若下一轮 expected 或 upper estimate 达到 1 GiB，再取得单独的磁盘授权。若目标相机为 CenturyArks VID `31f7` 设备，还必须先审核 5.1.1 vendor patch 在 5.2 中的最小适配范围。整个 Milestone 2 尚未完成。
+HDF5 ECF source prerequisite 已恢复。当前分支已完成 primary profile 的 macOS arm64 configure、bootstrap/full build、repository-local install，以及无 `DYLD_LIBRARY_PATH` 的三项 CLI、RAW、HDF5 ECF 和无设备 discovery smoke。Apple-only target-specific `INSTALL_RPATH` 修复已通过独立 build/install tree 验证，未发现稳定 5.1.1 runtime 污染。
+
+这些结果仍未完成整个 Milestone 2：当前没有真实相机，device open、live stream、facility、参数、shutdown 和 reconnect 均未验证；CenturyArks/SilkyEvCam 源码未使用，其 5.2 集成保留到 Milestone 2C。Linux 条件路径经静态审核保持不变，但 Linux build/runtime regression 尚未执行。
 
 **范围**
 
