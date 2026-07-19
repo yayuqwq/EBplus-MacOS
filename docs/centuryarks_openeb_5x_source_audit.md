@@ -2,16 +2,43 @@
 
 ## 1. Purpose and scope
 
-This document records the read-only Milestone 2C-A audit of the CenturyArks SilkyEvCam source package against the preserved OpenEB 5.1.1 working tree and the repository's tracked OpenEB 5.2.0 source.
+This document records the read-only Milestone 2C-A audit of the CenturyArks SilkyEvCam source package against the preserved OpenEB 5.1.1 working tree and the repository's tracked OpenEB 5.2.0 source, followed by the bounded Milestone 2C-B1 Phase 1 implementation evidence.
 
-The audit determines source identity, licensing evidence, the exact relationship to the known 5.1.1 port, hunk-level applicability to 5.2.0, and the constraints for an optional integration. It does not import vendor source, modify OpenEB, configure, build, install, or claim camera support.
+The audit determines source identity, licensing evidence, the exact relationship to the known 5.1.1 port, hunk-level applicability to 5.2.0, and the constraints for a side-by-side integration. The original 2C-A work did not import vendor source, modify OpenEB, configure, build, install or claim camera support. The later Phase 1 work imported only the reviewed tracked inputs and validated the isolated prepared-source implementation without changing canonical tracked `openeb/`.
 
 ```text
-Status: Source audit/design complete
-Integration: Not implemented
-CenturyArks build validation: Not run
-CenturyArks hardware validation: Not run
+Status at completion of Milestone 2C-A: Source audit/design complete
+Phase 1 integration: Implemented and validated
+CenturyArks build validation: Passed on macOS arm64
+CenturyArks PID 0003 enumeration/open/reopen: Passed
+CenturyArks PIDs 0002/0004 hardware: Not tested
+Live event delivery: Not run
 ```
+
+### Post-audit Milestone 2C-B1 architecture decision
+
+The source audit originally established that a default-disabled plugin was technically possible. After the separate Milestone 2C-B0 hardware baseline, the fork selected a different implementation policy:
+
+- Architecture B remains the source carrier, and canonical tracked `openeb/` remained unchanged.
+- The ignored prepared OpenEB 5.2 source always builds `hal_plugin_prophesee` and `hal_plugin_centuryarks` side by side.
+- Both plugins share the existing, singly owned `metavision_psee_hw_layer`.
+- The implementation uses one CenturyArks build/install profile and no CenturyArks feature switch.
+- The stable OpenEB 5.1.1 baseline verified one `31f7:0003` device can enumerate, open and reopen through `silky_common_plugin` / `CenturyArks`; live events were not validated.
+
+The default-OFF and optional-plugin wording later in the original audit was a historical feasibility conclusion reached during Milestone 2C-A, not the current fork policy. The implemented and normative design is always-built in the prepared CenturyArks profile and has no CenturyArks feature option. Its requirements and validation results are defined in [`centuryarks_openeb_5_2_integration_plan.md`](centuryarks_openeb_5_2_integration_plan.md).
+
+### Phase 1 implementation evidence
+
+- Tracked delivery consists of the adapted entrypoint, license and provenance files, an exact two-file/two-hunk OpenEB 5.2 CMake patch, and a deterministic preparation script.
+- Canonical `openeb/` stayed unchanged; the patch and entrypoint were applied only to the ignored prepared source.
+- Configure, bootstrap build, full build and repository-local install passed.
+- The existing hardware-layer object target produced 55 object files and remains the sole compilation/ownership source for the shared hardware layer. Neither plugin DSO directly embeds those hardware objects. The existing `metavision_active_pixel_detection` sample may reuse the same target outputs, which is not a second hardware-layer object compilation or target.
+- The normalized standard-plugin link baseline and `psee_universal.cpp` source were unchanged.
+- `hal_plugin_centuryarks` initializes as `CenturyArks`, exposes one live camera discovery and zero file discoveries, and registers only `31f7:0002`, `31f7:0003` and `31f7:0004` with subclass `0x19`. Interface class `0xff` and protocol `0x00` come from the existing Treuzell code. `hal_plugin_prophesee` retains two camera discoveries and one file discovery and does not register `0x31f7`.
+- The adapted source contains no fixed serial, serial hash, product or firmware condition, file discovery, EEPROM, mask or facility behavior.
+- No-DYLD CLI/loader, RAW/HDF5, RPATH/linkage and OpenEB 5.1.1 contamination checks passed.
+- One physical `31f7:0003` IMX636 device enumerated, opened and reopened through `CenturyArks:hal_plugin_centuryarks:<runtime serial>`; the anonymized serial SHA-256 prefix is `cb823604ea92`, and the observed system release was `3.9.0`.
+- Hardware for PIDs `0002` and `0004`, live event delivery, EEPROM, pixel-mask, facility behavior and Linux validation remain untested.
 
 ## 2. Source identity
 
@@ -162,22 +189,22 @@ Only the five conclusion values defined for this milestone are used below.
 | `metavision_platform_info/CMakeLists.txt:13-15` | Add duplicate `silkyevcam_platform_info` target | Existing sample CMake | Current target has validated Apple install RPATH; vendor alias is not installed | Not applicable | Avoid duplicate target | None if omitted | None | No test required unless a branded diagnostic is separately requested |
 | `metavision_platform_info.cpp:318-320` | Add `31f7` IDs to `lsusb` diagnosis | Existing sample source | Same source structure; hunk is inside Linux diagnostics | Not applicable | None | Optional diagnostic only | None | Linux-only diagnostic test if later requested |
 | `hal_psee_plugins/lib/CMakeLists.txt:41-100` | Rename shared hardware layer | Existing plugin build CMake | Current standard target/export and Apple RPATH must remain | Not applicable | Direct copy changes ABI/target names | Breaks existing consumers | Replaces standard hardware-layer identity | Do not implement |
-| `hal_psee_plugins/lib/CMakeLists.txt:177-273` | Replace standard plugin with `silky_common_plugin` | Existing plugin-list loop | Current loop supplies install/copy/RPATH behavior | Port with OpenEB 5.2 adaptation | Must be option-gated | Must retain `$ORIGIN` path | Standard plugin must remain enabled | Target graph, duplicate symbols, install and RPATH audit |
-| `tz_libusb_board_command.h::read_pixel_mask_data` | Expose mask-record decoding | Same class | API exists only in vendor file | Port with OpenEB 5.2 adaptation | No declaration/use when option is off, or equivalent ABI-safe design | Cross-platform | Must reject non-CenturyArks devices | Compile, bounds and unit tests |
-| `psee_libusb.h::eeprom_read_4bytes` | Read four EEPROM bytes | Same class | Generic control transfer and `I2cEeprom` already exist | Port with OpenEB 5.2 adaptation | Option-gated helper | Cross-platform libusb | Must not issue vendor transfers for standard devices | Mocked transfer/error tests and hardware read |
+| `hal_psee_plugins/lib/CMakeLists.txt:177-273` | Replace standard plugin with `silky_common_plugin` | Existing plugin-list loop | Current loop supplies install/copy/RPATH behavior | Port with OpenEB 5.2 adaptation | Always add only the side target in the prepared profile; canonical `openeb/` remains unchanged | Existing `$ORIGIN` path retained; Linux build not run | Standard plugin remains enabled | Passed target graph, ownership, normalized link, install and RPATH audit |
+| `tz_libusb_board_command.h::read_pixel_mask_data` | Expose mask-record decoding | Same class | API exists only in vendor file | Port with OpenEB 5.2 adaptation | Not present in Phase 1; any future implementation requires a device-identity gate | Cross-platform | Must reject non-CenturyArks devices | Compile, bounds and unit tests plus hardware evidence |
+| `psee_libusb.h::eeprom_read_4bytes` | Read four EEPROM bytes | Same class | Generic control transfer and `I2cEeprom` already exist | Port with OpenEB 5.2 adaptation | Not present in Phase 1; any future helper requires a device-identity gate | Cross-platform libusb | Must not issue vendor transfers for standard devices | Mocked transfer/error tests and hardware read |
 | `ca_device.rules` | Linux access for VID `31f7` | Linux rules directory | File is not referenced by the existing rules CMake | Needs clarification or hardware evidence | None on macOS | `MODE="666"` and installation policy need security review | No direct device overlap | Linux udev and permission validation |
 | Facility-casting sample CMake | Link renamed hardware layer | Existing sample CMake | Rename is rejected | Not applicable | None | None | Preserves standard target | No test required |
 | `src/boards/CMakeLists.txt:14` | Disable V4L2 board directory | Existing CMake | V4L2 subdirectory already returns when unsupported | Already present in OpenEB 5.2 | Default behavior already safe on macOS | Direct copy would remove Linux functionality | Removes standard V4L2 support | Preserve current file |
-| `TzHWIdentification::get_system_info` | Silky firmware labels and FPGA version | Same function | APIs unchanged; vendor uses brittle product-name parsing and suppresses normal device info | Port with OpenEB 5.2 adaptation | Optional, nonessential phase | Cross-platform | Must preserve normal information for standard devices | Model-string, metadata and non-vendor regression tests |
-| `TzLibUSBBoardCommand::read_pixel_mask_data` | Decode EEPROM word | Same class/source | No version API change; vendor uses magic layout | Port with OpenEB 5.2 adaptation | Option and device gated | Cross-platform | Must not touch standard EEPROM | Unit decode tests and hardware evidence |
-| `LibUSBDevice::eeprom_read_4bytes` | EEPROM address `0x50` read | Same class/source | Existing `I2cEeprom::read` resizes the buffer; wrapper is absent | Port with OpenEB 5.2 adaptation | Option-gated | Cross-platform | Must not change generic transfers | Short-read, error, endian and timeout tests |
+| `TzHWIdentification::get_system_info` | Silky firmware labels and FPGA version | Same function | APIs unchanged; vendor uses brittle product-name parsing and suppresses normal device info | Port with OpenEB 5.2 adaptation | Deferred, nonessential phase | Cross-platform | Must preserve normal information for standard devices | Model-string, metadata and non-vendor regression tests |
+| `TzLibUSBBoardCommand::read_pixel_mask_data` | Decode EEPROM word | Same class/source | No version API change; vendor uses magic layout | Port with OpenEB 5.2 adaptation | Not present in Phase 1; any future implementation requires a device-identity gate | Cross-platform | Must not touch standard EEPROM | Unit decode tests and hardware evidence |
+| `LibUSBDevice::eeprom_read_4bytes` | EEPROM address `0x50` read | Same class/source | Existing `I2cEeprom::read` resizes the buffer; wrapper is absent | Port with OpenEB 5.2 adaptation | Not present in Phase 1; any future helper requires a device-identity gate | Cross-platform | Must not change generic transfers | Short-read, error, endian and timeout tests |
 | `src/devices/CMakeLists.txt` | Remove V4L2 device directory | Existing CMake | Guarded V4L2 subdirectory already provides platform isolation | Already present in OpenEB 5.2 | No change required | Direct copy breaks Linux | Removes standard device support | Preserve current file |
-| `TzImx636` constructor mask loop | Apply 64 EEPROM masks | Existing constructor/facility creation | Registered mask facility is created in `spawn_facilities` | Port with OpenEB 5.2 adaptation | Only when option and device identity match | Cross-platform | Unguarded copy performs 64 vendor reads on standard IMX636 | Facility-lifecycle, coordinate and hardware mask tests |
-| `TzImx646` constructor mask loop | Apply 64 EEPROM masks | Existing constructor/facility creation | Same as IMX636 | Port with OpenEB 5.2 adaptation | Only when option and device identity match | Cross-platform | Unguarded copy performs 64 vendor reads on standard IMX646 | Facility-lifecycle, coordinate and hardware mask tests |
+| `TzImx636` constructor mask loop | Apply 64 EEPROM masks | Existing constructor/facility creation | Registered mask facility is created in `spawn_facilities` | Port with OpenEB 5.2 adaptation | Not present in Phase 1; only a future explicit CenturyArks device gate could permit it | Cross-platform | Unguarded copy performs 64 vendor reads on standard IMX636 | Facility-lifecycle, coordinate and hardware mask tests |
+| `TzImx646` constructor mask loop | Apply 64 EEPROM masks | Existing constructor/facility creation | Same as IMX636 | Port with OpenEB 5.2 adaptation | Not present in Phase 1; only a future explicit CenturyArks device gate could permit it | Cross-platform | Unguarded copy performs 64 vendor reads on standard IMX646 | Facility-lifecycle, coordinate and hardware mask tests |
 | `devices/others/CMakeLists.txt` | Move `i2c_eeprom.cpp` into hardware-layer object | Existing source ownership rule | Needed because the new caller is in the hardware-layer object | Port with OpenEB 5.2 adaptation | Conditional ownership only | Cross-platform | Avoid duplicate DSO symbols and default boundary changes | Link-map and duplicate-symbol audit |
-| `src/plugin/CMakeLists.txt` | Replace `psee_universal.cpp` | Existing plugin source wiring | Standard source and `HAS_V4L2` definition remain required | Port with OpenEB 5.2 adaptation | Add a separate source only when enabled | Preserve V4L2 branch | Never detach standard source | Configure/build both option states |
-| `silky_common.cpp` registration | Register `31f7:0002/0003/0004`, subclass `0x19`, integrator `CenturyArks` | New optional plugin source | Plugin API is unchanged and the custom-integrator overload already exists | Port as optional CenturyArks code | No plugin when option is off | Cross-platform | IDs remain exclusive to vendor plugin | Static ID audit, no-device load, hardware enumeration/open |
-| `silky_common.cpp` PSEE file discovery | Open RAW files through vendor plugin | Optional plugin source | Standard plugin already registers the same file discovery | Needs clarification or hardware evidence | Omit from first implementation | Cross-platform | Duplicate fallback order may change reported plugin identity | Synthetic/legacy CenturyArks RAW header tests |
+| `src/plugin/CMakeLists.txt` | Replace `psee_universal.cpp` | Existing plugin source wiring | Standard source and `HAS_V4L2` definition remain required | Port with OpenEB 5.2 adaptation | Add a distinct, always-built prepared-profile source without detaching the standard source | Existing V4L2 branch preserved; Linux build not run | Standard source remains byte-identical | Passed single-profile configure/build and source/link comparison |
+| `silky_common.cpp` registration | Register `31f7:0002/0003/0004`, subclass `0x19`, integrator `CenturyArks` | New side-by-side plugin source | Plugin API is unchanged and the custom-integrator overload already exists | Port with OpenEB 5.2 adaptation | Always built in the prepared profile; behavior remains restricted to the three registered IDs | Structurally cross-platform; Linux build not run | IDs remain exclusive to vendor plugin | Passed static/object-code audit, loader probe and PID `0003` enumeration/open/reopen |
+| `silky_common.cpp` PSEE file discovery | Open RAW files through vendor plugin | Side-by-side plugin source | Standard plugin already registers the same file discovery | Needs clarification or hardware evidence | Omitted from Phase 1 | Cross-platform | Duplicate fallback order may change reported plugin identity | Synthetic/legacy CenturyArks RAW header tests |
 | `licensing/LICENSE_OPEN` | Apache-2.0 license | Existing `openeb/licensing/LICENSE_OPEN` | File is byte-identical | Already present in OpenEB 5.2 | None | None | None | Preserve notices for imported vendor-derived source |
 
 ## 9. Device registration findings
@@ -231,15 +258,17 @@ metavision_psee_hw_layer_obj
 
 It renames the standard hardware-layer dylib, removes `hal_plugin_prophesee` from the plugin list, embeds hardware-layer object files directly into the vendor plugin, and also links the renamed hardware-layer dylib. This risks duplicated symbols and breaks the standard target/export identity.
 
-The required optional topology is instead:
+The implemented Phase 1 topology is instead:
 
 ```text
 metavision_psee_hw_layer          shared, existing target
   <- hal_plugin_prophesee         existing and unchanged
-  <- hal_plugin_centuryarks       optional, side by side
+  <- hal_plugin_centuryarks       always built, side by side
 ```
 
-The current Apple RPATH loop can apply the existing `@loader_path` and prefix-relative RPATH to both plugins when the optional target is added to the same target list. No hardware-layer rename or duplicate dylib is required.
+The existing plugin loop applies the current `@loader_path` and prefix-relative Apple RPATH to both plugins because both targets are in the same target list. The installed audit confirmed the required RPATH entries. No hardware-layer rename or duplicate dylib was created.
+
+The build produced one `metavision_psee_hw_layer_obj` target with 55 object files, owned by the existing shared `metavision_psee_hw_layer`. Neither plugin DSO directly embeds those objects. The existing `metavision_active_pixel_detection` sample can reuse the already produced target outputs; that consumer does not create a second hardware-layer object target or compile a second set of the 55 objects.
 
 ## 12. Platform-specific content
 
@@ -280,10 +309,15 @@ OpenEB 5.2.0 commit 9003b5416676e78ba994d912087486cfa94fae73,
 plus the repository's current Apple RPATH patch
 
 Validated CenturyArks build target:
-Not yet performed
+OpenEB 5.2.0 prepared source on macOS arm64: configure, bootstrap build,
+full build and repository-local install passed
 
 Validated CenturyArks hardware:
-Not yet performed
+PID 0003 / IMX636: enumeration, open, `--system` and reopen passed;
+serial SHA-256 prefix `cb823604ea92`; observed system release `3.9.0`
+
+Unvalidated CenturyArks hardware and behavior:
+PIDs 0002 and 0004, live event delivery, EEPROM, pixel masks and facilities
 ```
 
 The exact blob comparison supports a focused 5.2.0 port. It does not establish compatibility with every OpenEB 5.x release, and no 5.3.x source was audited. A future implementation should reject versions other than the specifically audited target until a new source audit is completed.
@@ -305,10 +339,10 @@ The exact blob comparison supports a focused 5.2.0 port. It does not establish c
 
 **Can the standard Prophesee plugin remain enabled?** Yes. The live USB IDs are currently disjoint. A separate CenturyArks plugin can exclusively own `31f7:0002/0003/0004` while the standard plugin remains unchanged.
 
-**Can CenturyArks support be default OFF?** Yes. The plugin target, registration source, shared-layer compile definitions, EEPROM source ownership and optional Linux rule must all be guarded by a default-OFF option.
+**Can CenturyArks support be default OFF?** A default-OFF design was technically feasible in the original 2C-A analysis. The current fork deliberately does not use that design: the prepared CenturyArks profile always builds both plugins and exposes no CenturyArks feature option. Device behavior is still limited by the CenturyArks plugin's exclusive VID/PID registrations, while canonical tracked `openeb/` remains unchanged.
 
-**Can the integration be compiled without hardware?** Yes. Configure, build, install, target ownership, symbols, plugin loading, RPATH, static registration and non-hardware tests can all be executed without a camera.
+**Can the integration be compiled without hardware?** Yes, and this was demonstrated before camera use: configure, bootstrap/full build, install, target ownership, symbols, plugin loading, RPATH, static registration and the RAW/HDF5 regressions all passed independently of the physical camera acceptance.
 
-**What remains impossible to validate without a camera?** Actual USB enumeration and open, PID/model mapping, EEPROM transactions, mask decoding and physical effect, firmware/system identity, live event streaming, facilities, parameter changes, shutdown and reconnect.
+**What remains impossible to validate without a camera?** USB enumeration/open and runtime system identity require hardware; these passed for one PID `0003` IMX636 instance, including a normal-exit reopen smoke. PIDs `0002` and `0004`, live event delivery, EEPROM transactions, mask decoding and physical effect, facilities, parameter changes and unplug/replug behavior remain unvalidated.
 
 The implementation architecture and stop conditions are defined in [`centuryarks_openeb_5_2_integration_plan.md`](centuryarks_openeb_5_2_integration_plan.md).

@@ -53,14 +53,17 @@ cmake --build build -- -j$(nproc)
 
 macOS 支持目前正在开发中，尚未达到正式发布状态。以上构建和运行说明仍是当前的 Linux 工作流。
 
+OpenEB 5.2 CenturyArks 并列插件已在 macOS arm64 上完成构建，并使用一台 PID `0003` 相机验证了枚举、打开和重新打开。实时事件流和完整相机生命周期验证仍在进行中。
+
 - [仓库工作流与协作规则](AGENTS.md)
 - [macOS 移植路线](docs/macos_porting_plan.md)
 - [OpenEB 版本隔离规范](docs/openeb_version_isolation.md)
 - [OpenEB 5.2 macOS 构建审计](docs/openeb_5_2_macos_build_audit.md)
 - [HDF5 ECF 依赖恢复](docs/hdf5_ecf_dependency_recovery.md)
 - [OpenEB 5.2 macOS 构建命令草案](docs/openeb_5_2_macos_build_command_draft.md)
-- [CenturyArks OpenEB 5.x 源码审计](docs/centuryarks_openeb_5x_source_audit.md) — 仅设计/审计，尚未实施集成
-- [CenturyArks OpenEB 5.2 集成计划](docs/centuryarks_openeb_5_2_integration_plan.md) — 仅设计/审计，尚未实施集成
+- [CenturyArks OpenEB 5.x 源码审计](docs/centuryarks_openeb_5x_source_audit.md) — 来源、许可证和 hunk 级审计
+- [CenturyArks OpenEB 5.2 集成计划](docs/centuryarks_openeb_5_2_integration_plan.md) — 并列插件架构和验证边界
+- [CenturyArks OpenEB 5.2 overlay 构建记录](docs/centuryarks_openeb_5_2_overlay_build.md) — Phase 1 构建和有限硬件验证记录
 - [仓库内工作区与磁盘使用规范](docs/local_workspace_policy.md)
 - [Linux 功能基线](docs/linux_baseline_inventory.md)
 - [Linux/macOS 平台对齐矩阵](docs/platform_parity_matrix.md)
