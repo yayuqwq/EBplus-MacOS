@@ -51,14 +51,17 @@ That's it. The launcher handles Wayland compatibility, HAL plugin paths, and Ope
 
 macOS support is under active development and is not yet a released platform. The build and run instructions above remain the current Linux workflow.
 
+The OpenEB 5.2 side-by-side CenturyArks plugin has been built and validated for enumeration/open/reopen with one PID `0003` camera on macOS arm64. Live event streaming and full camera lifecycle validation remain in progress.
+
 - [Repository workflow and contribution rules](AGENTS.md)
 - [macOS porting plan](docs/macos_porting_plan.md)
 - [OpenEB version isolation](docs/openeb_version_isolation.md)
 - [OpenEB 5.2 macOS build audit](docs/openeb_5_2_macos_build_audit.md)
 - [HDF5 ECF dependency recovery](docs/hdf5_ecf_dependency_recovery.md)
 - [OpenEB 5.2 macOS build command draft](docs/openeb_5_2_macos_build_command_draft.md)
-- [CenturyArks OpenEB 5.x source audit](docs/centuryarks_openeb_5x_source_audit.md) — design/audit only; integration not yet implemented
-- [CenturyArks OpenEB 5.2 integration plan](docs/centuryarks_openeb_5_2_integration_plan.md) — design/audit only; integration not yet implemented
+- [CenturyArks OpenEB 5.x source audit](docs/centuryarks_openeb_5x_source_audit.md) — source, licensing, and hunk-level audit
+- [CenturyArks OpenEB 5.2 integration plan](docs/centuryarks_openeb_5_2_integration_plan.md) — side-by-side plugin architecture and validation boundaries
+- [CenturyArks OpenEB 5.2 overlay build](docs/centuryarks_openeb_5_2_overlay_build.md) — Phase 1 build and limited hardware validation record
 - [Repository-local workspace and storage policy](docs/local_workspace_policy.md)
 - [Linux feature baseline](docs/linux_baseline_inventory.md)
 - [Linux/macOS platform parity matrix](docs/platform_parity_matrix.md)
