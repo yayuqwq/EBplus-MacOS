@@ -129,10 +129,14 @@ C++17
 **Milestone 2A 分支：** `build/macos-openeb-5.2-audit`
 **Milestone 2B prerequisite：** `Complete`
 **Milestone 2B prerequisite 分支：** `build/macos-openeb-5.2-hdf5-dependency`
+**Milestone 2B：** `Complete`
 **Milestone 2B base build：** `Complete`
 **Milestone 2B RPATH portability：** `Complete`
 **Milestone 2B 分支：** `build/macos-openeb-5.2-isolation`
-**Milestone 2C CenturyArks integration：** `Not started`
+**Milestone 2C source audit/design：** `Complete`
+**Milestone 2C 审计分支：** `audit/centuryarks-openeb-5x-integration`
+**Milestone 2C implementation/build：** `Not started`
+**Milestone 2C real-camera validation：** `Pending hardware`
 
 **Milestone 2A 输出**
 
@@ -142,6 +146,11 @@ C++17
 **Milestone 2B validation 输出**
 
 - [`openeb_5_2_macos_build_validation.md`](openeb_5_2_macos_build_validation.md)：base build、Apple-only RPATH 修复、RAW/HDF5、discovery smoke、动态链接和剩余范围记录。
+
+**Milestone 2C source audit/design 输出**
+
+- [`centuryarks_openeb_5x_source_audit.md`](centuryarks_openeb_5x_source_audit.md)：CenturyArks 包身份、许可证、5.1.1/5.2.0 逐文件及逐 hunk 映射；仅审计，尚未集成。
+- [`centuryarks_openeb_5_2_integration_plan.md`](centuryarks_openeb_5_2_integration_plan.md)：默认关闭的可选插件、ignored source copy、标准插件共存和后续 build/hardware 验收计划；尚未实施。
 
 **Milestone 2A 完成标准**
 
@@ -158,7 +167,7 @@ C++17
 
 HDF5 ECF source prerequisite 已恢复。当前分支已完成 primary profile 的 macOS arm64 configure、bootstrap/full build、repository-local install，以及无 `DYLD_LIBRARY_PATH` 的三项 CLI、RAW、HDF5 ECF 和无设备 discovery smoke。Apple-only target-specific `INSTALL_RPATH` 修复已通过独立 build/install tree 验证，未发现稳定 5.1.1 runtime 污染。
 
-这些结果仍未完成整个 Milestone 2：当前没有真实相机，device open、live stream、facility、参数、shutdown 和 reconnect 均未验证；CenturyArks/SilkyEvCam 源码未使用，其 5.2 集成保留到 Milestone 2C。Linux 条件路径经静态审核保持不变，但 Linux build/runtime regression 尚未执行。
+这些结果仍未完成整个 Milestone 2：当前没有真实相机，device open、live stream、facility、参数、shutdown 和 reconnect 均未验证。CenturyArks/SilkyEvCam 外部源码已完成只读来源、许可证和 5.1.1/5.2.0 hunk 映射审计，但尚未导入、修改或编译；implementation/build 与真实相机验收继续保留在 Milestone 2C。Linux 条件路径经静态审核保持不变，但 Linux build/runtime regression 尚未执行。
 
 **范围**
 
