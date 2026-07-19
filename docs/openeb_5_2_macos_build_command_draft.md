@@ -1,10 +1,10 @@
 # OpenEB 5.2.0 macOS build command draft
 
-> **Status: Dependency prerequisite resolved; configure not yet executed**
+> **Status: Primary profile validated; RPATH portability verified for the three required CLI targets**
 >
-> The root repository now declares the complete `hdf5_ecf` submodule path and the current worktree is checked out at the pinned gitlink commit. These commands remain candidates only: the dependency-recovery milestone did not authorize or execute configure, build or install. Re-run every Git, dependency and disk preflight and obtain separate build-stage authorization before executing them.
+> The root repository declares the complete pinned `hdf5_ecf` submodule. The primary `Release`/arm64 profile has completed configure, bootstrap/full build, repository-local install, no-DYLD validation of the three required CLI targets, RAW/HDF5 regression, and an Apple-only target-specific RPATH rebuild. Every future execution must still use an empty approved output path, repeat Git/dependency/disk preflight, and obtain the authorization required for that operation.
 
-These are candidate Milestone 2B commands only. They were not executed during Milestone 2A or the dependency-recovery milestone.
+These commands now reflect the locally validated Milestone 2B sequence. The preserved baseline and separate `-rpath` validation directories were used only to compare the original install with the CMake fix; normal future runs should not create duplicate trees unless a comparison explicitly requires them.
 
 The primary profile below preserves the current Milestone 2 requirement for built-in OpenEB CLI validation. Because OpenEB has no fine-grained CLI switch, this requires `BUILD_SAMPLES=ON` and the `ui` module in addition to `base`, `core`, and `stream`.
 
@@ -192,7 +192,7 @@ CMake will create the single approved build tree. Installation must remain insid
 
 ## Configure
 
-> **Candidate only. The dependency prerequisite is resolved, but configure, build and install were not executed or authorized in the dependency-recovery milestone. Re-run all preflight checks and obtain separate authorization before executing this section.**
+> **Validated profile. Re-run all preflight checks, require an empty build/install path, and obtain separate authorization before executing it again.**
 
 Primary M2B CLI-validation profile:
 
@@ -337,15 +337,24 @@ fi
 
 ISOLATED_ENV=(
   env
+  -u DYLD_LIBRARY_PATH
+  -u DYLD_FALLBACK_LIBRARY_PATH
   HOME="$OPENEB_HOME"
   TMPDIR="$OPENEB_TMP/tmp"
   PATH="$OPENEB_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-  DYLD_LIBRARY_PATH="$OPENEB_PREFIX/lib"
   MV_HAL_PLUGIN_PATH="$OPENEB_PLUGIN_PATH"
   MV_HAL_PLUGIN_SEARCH_MODE=PLUGIN_PATH_ONLY
   HDF5_PLUGIN_PATH="$OPENEB_HDF5_PLUGIN_PATH"
 )
+
+if "${ISOLATED_ENV[@]}" env | grep -qE \
+  '^DYLD_(LIBRARY_PATH|FALLBACK_LIBRARY_PATH)='; then
+  echo "Unexpected DYLD override in isolated environment" >&2
+  exit 1
+fi
 ```
+
+The Apple install-RPATH patch is expected to make these commands work without either DYLD override. Reintroducing `DYLD_LIBRARY_PATH` would bypass the portability gate and is not an acceptable substitute for the CMake fix.
 
 Version and software identity:
 
@@ -381,6 +390,13 @@ fi
 "${ISOLATED_ENV[@]}" \
   "$OPENEB_PREFIX/bin/metavision_file_info" \
   --input-event-file "$HDF5_OUTPUT"
+
+env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+  HOME="$OPENEB_HOME" \
+  TMPDIR="$OPENEB_TMP/tmp" \
+  PATH="$OPENEB_DEPENDENCY_PREFIX/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  HDF5_PLUGIN_PATH="$OPENEB_HDF5_PLUGIN_PATH" \
+  h5dump -d /CD/events -s 0 -c 1 "$HDF5_OUTPUT"
 ```
 
 Live-camera validation, only when the target camera and external-write policy have been reviewed:
@@ -393,7 +409,7 @@ Live-camera validation, only when the target camera and external-write policy ha
   "$OPENEB_PREFIX/bin/metavision_platform_info" --system
 ```
 
-These two commands cover device enumeration, open and reported device/system information only. They do **not** validate a live event stream, facility access, parameter changes, clean shutdown or reconnect. Select and review a separate hardware command or test for those behaviors before executing it or claiming live-camera validation. CenturyArks devices with VID `31f7` require the separately reviewed 5.2 vendor-port decision before a successful result can be expected.
+These two commands are discovery/loading smoke checks. With no camera connected, the validated run returned `No Device Found`/an empty systems list with exit code zero. They do **not** validate device open, a live event stream, facility access, parameter changes, clean shutdown or reconnect. Select and review a separate hardware command or test for those behaviors before claiming live-camera validation. CenturyArks devices with VID `31f7` remain a separate Milestone 2C decision.
 
 ## Verify stable 5.1.1 remains default
 
@@ -415,24 +431,32 @@ The ordinary terminal must continue to resolve the stable 5.1.1 environment. Do 
 
 ```bash
 otool -L "$OPENEB_PREFIX/bin/metavision_platform_info"
+otool -l "$OPENEB_PREFIX/bin/metavision_platform_info"
 otool -L "$OPENEB_PREFIX/bin/metavision_file_info"
+otool -l "$OPENEB_PREFIX/bin/metavision_file_info"
 otool -L "$OPENEB_PREFIX/bin/metavision_file_to_hdf5"
+otool -l "$OPENEB_PREFIX/bin/metavision_file_to_hdf5"
 otool -L "$OPENEB_HDF5_PLUGIN_PATH/libH5Zecf.dylib"
+otool -l "$OPENEB_HDF5_PLUGIN_PATH/libH5Zecf.dylib"
 
 find "$OPENEB_PREFIX/lib" \
   -maxdepth 1 \
   -name 'libmetavision*.dylib' \
   -type f \
-  -exec otool -L {} \;
+  -exec otool -L {} \; \
+  -exec otool -l {} \;
 
 find "$OPENEB_PLUGIN_PATH" \
   -maxdepth 1 \
   -name '*.dylib' \
   -type f \
-  -exec otool -L {} \;
+  -exec otool -L {} \; \
+  -exec otool -l {} \;
 ```
 
-Verify all Metavision libraries and plugins resolve to the repository-local 5.2 prefix or controlled `@rpath`/`@loader_path`, never to the stable 5.1.1 installation.
+Verify the three required CLI targets contain `@executable_path/../lib`; SDK/HAL dylibs in `$prefix/lib` contain `@loader_path`; the Prophesee plugin retains `@loader_path` and adds `@loader_path/../../..`; its hardware layer contains `@loader_path/../../..`; and the HDF5 ECF plugin contains `@loader_path/../..`. No runtime path may point to the build tree, the current repository absolute path, or stable 5.1.1 libraries/plugins.
+
+The primary profile installs additional sample executables. The validated minimal patch covers the three required CLI targets only; do not claim that every installed sample executable has been made independently portable.
 
 ## Disk report
 

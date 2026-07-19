@@ -10,6 +10,13 @@
 add_executable(metavision_file_info metavision_file_info.cpp)
 target_link_libraries(metavision_file_info PRIVATE MetavisionSDK::stream Boost::program_options Threads::Threads)
 
+if(APPLE)
+    # Keep the installed CLI relocatable while resolving the SDK from the sibling lib directory.
+    set_property(TARGET metavision_file_info APPEND PROPERTY
+        INSTALL_RPATH "@executable_path/../lib"
+    )
+endif()
+
 install(TARGETS metavision_file_info
         RUNTIME DESTINATION bin
         COMPONENT metavision-sdk-stream-bin

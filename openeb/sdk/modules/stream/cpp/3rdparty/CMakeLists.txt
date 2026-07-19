@@ -7,6 +7,13 @@ if(HDF5_FOUND)
     endif(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/hdf5_ecf/CMakeLists.txt")
     add_subdirectory(hdf5_ecf)
 
+    if(APPLE)
+        # The HDF5 plugin is two levels below lib and must resolve the repository-local ECF codec.
+        set_property(TARGET hdf5_ecf_plugin APPEND PROPERTY
+            INSTALL_RPATH "@loader_path/../.."
+        )
+    endif()
+
     # Note that we don't simply append the HDF5 ECF packages to the all/public components of cpack,
     # this would generate the DEB packages with wrong versions (the one from Metavision instead of the one from ECF)
     # this should be simplified once cmake supports CPACK_DEBIAN_<COMPONENT>_PACKAGE_VERSION so that we can set

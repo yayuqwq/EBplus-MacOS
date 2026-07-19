@@ -12,6 +12,13 @@ target_compile_definitions(metavision_file_to_hdf5 PRIVATE ${HDF5_DEFINITIONS} $
 target_include_directories(metavision_file_to_hdf5 PRIVATE ${HDF5_INCLUDE_DIRS})
 target_link_libraries(metavision_file_to_hdf5 PRIVATE MetavisionSDK::core MetavisionSDK::stream Boost::program_options ${HDF5_LIBRARIES})
 
+if(APPLE)
+    # Keep the installed CLI relocatable while resolving the SDK from the sibling lib directory.
+    set_property(TARGET metavision_file_to_hdf5 APPEND PROPERTY
+        INSTALL_RPATH "@executable_path/../lib"
+    )
+endif()
+
 install(TARGETS metavision_file_to_hdf5
         RUNTIME DESTINATION bin
         COMPONENT metavision-sdk-stream-bin

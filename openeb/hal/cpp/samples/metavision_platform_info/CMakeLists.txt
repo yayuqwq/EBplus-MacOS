@@ -10,6 +10,13 @@
 add_executable(metavision_platform_info metavision_platform_info.cpp)
 target_link_libraries(metavision_platform_info PRIVATE MetavisionSDK::base metavision_hal metavision_hal_discovery Boost::program_options)
 
+if(APPLE)
+    # Keep the installed CLI relocatable while resolving the SDK from the sibling lib directory.
+    set_property(TARGET metavision_platform_info APPEND PROPERTY
+        INSTALL_RPATH "@executable_path/../lib"
+    )
+endif()
+
 install(TARGETS metavision_platform_info
         RUNTIME DESTINATION bin
         COMPONENT metavision-hal-bin

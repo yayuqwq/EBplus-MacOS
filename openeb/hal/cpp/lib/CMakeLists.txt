@@ -84,6 +84,12 @@ foreach(targ metavision_hal metavision_hal_discovery)
             SOVERSION ${PROJECT_VERSION_MAJOR}
             EXPORT_NAME ${exp_name}
     )
+    if(APPLE)
+        # Installed HAL dylibs resolve SDK and HAL dependencies from the same lib directory.
+        set_property(TARGET ${targ} APPEND PROPERTY
+            INSTALL_RPATH "@loader_path"
+        )
+    endif()
 
     # Install target
     install(TARGETS ${targ}

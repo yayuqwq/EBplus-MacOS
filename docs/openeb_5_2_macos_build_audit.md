@@ -386,3 +386,58 @@ Fresh-clone submodule configuration was statically validated from the root mappi
 That static cross-check was performed in the dependency-recovery worktree before commit. The same recovery revision now tracks the root mapping, but fresh-clone behavior remains unexecuted and must not be reported as an actual clone test.
 
 Configure and build readiness remain unproven. This recovery did not run CMake configure, build or install, and it did not validate current CMake/Boost/OpenCV/Protobuf/HDF5 compatibility, ECF codec/plugin integration, HAL/plugin behavior, RAW/HDF5 I/O, CLI, live camera or CenturyArks support. The next build stage still requires renewed Git/dependency/disk preflight and separate user authorization.
+
+## 13. Post-audit Milestone 2B build and RPATH validation
+
+This section records later execution evidence without rewriting the original Milestone 2A snapshot or its historical go/no-go decision.
+
+### Base build result
+
+On branch `build/macos-openeb-5.2-isolation`, the primary `Release`/arm64 profile successfully completed:
+
+- CMake configure and generate with modules `base;core;stream;ui`, samples and Protobuf enabled, HDF5 enabled, and tests/Python/docs/coverage/LFS downloads disabled.
+- Bootstrap build of `hal_plugins`, `metavision_platform_info`, `metavision_file_info`, and `metavision_file_to_hdf5`.
+- Full configured-profile build.
+- Installation to a repository-local prefix without `sudo`.
+- OpenEB 5.2 CLI identity, RAW parsing, HDF5 conversion, and HDF5 readback.
+
+The stable OpenEB 5.1.1 installation was not selected by CMake or by actual compile/link artifacts. The artifact-specific isolation gate found no `/usr/local/include/metavision`, `/usr/local/lib/libmetavision*`, `/usr/local/lib/cmake/Metavision*`, or stable HAL plugin path in target inputs or runtime dependencies.
+
+### Baseline install portability finding
+
+The first successful installation required a process-local `DYLD_LIBRARY_PATH` because its installed CLI and root SDK/HAL dylibs had no `LC_RPATH`. Install names were already correct `@rpath/...` names. CMake generated absolute RPATH entries for build products and removed them during install, but target `INSTALL_RPATH` values were empty and therefore supplied no relative install-tree replacement.
+
+The standard Prophesee plugin had only `@loader_path`, sufficient for its same-directory hardware-layer dylib but insufficient for SDK/HAL libraries in `$prefix/lib`. The HDF5 ECF plugin likewise needed a relative path to the codec installed in `$prefix/lib`.
+
+### Apple-only fix and validation
+
+A minimal tracked CMake patch now appends Apple-only target `INSTALL_RPATH` values:
+
+```text
+Required CLI:              @executable_path/../lib
+SDK and HAL dylibs:        @loader_path
+Prophesee plugin:          @loader_path;@loader_path/../../..
+PSEE hardware layer:       @loader_path/../../..
+HDF5 ECF plugin:           @loader_path/../..
+```
+
+The HDF5 property is applied by the tracked parent CMake file; the pinned `hdf5_ecf` submodule remains unchanged. The patch does not change install names, install destinations, build-tree RPATH, plugin discovery, or dependency discovery. Every new branch is guarded by `APPLE`; the existing non-Apple `${ORIGIN}` plugin behavior remains unchanged.
+
+The fix was rebuilt in a separate repository-local validation tree to preserve the successful baseline. Configure, bootstrap build, full build, and install all passed again. The new install contained the same 506 files, the same 23 Mach-O relative paths, and the same dylib install names as the baseline.
+
+With both `DYLD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` absent:
+
+- `metavision_platform_info --software` reported `5.2.0` and exited successfully.
+- RAW validation reported EVT2, `95,871 us`, and `521,252` CD events.
+- HDF5 write/readback reported matching duration and event count.
+- Homebrew `h5dump`, using the repository HDF5 plugin path, decoded `/CD/events` successfully.
+- `metavision_platform_info --short` returned `No Device Found` with exit code zero.
+- `metavision_platform_info --system` reached discovery and returned an empty systems list with exit code zero.
+
+The final `otool` audit found no stable 5.1.1 runtime dependency, build-tree RPATH, or repository absolute runtime path. Detailed evidence is recorded in [`openeb_5_2_macos_build_validation.md`](openeb_5_2_macos_build_validation.md).
+
+### Remaining scope
+
+The three explicitly required CLI targets are portable without DYLD overrides. Ten other installed sample executables were not broadened by this minimal target-specific patch and must not be described as fixed.
+
+No camera was connected. Discovery loading is validated, but device open, live stream, facilities, parameter changes, shutdown, reconnect, and real-camera behavior remain untested. CenturyArks/SilkyEvCam source was not read, copied, modified, or compiled and remains a separate Milestone 2C scope. Linux behavior is protected by `APPLE` conditions, but Linux configure/build/runtime regression was not executed.

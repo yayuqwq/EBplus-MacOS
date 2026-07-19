@@ -58,6 +58,13 @@ target_link_libraries(metavision_psee_hw_layer
         metavision_hal
 )
 
+if(APPLE)
+    # The installed hardware layer is nested three levels below the repository-local lib directory.
+    set_property(TARGET metavision_psee_hw_layer APPEND PROPERTY
+        INSTALL_RPATH "@loader_path/../../.."
+    )
+endif()
+
 install(TARGETS metavision_psee_hw_layer
     EXPORT MetavisionPSEEHWLayerTargets
     RUNTIME
@@ -222,7 +229,10 @@ foreach(plugin ${plugin_list})
     get_target_property(plugin_rpath ${plugin} "INSTALL_RPATH")
 
     if(APPLE)
-        set_target_properties(${plugin} PROPERTIES "INSTALL_RPATH" "@loader_path;${plugin_rpath}")
+        set_property(TARGET ${plugin} APPEND PROPERTY INSTALL_RPATH
+            "@loader_path"
+            "@loader_path/../../.."
+        )
         set_target_properties(${plugin} PROPERTIES "BUILD_RPATH" "@loader_path")
     else ()
         # It seems cmake does an additional variable substitution when replacing BUILD_RPATH with INSTALL_RPATH
