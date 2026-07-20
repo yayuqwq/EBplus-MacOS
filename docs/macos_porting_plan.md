@@ -124,7 +124,7 @@ C++17
 
 ### Milestone 2: Isolated OpenEB 5.2.0 on macOS
 
-**状态：** `In progress`
+**状态：** `Complete`
 **Milestone 2A：** `Complete`
 **Milestone 2A 分支：** `build/macos-openeb-5.2-audit`
 **Milestone 2B prerequisite：** `Complete`
@@ -137,10 +137,11 @@ C++17
 **Milestone 2C 审计分支：** `audit/centuryarks-openeb-5x-integration`
 **Milestone 2C implementation/build：** `Complete`
 **Milestone 2C Phase 1 side-by-side plugin：** `Complete`
-**Milestone 2C OpenEB 5.2 PID 0003 enumeration/open：** `Verified`
+**Milestone 2C bounded live-event validation：** `Complete`
+**Milestone 2C PID 0003 enumeration/open/reopen：** `Verified`
+**Milestone 2C PID 0003 bounded live CD event delivery：** `Verified`
 **Milestone 2C PID 0002 hardware：** `Not tested`
 **Milestone 2C PID 0004 hardware：** `Not tested`
-**Milestone 2C live event stream：** `Not tested`
 
 **Milestone 2A 输出**
 
@@ -156,6 +157,7 @@ C++17
 - [`centuryarks_openeb_5x_source_audit.md`](centuryarks_openeb_5x_source_audit.md)：CenturyArks 包身份、许可证、5.1.1/5.2.0 逐文件及逐 hunk 映射，以及 Phase 1 适用范围。
 - [`centuryarks_openeb_5_2_integration_plan.md`](centuryarks_openeb_5_2_integration_plan.md)：Architecture B ignored source copy、始终构建的并列 CenturyArks/Prophesee plugins、单一 profile 和分阶段验收边界。
 - [`centuryarks_openeb_5_2_overlay_build.md`](centuryarks_openeb_5_2_overlay_build.md)：prepared source、configure/build/install、动态链接、文件回归和单台 `31f7:0003` 相机 enumeration/open/reopen 的 Phase 1 本地验证记录。
+- [`centuryarks_openeb_5_2_live_event_validation.md`](centuryarks_openeb_5_2_live_event_validation.md)：项目自有 bounded headless probe、显式 runtime selector、两次 CD event delivery/start/stop 和运行前后只读系统字段对比。
 
 **Milestone 2A 完成标准**
 
@@ -174,7 +176,11 @@ HDF5 ECF source prerequisite 已恢复。Milestone 2B/OpenEB 5.2 primary profile
 
 Milestone 2C Phase 1 已在 ignored prepared source 中完成始终构建的 `hal_plugin_prophesee` 与 `hal_plugin_centuryarks` 并列 topology；canonical tracked `openeb/` 保持不变。单一 OpenEB 5.2 macOS arm64 profile 的 configure、bootstrap/full build 和 repository-local install 已通过；两个 plugin、共享 `metavision_psee_hw_layer`、object ownership、registration、Apple RPATH 和 5.1.1 contamination 审核已通过。三个基础 CLI 以及 RAW/HDF5 回归均在无 `DYLD_*` 环境下通过。
 
-一台 `31f7:0003` CenturyArks 相机已在新的 OpenEB 5.2 prefix 中通过 `--short`、`--system` 和正常退出后的单进程 reopen，设备由 `hal_plugin_centuryarks` 打开并报告 CenturyArks integrator。`31f7:0002` 与 `31f7:0004` 仅按供应源码注册，尚无硬件验证。EEPROM、pixel mask、facility、参数修改、live event stream、RAW recording、GUI、物理 reconnect 和 Linux configure/build/runtime 均未验证，因此 Milestone 2 仍为 `In progress`，且不得据此宣称完整 CenturyArks 相机支持。
+一台 `31f7:0003` CenturyArks 相机已在新的 OpenEB 5.2 prefix 中通过 `--short`、`--system` 和正常退出后的单进程 reopen，设备由 `hal_plugin_centuryarks` 打开并报告 CenturyArks integrator。项目自有 headless probe 随后使用显式 runtime selector 完成一次 5 秒和一次 3 秒 bounded live CD event smoke；两次均收到事件、正常 start/stop、无 runtime error，并在运行前后保持可见系统配置字段不变。`31f7:0002` 与 `31f7:0004` 仅按供应源码注册，尚无硬件验证。
+
+Milestone 2 的 `Complete` 结论仅覆盖：隔离的 OpenEB 5.2 build/install、CLI 与 RAW/HDF5 regression、CenturyArks side-by-side plugin、单台 PID `0003` enumeration/open/reopen，以及 bounded CD event delivery。
+
+EBplus GUI live display、facility 和参数 parity、物理 disconnect/reconnect、多相机 operation、EEPROM/pixel masks、PID `0002`/`0004` 硬件以及 Linux runtime regression 不属于 Milestone 2 完成声明；这些能力继续进入 Milestone 3、Milestone 6 或明确 backlog。持续稳定性、事件正确性/图像质量和吞吐/性能同样未由本 milestone 验证，不得据此宣称完整 CenturyArks 相机支持。
 
 **范围**
 
