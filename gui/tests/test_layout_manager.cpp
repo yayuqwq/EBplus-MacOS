@@ -3,7 +3,7 @@
 //
 // Verifies that save() serializes the main-window geometry + dock state to a
 // JSON file, and that load() restores the dock layout into a fresh window.
-// Uses synthetic QMainWindow + QDockWidget instances and a temp file path.
+// Uses synthetic QMainWindow + QDockWidget instances and build-tree artifacts.
 
 #include <gtest/gtest.h>
 
@@ -16,18 +16,66 @@
 #include <QMainWindow>
 
 #include <filesystem>
+#include <stdexcept>
+#include <string>
+#include <system_error>
 
 #include "config/layout_manager.h"
 
 using gui::LayoutManager;
 
+#ifndef EBPLUS_GUI_TEST_ARTIFACT_DIR
+#error "EBPLUS_GUI_TEST_ARTIFACT_DIR must be defined"
+#endif
+
 namespace {
 
-QString temp_path() {
-    auto base = std::filesystem::temp_directory_path();
-    base /= "gui_test_layout.json";
-    return QString::fromStdString(base.string());
+std::string sanitize_component(const char* value) {
+    std::string sanitized;
+    for (const unsigned char ch : std::string(value)) {
+        const bool is_alphanumeric =
+            (ch >= 'a' && ch <= 'z') ||
+            (ch >= 'A' && ch <= 'Z') ||
+            (ch >= '0' && ch <= '9');
+        sanitized.push_back(is_alphanumeric ? static_cast<char>(ch) : '_');
+    }
+    return sanitized;
 }
+
+std::filesystem::path current_test_artifact_path(const std::string& prefix) {
+    const auto* info = ::testing::UnitTest::GetInstance()->current_test_info();
+    if (!info) {
+        throw std::logic_error("No active GoogleTest case");
+    }
+
+    const std::filesystem::path root(EBPLUS_GUI_TEST_ARTIFACT_DIR);
+    std::filesystem::create_directories(root);
+    const std::string filename =
+        sanitize_component(prefix.c_str()) + "_" +
+        sanitize_component(info->test_suite_name()) + "_" +
+        sanitize_component(info->name()) + ".json";
+    return root / filename;
+}
+
+class ScopedTestArtifact {
+public:
+    explicit ScopedTestArtifact(const std::string& prefix) :
+        path_(current_test_artifact_path(prefix)) {
+        std::filesystem::remove(path_);
+    }
+
+    ~ScopedTestArtifact() noexcept {
+        std::error_code error;
+        std::filesystem::remove(path_, error);
+    }
+
+    QString path() const {
+        return QString::fromStdString(path_.string());
+    }
+
+private:
+    std::filesystem::path path_;
+};
 
 // A main window with two named docks — restoreState() requires stable
 // objectNames so the serialized state can be matched back to widgets.
@@ -56,14 +104,14 @@ int main(int argc, char** argv) {
 }
 
 TEST(LayoutManager, SaveWritesGeometryAndState) {
+    ScopedTestArtifact artifact("layout");
+    const QString path = artifact.path();
+
     WindowWithDocks w;
     w.window.show();
 
     LayoutManager lm(&w.window);
     lm.capture_default();
-
-    const QString path = temp_path();
-    if (QFile::exists(path)) QFile::remove(path);
 
     ASSERT_TRUE(lm.save(path));
     ASSERT_TRUE(QFile::exists(path));
@@ -82,12 +130,11 @@ TEST(LayoutManager, SaveWritesGeometryAndState) {
               geometry);
     EXPECT_EQ(QByteArray::fromBase64(obj.value("state").toString().toLatin1()),
               state);
-
-    QFile::remove(path);
 }
 
 TEST(LayoutManager, LoadRestoresDockState) {
-    const QString path = temp_path();
+    ScopedTestArtifact artifact("layout");
+    const QString path = artifact.path();
 
     {
         WindowWithDocks src;
@@ -114,13 +161,12 @@ TEST(LayoutManager, LoadRestoresDockState) {
     // QMainWindow instances on the offscreen platform, so we verify a
     // functional property instead of comparing raw QByteArrays.)
     EXPECT_FALSE(dst.dock2.isVisible());
-
-    QFile::remove(path);
 }
 
 TEST(LayoutManager, SaveWithNullWindowFails) {
+    ScopedTestArtifact artifact("layout");
     LayoutManager lm(nullptr);
-    EXPECT_FALSE(lm.save(temp_path()));
+    EXPECT_FALSE(lm.save(artifact.path()));
 }
 
 TEST(LayoutManager, LoadNonexistentFileFails) {
