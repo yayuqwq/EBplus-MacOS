@@ -265,7 +265,7 @@ private:
         // Drop stale tracks.
         tracks_.erase(
             std::remove_if(tracks_.begin(), tracks_.end(),
-                           [kMaxMissed](const Particle& t) {
+                           [](const Particle& t) {
                                return t.missed > kMaxMissed;
                            }),
             tracks_.end());

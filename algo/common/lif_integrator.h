@@ -173,7 +173,7 @@ private:
     Metavision::timestamp tau_us_;
     double threshold_;
     double reset_value_;
-    Metavision::timestamp decay_step_us_;
+    [[maybe_unused]] Metavision::timestamp decay_step_us_;
     double initial_potential_percent_;
     double jump_after_firing_percent_;
     double initial_potential_;

@@ -211,7 +211,7 @@ EBplus GUI live display、facility 和参数 parity、物理 disconnect/reconnec
 
 ### Milestone 3: EBplus CMake configuration
 
-**状态：** `Planned`
+**状态：** `Complete — macOS arm64 validated; native Linux regression not run, risk accepted by maintainer.`
 **独立分支：** `build/macos-cmake-configuration`
 
 **范围**
@@ -228,14 +228,33 @@ EBplus GUI live display、facility 和参数 parity、物理 disconnect/reconnec
 - 检查 `CMakeCache.txt`，确认 Metavision/OpenEB 来自项目内 5.2.0 prefix，而不是 `/usr/local`。
 - 构建 EBplus，并用 `otool -L` 检查 Metavision、Qt、OpenCV 和模型运行时链接。
 - 验证 in-source build 会被明确阻止或文档化拒绝。
-- 在 Linux 执行对应 configure/build 回归，确认原有发现路径和目标不变。
+- 原计划在 Linux 执行对应 configure/build/CTest 回归，确认原有发现路径和目标不变。
 
 **完成标准**
 
 - macOS arm64 可从干净 build directory 重复 configure 和 build。
 - 所有依赖来源和运行时链接可解释、可覆盖且不依赖永久全局环境变量。
-- EBplus 明确链接项目隔离的 OpenEB 5.2.0，Linux 构建路径保持可用。
+- EBplus 明确链接项目隔离的 OpenEB 5.2.0；Linux 分支和默认值仅通过静态检查确认保留。
 - 构建产物、cache 和安装树均未提交。
+
+**完成证据**
+
+- fresh Release/arm64 configure 和 clean complete build 通过。
+- 16/16 test/diagnostic binaries 均为 non-fat arm64；9/9 GTest discovery targets 通过。
+- 完整 CTest 以并行度 2 运行，295/295 tests 通过且无 test artifact 残留。
+- repository-local OpenEB 5.2 header/library provenance 通过，未发现 5.1.1 污染。
+- repository-local install 通过；manifest 仅包含 `bin/gui_for_openeb`。
+- installed `LC_RPATH` 精确为 `@executable_path/../lib`。
+- 精确清理 canonical build/install trees 后，fresh configure/build/CTest/install 可重复通过。
+- 完整证据见 [Milestone 3 macOS CMake Configuration Validation](macos_milestone_3_validation.md)。
+
+**已接受的验证缺口**
+
+The originally planned native Linux configure/build/CTest regression was not
+executed. The maintainer accepted this remaining validation risk when closing
+M3. Linux-specific `$ORIGIN` install RPATH、ONNX search roots、default test
+behavior 和 launcher behavior 仅完成 source-level static inspection，不能据此
+声明 Linux runtime 已验证。
 
 ### Milestone 4: GUI launch
 
