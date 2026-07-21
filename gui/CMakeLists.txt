@@ -84,13 +84,19 @@ target_link_libraries(gui_core PUBLIC
     gui_algo
 )
 
-# Phase 2 panels include HAL facility headers directly
-# (metavision/hal/facilities/i_*.h). The HAL target is exported by the
-# MetavisionSDK CMake config as MetavisionSDK::hal; link it explicitly so
-# the include paths propagate even if gui_algo only links base/core/stream.
-if(TARGET MetavisionSDK::hal)
-    target_link_libraries(gui_core PUBLIC MetavisionSDK::hal)
+# Phase 2 public headers expose HAL facility types directly. Prefer the OpenEB
+# 5.2 target name while retaining compatibility with alternate Linux exports.
+if(TARGET Metavision::HAL)
+    set(_gui_hal_target Metavision::HAL)
+elseif(TARGET MetavisionSDK::hal)
+    set(_gui_hal_target MetavisionSDK::hal)
+else()
+    message(FATAL_ERROR
+        "The Metavision package does not export a supported HAL target "
+        "(Metavision::HAL or MetavisionSDK::hal).")
 endif()
+target_link_libraries(gui_core PUBLIC ${_gui_hal_target})
+unset(_gui_hal_target)
 
 # Main executable — entry point only; all logic lives in gui_core.
 add_executable(gui_for_openeb main.cpp)
@@ -105,10 +111,21 @@ target_sources(gui_for_openeb PRIVATE
 
 target_link_libraries(gui_for_openeb PRIVATE gui_core)
 
+if(APPLE)
+    set_target_properties(gui_for_openeb PROPERTIES
+        INSTALL_RPATH "@executable_path/../lib")
+elseif(UNIX AND NOT APPLE)
+    # Preserve the existing bin/../lib install layout intent on the final
+    # executable. The previous STATIC-library RPATH could not affect runtime.
+    set_target_properties(gui_for_openeb PROPERTIES
+        BUILD_RPATH_USE_ORIGIN TRUE
+        INSTALL_RPATH [[$ORIGIN/../lib]])
+endif()
+
 install(TARGETS gui_for_openeb RUNTIME DESTINATION bin)
 
 # --- Unit tests (design §3.11) ---------------------------------------------
 option(GUI_BUILD_TESTS "Build GUI unit tests" ON)
-if(GUI_BUILD_TESTS)
+if(BUILD_TESTING AND GUI_BUILD_TESTS)
     add_subdirectory(tests)
 endif()

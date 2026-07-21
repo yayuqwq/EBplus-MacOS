@@ -10,6 +10,10 @@ find_package(GTest REQUIRED)
 include(GoogleTest)
 
 set(GUI_TEST_COMPILE_OPTS -Wall -Wextra)
+set(
+    EBPLUS_GUI_TEST_ARTIFACT_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/artifacts"
+)
 
 # --- test_theme_tokens: header-only token contrast check (no gui_core link). ---
 add_executable(test_theme_tokens
@@ -22,7 +26,9 @@ target_link_libraries(test_theme_tokens PRIVATE
     GTest::Main
 )
 target_compile_options(test_theme_tokens PRIVATE ${GUI_TEST_COMPILE_OPTS})
-gtest_discover_tests(test_theme_tokens)
+gtest_discover_tests(test_theme_tokens
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
+)
 
 # --- test_algo_bridge: registry, idempotent find_or_create, flood guard. ---
 add_executable(test_algo_bridge
@@ -34,11 +40,16 @@ target_link_libraries(test_algo_bridge PRIVATE
     GTest::Main
 )
 target_compile_options(test_algo_bridge PRIVATE ${GUI_TEST_COMPILE_OPTS})
-gtest_discover_tests(test_algo_bridge)
+gtest_discover_tests(test_algo_bridge
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
+)
 
 # --- test_config_manager: algorithm-state serialization round-trip. ---
 add_executable(test_config_manager
     test_config_manager.cpp
+)
+target_compile_definitions(test_config_manager PRIVATE
+    EBPLUS_GUI_TEST_ARTIFACT_DIR="${EBPLUS_GUI_TEST_ARTIFACT_DIR}"
 )
 target_link_libraries(test_config_manager PRIVATE
     gui_core
@@ -46,7 +57,9 @@ target_link_libraries(test_config_manager PRIVATE
     GTest::Main
 )
 target_compile_options(test_config_manager PRIVATE ${GUI_TEST_COMPILE_OPTS})
-gtest_discover_tests(test_config_manager)
+gtest_discover_tests(test_config_manager
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
+)
 
 # --- test_layout_manager: layout save/load symmetry (needs QApplication). ---
 # Custom main() creates an offscreen QApplication before InitGoogleTest, so we
@@ -54,12 +67,16 @@ gtest_discover_tests(test_config_manager)
 add_executable(test_layout_manager
     test_layout_manager.cpp
 )
+target_compile_definitions(test_layout_manager PRIVATE
+    EBPLUS_GUI_TEST_ARTIFACT_DIR="${EBPLUS_GUI_TEST_ARTIFACT_DIR}"
+)
 target_link_libraries(test_layout_manager PRIVATE
     gui_core
     GTest::GTest
 )
 target_compile_options(test_layout_manager PRIVATE ${GUI_TEST_COMPILE_OPTS})
 gtest_discover_tests(test_layout_manager
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
 
@@ -73,5 +90,6 @@ target_link_libraries(test_display_strategy PRIVATE
 )
 target_compile_options(test_display_strategy PRIVATE ${GUI_TEST_COMPILE_OPTS})
 gtest_discover_tests(test_display_strategy
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
