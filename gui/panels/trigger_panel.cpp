@@ -186,7 +186,8 @@ void TriggerPanel::populate_trigger_in() {
     }
     tin_hint_->setText(tr("%1 channel(s) available.").arg(avail.size()));
 
-    for (const auto& [ch, id] : avail) {
+    for (const auto& entry : avail) {
+        const auto ch = entry.first;
         const int key = static_cast<int>(ch);
         auto* cb = new QCheckBox(channel_label(ch), tin_group_);
         try { cb->setChecked(tin->is_enabled(ch)); } catch (...) {}

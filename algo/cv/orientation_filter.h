@@ -103,7 +103,6 @@ public:
             const int bdx = kBaseDx[ori];
             const int bdy = kBaseDy[ori];
             std::array<Metavision::timestamp, kRfSize> dts{};
-            int count = 0;
             for (int s = -kRfLength; s <= kRfLength; ++s) {
                 if (s == 0) continue;
                 const int idx = (s + kRfLength) - (s > 0 ? 1 : 0); // compact index
@@ -119,7 +118,6 @@ public:
                     continue;
                 }
                 dts[idx < kRfSize ? idx : 0] = e.t - lt;
-                ++count;
             }
 
             if (use_average_dt_) {
