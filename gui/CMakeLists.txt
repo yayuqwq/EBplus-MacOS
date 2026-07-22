@@ -10,6 +10,7 @@ set(GUI_LIB_SOURCES
     app/frame_pipeline.cpp
     app/icon_provider.cpp
     app/statistics_controller.cpp
+    app/startup_environment.cpp
     app/theme_controller.cpp
     algo_bridge/algo_bridge.cpp
     algo_bridge/backends/cv_backends.cpp
