@@ -258,8 +258,17 @@ behavior 和 launcher behavior 仅完成 source-level static inspection，不能
 
 ### Milestone 4: GUI launch
 
-**状态：** `Planned`
+**状态：** Complete — macOS Apple Silicon idle Cocoa launch, interaction,
+resize, theme persistence, and clean shutdown validated; native Linux
+compilation and Linux GUI launch regression were not run, with the residual
+risk explicitly accepted by the maintainer on 2026-07-22.
 **独立分支：** `feat/macos-gui-launch`
+
+- **M4A-1：** Passed — macOS startup environment isolation.
+- **M4A-2：** Passed on rerun 1 — macOS Cocoa idle GUI runtime validation.
+- **M4B：** Not run — residual Linux regression risk accepted by maintainer.
+
+**验证记录：** [macOS Milestone 4A Validation](macos_milestone_4a_validation.md)
 
 **范围**
 
@@ -268,6 +277,8 @@ behavior 和 launcher behavior 仅完成 source-level static inspection，不能
 - Linux 的 X11、XCB、Wayland、`LD_LIBRARY_PATH` 和 `.so` 逻辑仅在 Linux 路径启用。
 - 通过 `if(APPLE)`、`#ifdef __APPLE__`、macOS 专用脚本或平台适配层集中处理差异。
 - 保持共享 GUI 业务行为，不在各页面散布平台判断。
+- M4A 不包括 RAW、camera/facility、algorithm/model/export、portable dependency
+  closure、.app bundle 或 packaging。
 
 **检查方法**
 
@@ -281,6 +292,18 @@ behavior 和 launcher behavior 仅完成 source-level static inspection，不能
 - macOS GUI 可重复启动和正常关闭，无缺失动态库、平台插件或资源错误。
 - 基本窗口、菜单和渲染可用，启动日志不包含错误平台路径。
 - Linux 与 macOS 启动逻辑边界清晰，Linux 行为无回归。
+- **Linux criterion status:** Not run; explicitly waived for milestone closure by maintainer risk
+  acceptance on 2026-07-22. This is a maintainer closure decision, not Linux
+  validation evidence; Linux parity remains unverified.
+
+**维护者风险接受与关闭决定（2026-07-22）**
+
+macOS Apple Silicon idle Cocoa launch, interaction, resize, theme persistence
+and clean shutdown 已完成验证。Native Linux compilation 和 Linux
+XCB/Wayland GUI launch regression 均未运行。源码静态审核和 macOS
+纯策略测试表明既有 Linux environment defaults 被保留，但这不是 Linux 原生
+build 或 runtime 证据。维护者明确接受剩余 Linux regression risk，并以该
+决定关闭 Milestone 4；Linux parity remains unverified。
 
 ### Milestone 5: RAW playback parity
 
