@@ -89,7 +89,7 @@ bool CameraController::connect_file(const std::string& path) {
         auto cam = Metavision::Camera::from_file(path, hints);
         setup_camera(std::move(cam), true);
         return true;
-    } catch (const Metavision::CameraException& e) {
+    } catch (const Metavision::BaseException& e) {
         emit disconnected();
         emit error(QString::fromUtf8(e.what()));
         return false;

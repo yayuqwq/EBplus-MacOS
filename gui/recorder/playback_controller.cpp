@@ -86,7 +86,13 @@ bool PlaybackController::open_file(const QString& path) {
         emit error(tr("No camera controller bound."));
         return false;
     }
-    path_ = path;
+    path_.clear();
+    duration_us_ = 0;
+    at_eof_ = false;
+    if (playing_) {
+        playing_ = false;
+        emit state_changed(false);
+    }
     // connect_file opens with real_time_playback=false: all events are read
     // as fast as possible and buffered in the FileFrameGenerator. Playback
     // rate is controlled by the FileFrameGenerator's QTimer, not by SDK
@@ -98,6 +104,7 @@ bool PlaybackController::open_file(const QString& path) {
     // With real_time_playback=false, all events arrive in ~10ms regardless
     // of file duration.
     if (!controller_->start()) {
+        controller_->disconnect();
         return false;
     }
     // Query duration from OSC (ready after start). The FileFrameGenerator
@@ -108,6 +115,7 @@ bool PlaybackController::open_file(const QString& path) {
         fp->set_file_duration_us(duration_us_);
         fp->set_file_loop(loop_);
     }
+    path_ = path;
     at_eof_ = false;
     // Auto-start playback.
     play();
