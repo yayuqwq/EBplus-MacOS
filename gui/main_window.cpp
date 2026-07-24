@@ -1093,8 +1093,6 @@ void MainWindow::on_file_opened_for_playback(const QString& path) {
     // Route through the playback controller so it can capture duration and
     // start the position probe timer.
     if (!playback_.open_file(path)) {
-        QMessageBox::warning(this, tr("Open file"),
-                             tr("Failed to open event file:\n%1").arg(path));
         return;
     }
     add_recent_file(path);

@@ -61,6 +61,23 @@ gtest_discover_tests(test_config_manager
     DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
 )
 
+# --- test_camera_controller_lifecycle: file-open exception boundary. ---
+add_executable(test_camera_controller_lifecycle
+    test_camera_controller_lifecycle.cpp
+)
+target_compile_definitions(test_camera_controller_lifecycle PRIVATE
+    EBPLUS_GUI_TEST_ARTIFACT_DIR="${EBPLUS_GUI_TEST_ARTIFACT_DIR}"
+)
+target_link_libraries(test_camera_controller_lifecycle PRIVATE
+    gui_core
+    GTest::GTest
+    GTest::Main
+)
+target_compile_options(test_camera_controller_lifecycle PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_camera_controller_lifecycle
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
+)
+
 # --- test_layout_manager: layout save/load symmetry (needs QApplication). ---
 # Custom main() creates an offscreen QApplication before InitGoogleTest, so we
 # link GTest::GTest (not GTest::Main) to avoid a duplicate main().
