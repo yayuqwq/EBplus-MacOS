@@ -40,4 +40,12 @@ TEST(CameraControllerLifecycle, EmptyRawFailureIsCaught) {
     EXPECT_EQ(error_count, 1);
     EXPECT_FALSE(error_message.isEmpty());
     EXPECT_FALSE(controller.is_connected());
+    EXPECT_FALSE(controller.is_file_source());
+    EXPECT_EQ(controller.biases_facility(), nullptr);
+    EXPECT_EQ(controller.roi_facility(), nullptr);
+    EXPECT_EQ(controller.anti_flicker_facility(), nullptr);
+    EXPECT_EQ(controller.trail_filter_facility(), nullptr);
+    EXPECT_EQ(controller.erc_facility(), nullptr);
+    EXPECT_EQ(controller.trigger_in_facility(), nullptr);
+    EXPECT_EQ(controller.trigger_out_facility(), nullptr);
 }
