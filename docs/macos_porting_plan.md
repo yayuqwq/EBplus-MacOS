@@ -316,7 +316,9 @@ build 或 runtime 证据。维护者明确接受剩余 Linux regression risk，�
 
 **2026-07-24 RAW file lifecycle robustness fix and post-fix validation：** [macOS RAW file lifecycle robustness validation](macos_raw_file_lifecycle_validation.md) 记录了 build-tree arm64 / repository-local OpenEB 5.2 CenturyArks 的两次 Terminal.app/Aqua sessions：empty RAW 的 pre-fix SIGABRT 已修复；unsupported 和 empty file-open failures 各产生一个受控详细错误对话框，随后均可恢复有效 RAW；same-file reopen 自动恢复播放；different-path switch、Recent reopen，以及 unique stale Recent 的缺失文件警告和移除均通过；Run 1 和 Run 2 均 exit <code>0</code>。generated truncated RAW 的 exact outcome 未精确分类；permission/plugin failure、HDF5/H5/DAT、different geometry 和 Linux 仍未验证。
 
-这不关闭本 milestone。HDF5/H5/DAT、additional RAW files、broader Step/window combinations、exact and extreme speed/rate behavior、multiple-loop and stress behavior、file switching、error cases、algorithm/export processing、Linux comparison 以及其他完成标准仍未验证。
+**2026-07-26 HDF5/H5 generic-offline compatibility fix and validation：** [macOS HDF5/H5 generic offline validation](macos_hdf5_h5_generic_offline_validation.md) 记录了 build-tree arm64 / repository-local OpenEB 5.2 CenturyArks 的 bounded HDF5/H5 ECF validation：pre-fix HDF5/H5 generic-offline GUI path reproduced <code>DeviceUnavailable</code> 102113，因为 hardware-facility lookup 针对无 HAL Device 的 generic offline source；shared platform-neutral facility-degradation fix 和 partial <code>connect_file()</code> setup rollback 已实施。incremental build、focused lifecycle 1/1 和 full CTest 309/309 均通过；fresh <code>.hdf5</code>/<code>.h5</code> CLI ECF fixture validation 通过；HDF5 GUI open/display/autoplay/pause/resume/seek、HDF5→H5 switch、Recent reopen、natural EOF responsiveness 及 exit <code>0</code> 均通过。DAT 未运行；other HDF5/H5 cases 和 Linux 仍未验证。
+
+这不关闭本 milestone。HDF5/H5 已有受限的 build-tree coverage；DAT 仍未验证。additional RAW files、broader Step/window combinations、exact and extreme speed/rate behavior、multiple-loop and stress behavior、different-geometry and broader file switching、permission/plugin and other error cases、algorithm/export processing、Linux comparison 以及其他完成标准仍未验证。
 
 **范围**
 

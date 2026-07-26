@@ -9,6 +9,36 @@
 #include <metavision/sdk/stream/camera_exception.h>
 #include <metavision/sdk/stream/file_config_hints.h>
 
+namespace {
+
+template<typename Facility>
+Facility *optional_facility(Metavision::Camera *camera, bool is_file) {
+    if (!camera) {
+        return nullptr;
+    }
+
+    // Keep the live-camera path exactly as before. Generic offline HDF5/H5/DAT
+    // cameras intentionally have no HAL Device, while offline RAW cameras may
+    // still provide one and must retain their normal facility lookup.
+    if (!is_file) {
+        return camera->get_device().get_facility<Facility>();
+    }
+
+    Metavision::Device *device = nullptr;
+    try {
+        device = &camera->get_device();
+    } catch (const Metavision::CameraException &) {
+        // OpenEB 5.2 does not publish a typed DeviceUnavailable code. Limit
+        // this fallback to file sources and only to acquiring the Device;
+        // exceptions from get_facility() remain visible to callers.
+        return nullptr;
+    }
+
+    return device->get_facility<Facility>();
+}
+
+} // namespace
+
 namespace gui {
 
 CameraController::CameraController(QObject* parent)
@@ -90,6 +120,10 @@ bool CameraController::connect_file(const std::string& path) {
         setup_camera(std::move(cam), true);
         return true;
     } catch (const Metavision::BaseException& e) {
+        // setup_camera() can fail after installing callbacks or emitting the
+        // synchronous connected signal. Roll back every partial file state
+        // before notifying the UI of the failed connection.
+        teardown();
         emit disconnected();
         emit error(QString::fromUtf8(e.what()));
         return false;
@@ -177,32 +211,25 @@ bool CameraController::load_config(const std::string& path) {
 // (vs Camera::get_facility<T>() which throws on unsupported features). This
 // lets the GUI degrade gracefully by disabling the corresponding panel.
 facility::Biases* CameraController::biases_facility() {
-    if (!camera_) return nullptr;
-    return camera_->get_device().get_facility<facility::Biases>();
+    return optional_facility<facility::Biases>(camera_.get(), is_file_);
 }
 facility::Roi* CameraController::roi_facility() {
-    if (!camera_) return nullptr;
-    return camera_->get_device().get_facility<facility::Roi>();
+    return optional_facility<facility::Roi>(camera_.get(), is_file_);
 }
 facility::AntiFlicker* CameraController::anti_flicker_facility() {
-    if (!camera_) return nullptr;
-    return camera_->get_device().get_facility<facility::AntiFlicker>();
+    return optional_facility<facility::AntiFlicker>(camera_.get(), is_file_);
 }
 facility::TrailFilter* CameraController::trail_filter_facility() {
-    if (!camera_) return nullptr;
-    return camera_->get_device().get_facility<facility::TrailFilter>();
+    return optional_facility<facility::TrailFilter>(camera_.get(), is_file_);
 }
 facility::Erc* CameraController::erc_facility() {
-    if (!camera_) return nullptr;
-    return camera_->get_device().get_facility<facility::Erc>();
+    return optional_facility<facility::Erc>(camera_.get(), is_file_);
 }
 facility::TriggerIn* CameraController::trigger_in_facility() {
-    if (!camera_) return nullptr;
-    return camera_->get_device().get_facility<facility::TriggerIn>();
+    return optional_facility<facility::TriggerIn>(camera_.get(), is_file_);
 }
 facility::TriggerOut* CameraController::trigger_out_facility() {
-    if (!camera_) return nullptr;
-    return camera_->get_device().get_facility<facility::TriggerOut>();
+    return optional_facility<facility::TriggerOut>(camera_.get(), is_file_);
 }
 
 // ---------------------------------------------------------------------------
