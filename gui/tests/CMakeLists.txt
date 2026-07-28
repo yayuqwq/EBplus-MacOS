@@ -78,6 +78,23 @@ gtest_discover_tests(test_camera_controller_lifecycle
     DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
 )
 
+# --- test_exporter_controller: HDF5 metadata preservation round-trip. ---
+add_executable(test_exporter_controller
+    test_exporter_controller.cpp
+)
+target_compile_definitions(test_exporter_controller PRIVATE
+    EBPLUS_GUI_TEST_ARTIFACT_DIR="${EBPLUS_GUI_TEST_ARTIFACT_DIR}"
+    EBPLUS_REPO_ROOT="${CMAKE_SOURCE_DIR}"
+)
+target_link_libraries(test_exporter_controller PRIVATE
+    gui_core
+    GTest::GTest
+)
+target_compile_options(test_exporter_controller PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_exporter_controller
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
+)
+
 # --- test_layout_manager: layout save/load symmetry (needs QApplication). ---
 # Custom main() creates an offscreen QApplication before InitGoogleTest, so we
 # link GTest::GTest (not GTest::Main) to avoid a duplicate main().

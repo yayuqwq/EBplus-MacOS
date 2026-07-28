@@ -80,6 +80,7 @@ void ExporterController::run_hdf5(const ExportParams& p) {
     // silently reported as "Export cancelled" — hiding the real cause.
     std::string callback_error;
     Metavision::HDF5EventFileWriter writer(p.output_path.toStdString());
+    writer.add_metadata_map_from_camera(cam);
     std::atomic<Metavision::timestamp> last_ts{0};
     auto id = cam.cd().add_callback(
         [&writer, &last_ts, &callback_error, this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
