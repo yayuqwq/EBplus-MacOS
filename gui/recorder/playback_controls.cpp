@@ -92,7 +92,12 @@ PlaybackControls::PlaybackControls(QWidget* parent) : QWidget(parent) {
     });
     connect(slider_, &QSlider::sliderPressed,  this, [this]() { seeking_ = true;  });
     connect(slider_, &QSlider::sliderReleased, this, [this]() { seeking_ = false; });
-    connect(slider_, &QSlider::sliderMoved,    this, &PlaybackControls::on_slider_moved);
+    // sliderMoved only covers thumb drags. Clicking the groove or using the
+    // keyboard changes the value without emitting sliderMoved, which left a
+    // paused seek's displayed frame stale until playback resumed. Position
+    // updates from the controller block slider signals below, so valueChanged
+    // covers every user seek without feeding normal playback back into seek().
+    connect(slider_, &QSlider::valueChanged, this, &PlaybackControls::on_slider_value_changed);
     // Each field delegates to the controller, which is the single source of
     // truth. The controller delegates to FramePipeline, whose signals sync
     // both this panel and the DisplayPanel.
@@ -142,6 +147,7 @@ void PlaybackControls::on_state_changed(bool playing) {
 
 void PlaybackControls::on_opened(Metavision::timestamp dur) {
     lbl_dur_->setText(format_time(dur));
+    QSignalBlocker blocker(slider_);
     slider_->setValue(0);
 }
 
@@ -155,7 +161,7 @@ void PlaybackControls::on_position_changed(Metavision::timestamp pos, Metavision
     }
 }
 
-void PlaybackControls::on_slider_moved(int v) {
+void PlaybackControls::on_slider_value_changed(int v) {
     if (!controller_) return;
     const Metavision::timestamp dur = controller_->duration_us();
     if (dur > 0) {

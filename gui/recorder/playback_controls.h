@@ -54,7 +54,7 @@ private slots:
     void on_state_changed(bool playing);
     void on_position_changed(Metavision::timestamp pos, Metavision::timestamp dur);
     void on_opened(Metavision::timestamp dur);
-    void on_slider_moved(int v);
+    void on_slider_value_changed(int v);
     void on_loop_changed(bool on);
 
 private:

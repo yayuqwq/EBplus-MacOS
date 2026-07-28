@@ -128,6 +128,20 @@ gtest_discover_tests(test_display_strategy
     PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
 
+# --- test_file_playback_seek: paused seek immediately presents a new frame. ---
+add_executable(test_file_playback_seek
+    test_file_playback_seek.cpp
+)
+target_link_libraries(test_file_playback_seek PRIVATE
+    gui_core
+    GTest::GTest
+)
+target_compile_options(test_file_playback_seek PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_file_playback_seek
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
 # --- test_startup_environment: platform-specific startup defaults. ---
 add_executable(test_startup_environment
     test_startup_environment.cpp
