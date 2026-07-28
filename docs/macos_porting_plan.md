@@ -322,7 +322,9 @@ build 或 runtime 证据。维护者明确接受剩余 Linux regression risk，�
 
 **2026-07-28 HDF5 export metadata round-trip fix and validation：** [macOS HDF5 Export Metadata Round-trip Validation](macos_hdf5_export_round_trip_validation.md) 记录了 pre-fix HDF5 export reopen 的 null-geometry <code>SIGSEGV</code>，以及 shared platform-neutral metadata preservation 修复。Release/arm64 repository-local OpenEB 5.2 build-tree 的 focused regression 1/1 和 full CTest 310/310 通过；fresh tracked RAW → HDF5 GUI export/reopen/autoplay/pause/resume/seek 通过，GUI exit <code>0</code>。source/output CLI 的 CD events、first/last timestamp、duration 和 generation 一致。外部缺 geometry HDF5 的 OpenEB reader robustness、AVI、ExtTrigger、cancel、large-file、algorithm/model 和 Linux 仍未验证。
 
-这不关闭本 milestone。HDF5/H5 与一个 CD DAT fixture 均已有受限的 build-tree coverage；trigger DAT、其他 DAT、additional RAW files、broader Step/window combinations、exact and extreme speed/rate behavior、multiple-loop and stress behavior、different-geometry and broader file switching、permission/plugin and other error cases、algorithm/export processing、Linux comparison 以及其他完成标准仍未验证。
+**2026-07-28 Time Surface algorithm lifecycle validation：** [macOS Time Surface algorithm validation](macos_time_surface_algorithm_validation.md) 记录了一个 representative non-model algorithm 在 macOS arm64 上对一个 tracked RAW fixture 的受限 smoke：RAW input、visibly distinct dynamic output、pause/resume、bidirectional seek recovery、same-source reopen/reset 和 clean exit 均通过。该会话使用默认参数；seek 后曾观察到数帧 transient white output，随后动态输出恢复。未测量 reset latency 或数值正确性。
+
+这不关闭本 milestone。HDF5/H5 与一个 CD DAT fixture 均已有受限的 build-tree coverage；trigger DAT、其他 DAT、additional RAW files、broader Step/window combinations、exact and extreme speed/rate behavior、multiple-loop and stress behavior、different-geometry and broader file switching、permission/plugin and other error cases、other algorithms、numerical correctness、model-backed algorithms、algorithm result export、long stability、Linux comparison 以及其他完成标准仍未验证。
 
 **范围**
 
