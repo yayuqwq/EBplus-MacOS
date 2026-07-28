@@ -320,6 +320,8 @@ build 或 runtime 证据。维护者明确接受剩余 Linux regression risk，�
 
 **2026-07-27 DAT playback validation：** [macOS DAT playback validation](macos_dat_playback_validation.md) 记录了 canonical build-tree OpenEB DAT converter 对 isolated working RAW 的结果：converter outputs 与 expected RAW index sidecar 均保持在 isolated repository-local sample root；one generated CD DAT CLI validation、DAT GUI open/display/autoplay、pause/resume、forward/back seek smoke、Recent reopen、EOF/recovery 和 process exit <code>0</code> 均通过。generic-offline <code>DeviceUnavailable</code> 102113 在该 DAT session 中未复现。trigger DAT 为零字节并保留但未作为 playback media；其他 DAT、different geometry、large/corrupt DAT 和 Linux 仍未验证。
 
+**2026-07-28 HDF5 export metadata round-trip fix and validation：** [macOS HDF5 Export Metadata Round-trip Validation](macos_hdf5_export_round_trip_validation.md) 记录了 pre-fix HDF5 export reopen 的 null-geometry <code>SIGSEGV</code>，以及 shared platform-neutral metadata preservation 修复。Release/arm64 repository-local OpenEB 5.2 build-tree 的 focused regression 1/1 和 full CTest 310/310 通过；fresh tracked RAW → HDF5 GUI export/reopen/autoplay/pause/resume/seek 通过，GUI exit <code>0</code>。source/output CLI 的 CD events、first/last timestamp、duration 和 generation 一致。外部缺 geometry HDF5 的 OpenEB reader robustness、AVI、ExtTrigger、cancel、large-file、algorithm/model 和 Linux 仍未验证。
+
 这不关闭本 milestone。HDF5/H5 与一个 CD DAT fixture 均已有受限的 build-tree coverage；trigger DAT、其他 DAT、additional RAW files、broader Step/window combinations、exact and extreme speed/rate behavior、multiple-loop and stress behavior、different-geometry and broader file switching、permission/plugin and other error cases、algorithm/export processing、Linux comparison 以及其他完成标准仍未验证。
 
 **范围**
