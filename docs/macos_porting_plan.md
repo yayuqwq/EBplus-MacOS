@@ -324,6 +324,8 @@ build 或 runtime 证据。维护者明确接受剩余 Linux regression risk，�
 
 **2026-07-28 Time Surface algorithm lifecycle validation：** [macOS Time Surface algorithm validation](macos_time_surface_algorithm_validation.md) 记录了一个 representative non-model algorithm 在 macOS arm64 上对一个 tracked RAW fixture 的受限 smoke：RAW input、visibly distinct dynamic output、pause/resume、bidirectional seek recovery、same-source reopen/reset 和 clean exit 均通过。该会话使用默认参数；seek 后曾观察到数帧 transient white output，随后动态输出恢复。未测量 reset latency 或数值正确性。
 
+**2026-07-28 paused seek immediate-render fix and validation：** [macOS paused seek immediate-render validation](macos_paused_seek_immediate_render_validation.md) 记录了 pre-fix paused timeline seek 只更新 position、而显示画面直到 Resume 才变化的 defect。shared `QSlider::valueChanged` fix 与 open-file initialization signal blocker 后，focused regression 1/1 和 full CTest 311/311 通过；one tracked RAW/ROI session 的 paused forward/back seek 均在未 Resume 时立即更新显示，ROI enable/disable、resume、same-file reopen 与 exit <code>0</code> 也通过。该结果不测量 pixel/event 数值正确性，且不覆盖 other controls、other filters、long stability 或 Linux。
+
 这不关闭本 milestone。HDF5/H5 与一个 CD DAT fixture 均已有受限的 build-tree coverage；trigger DAT、其他 DAT、additional RAW files、broader Step/window combinations、exact and extreme speed/rate behavior、multiple-loop and stress behavior、different-geometry and broader file switching、permission/plugin and other error cases、other algorithms、numerical correctness、model-backed algorithms、algorithm result export、long stability、Linux comparison 以及其他完成标准仍未验证。
 
 **范围**
