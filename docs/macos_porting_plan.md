@@ -307,8 +307,10 @@ build 或 runtime 证据。维护者明确接受剩余 Linux regression risk，�
 
 ### Milestone 5: RAW playback parity
 
-**状态：** `Planned`
+**状态：** `Complete — Linux comparison gap explicitly accepted by maintainer`
 **独立分支：** `feat/macos-raw-playback`
+
+**M5 closure summary：** [macOS Milestone 5 Validation](macos_milestone_5_validation.md)
 
 **窄范围 macOS evidence（2026-07-22）：** [macOS RAW core playback validation](macos_raw_core_playback_validation.md) 记录了 arm64 build-tree executable 在两个 Terminal.app/Aqua sessions 中打开 tracked <code>algo/tests/sparklers.raw</code> 的结果：RAW open、非空 event display、duration/position observation、pause/resume、forward/backward seek、natural EOF、EOF recovery、reopen、close-button exit 和 Cmd+Q exit 均在该单一样本范围内通过。该验证还观察到 progress indicator circular handle 局部裁切这一 deferred visual defect。
 
@@ -326,28 +328,30 @@ build 或 runtime 证据。维护者明确接受剩余 Linux regression risk，�
 
 **2026-07-28 paused seek immediate-render fix and validation：** [macOS paused seek immediate-render validation](macos_paused_seek_immediate_render_validation.md) 记录了 pre-fix paused timeline seek 只更新 position、而显示画面直到 Resume 才变化的 defect。shared `QSlider::valueChanged` fix 与 open-file initialization signal blocker 后，focused regression 1/1 和 full CTest 311/311 通过；one tracked RAW/ROI session 的 paused forward/back seek 均在未 Resume 时立即更新显示，ROI enable/disable、resume、same-file reopen 与 exit <code>0</code> 也通过。该结果不测量 pixel/event 数值正确性，且不覆盖 other controls、other filters、long stability 或 Linux。
 
-这不关闭本 milestone。HDF5/H5 与一个 CD DAT fixture 均已有受限的 build-tree coverage；trigger DAT、其他 DAT、additional RAW files、broader Step/window combinations、exact and extreme speed/rate behavior、multiple-loop and stress behavior、different-geometry and broader file switching、permission/plugin and other error cases、other algorithms、numerical correctness、model-backed algorithms、algorithm result export、long stability、Linux comparison 以及其他完成标准仍未验证。
+**2026-08-10 disconnect/reopen and different-geometry source-switch evidence：** [macOS Milestone 5 Validation](macos_milestone_5_validation.md) 记录了 build-tree GUI 的 `Camera → Devices → Disconnect` 后 reopen tracked <code>algo/tests/sparklers.raw</code>，以及同一 session 中 640x480 tracked RAW → 320x240 synthetic OpenEB 5.2 EVT2 → 640x480 tracked RAW 的双向切换。display geometry、duration/position、画面、pause/resume 和 paused seek 均按当前 source 恢复；GUI exit <code>0</code>，fatal-marker scan clean。synthetic B 只作为 geometry/lifecycle evidence，不代表第二种真实 sensor recording。
+
+**M5 closure boundary：** Milestone 5 完成为 bounded macOS arm64 file-source lifecycle、representative FilterChain/algorithm behavior、HDF5 export round-trip、disconnect/reopen 和不同 geometry source switching 的验证结论。broader algorithms/models/AVI/general algorithm-result export 属于 Milestone 7；physical camera、facilities 和 live workflows 属于 Milestone 6；broader file corpus、failure/stress/performance/memory-safety work 保持 backlog。native Linux compile/runtime/export comparison 未运行；维护者明确接受该 M5 closure risk。此接受不构成 Linux 验证证据，Linux 仍为 <code>Not run / unverified</code>。
 
 **范围**
 
 - 在 macOS 支持打开 RAW、播放、暂停、继续、跳转和结束处理。
 - 验证元数据解析、事件可视化、时间轴、状态显示和文件错误处理。
 - 验证 RAW 数据进入算法处理和导出路径。
-- 使用同一输入与 Linux 当前行为进行对照，记录允许的展示差异和不可接受的数据差异。
+- 原计划使用同一输入与 Linux 当前行为进行对照。native Linux compile/runtime/export comparison 未运行；维护者仅为 M5 closure 明确接受该剩余风险。该接受不是 Linux validation evidence，Linux 仍为 <code>Not run / unverified</code>。
 
 **检查方法**
 
 - 使用已知有效、空文件、截断文件和不支持格式等样本分别测试文件打开与错误提示。
 - 分别验证 metadata、playback、pause/resume、seek、end-of-file、algorithm processing 和 export。
-- 比较 Linux/macOS 的时长、事件数量、时间戳范围、关键状态变化和算法/导出结果。
+- Linux/macOS 对照未运行，且不得将维护者风险接受写成 Linux 结果；未来跨平台结果对照保留在 Milestone 6/7 和 backlog。
 - 重复打开、关闭和切换文件，检查资源释放、崩溃、死锁和状态残留。
 
 **完成标准**
 
-- RAW 核心工作流在 macOS 可用，并与记录的 Linux 基线对齐。
-- 正常文件和错误文件均有确定、可复现的处理结果。
-- 算法与导出不是仅能触发 UI，而是有输出证据和对照结果。
-- 所有不一致均已修复或作为明确限制记录。
+- bounded macOS arm64 RAW/HDF5/H5/DAT file-source lifecycle、代表性 ROI FilterChain/Time Surface 和 RAW-to-HDF5 round-trip 均有实际 evidence；disconnect/reopen 与两种 geometry 的 A→B→A source switch 也已验证。
+- 已复现的 empty RAW、same-file reopen、generic-offline DeviceUnavailable、HDF5 export null-geometry 和 paused seek presentation defects 均已有相应修复与有界验证；未验证事项保留为明确限制。
+- broader algorithms/models/AVI/general algorithm-result export、physical camera/live workflows、broader corpus 和 stress/performance/memory-safety 不因本 closure 被写成 passed，分别移交 Milestone 6、Milestone 7 或 backlog。
+- **Linux criterion status:** native Linux compilation、file-source runtime 和 export comparison 未运行；维护者明确接受该 M5 closure risk。此为管理性关闭决定，不是 Linux validation evidence；Linux remains <code>Not run / unverified</code>。
 
 ### Milestone 6: Live camera parity
 
