@@ -12,7 +12,7 @@ Phase 1 integration: Implemented and validated
 CenturyArks build validation: Passed on macOS arm64
 CenturyArks PID 0003 enumeration/open/reopen: Passed
 CenturyArks PIDs 0002/0004 hardware: Not tested
-Live event delivery: Not run
+Live event delivery: Not run in the original 2C-A/B1 scope
 ```
 
 ### Post-audit Milestone 2C-B1 architecture decision
@@ -27,6 +27,12 @@ The source audit originally established that a default-disabled plugin was techn
 
 The default-OFF and optional-plugin wording later in the original audit was a historical feasibility conclusion reached during Milestone 2C-A, not the current fork policy. The implemented and normative design is always-built in the prepared CenturyArks profile and has no CenturyArks feature option. Its requirements and validation results are defined in [`centuryarks_openeb_5_2_integration_plan.md`](centuryarks_openeb_5_2_integration_plan.md).
 
+A later repository-owned [bounded B2 live-event validation](centuryarks_openeb_5_2_live_event_validation.md)
+verified two explicit-selector OpenEB-level CD-event sessions (5 s then 3 s)
+and a normal reopen for the tested PID `0003`, with no parameter writes or
+recording. That later result does not change this document's M2C-A source-audit
+scope and is not EBplus GUI, facility, physical-reconnect or Linux evidence.
+
 ### Phase 1 implementation evidence
 
 - Tracked delivery consists of the adapted entrypoint, license and provenance files, an exact two-file/two-hunk OpenEB 5.2 CMake patch, and a deterministic preparation script.
@@ -38,7 +44,7 @@ The default-OFF and optional-plugin wording later in the original audit was a hi
 - The adapted source contains no fixed serial, serial hash, product or firmware condition, file discovery, EEPROM, mask or facility behavior.
 - No-DYLD CLI/loader, RAW/HDF5, RPATH/linkage and OpenEB 5.1.1 contamination checks passed.
 - One physical `31f7:0003` IMX636 device enumerated, opened and reopened through `CenturyArks:hal_plugin_centuryarks:<runtime serial>`; the anonymized serial SHA-256 prefix is `cb823604ea92`, and the observed system release was `3.9.0`.
-- Hardware for PIDs `0002` and `0004`, live event delivery, EEPROM, pixel-mask, facility behavior and Linux validation remain untested.
+- Hardware for PIDs `0002` and `0004`, EEPROM, pixel-mask, facility behavior and Linux validation remain untested; OpenEB-level bounded PID `0003` live delivery is separately recorded in B2.
 
 ## 2. Source identity
 
@@ -317,7 +323,7 @@ PID 0003 / IMX636: enumeration, open, `--system` and reopen passed;
 serial SHA-256 prefix `cb823604ea92`; observed system release `3.9.0`
 
 Unvalidated CenturyArks hardware and behavior:
-PIDs 0002 and 0004, live event delivery, EEPROM, pixel masks and facilities
+PIDs 0002 and 0004, EEPROM, pixel masks and facilities; bounded PID 0003 live delivery is separately recorded in B2
 ```
 
 The exact blob comparison supports a focused 5.2.0 port. It does not establish compatibility with every OpenEB 5.x release, and no 5.3.x source was audited. A future implementation should reject versions other than the specifically audited target until a new source audit is completed.
@@ -343,6 +349,6 @@ The exact blob comparison supports a focused 5.2.0 port. It does not establish c
 
 **Can the integration be compiled without hardware?** Yes, and this was demonstrated before camera use: configure, bootstrap/full build, install, target ownership, symbols, plugin loading, RPATH, static registration and the RAW/HDF5 regressions all passed independently of the physical camera acceptance.
 
-**What remains impossible to validate without a camera?** USB enumeration/open and runtime system identity require hardware; these passed for one PID `0003` IMX636 instance, including a normal-exit reopen smoke. PIDs `0002` and `0004`, live event delivery, EEPROM transactions, mask decoding and physical effect, facilities, parameter changes and unplug/replug behavior remain unvalidated.
+**What remains impossible to validate without a camera?** USB enumeration/open and runtime system identity require hardware; these passed for one PID `0003` IMX636 instance, including a normal-exit reopen smoke. A later B2 run also observed bounded PID `0003` CD delivery. PIDs `0002` and `0004`, EEPROM transactions, mask decoding and physical effect, facilities, parameter changes, EBplus GUI live behavior and unplug/replug remain unvalidated.
 
 The implementation architecture and stop conditions are defined in [`centuryarks_openeb_5_2_integration_plan.md`](centuryarks_openeb_5_2_integration_plan.md).

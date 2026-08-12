@@ -2,7 +2,7 @@
 
 ## 1. Purpose and revision status
 
-This document defines and records Milestone 2C-B1: the first OpenEB 5.2 CenturyArks implementation, build and hardware-enumeration stage.
+This document defines and records Milestone 2C-B1: the first OpenEB 5.2 CenturyArks implementation, build and hardware-enumeration stage. B1 historical results remain below; the later bounded B2 live-event result is recorded separately rather than retroactively changing B1's own scope.
 
 It supersedes the earlier feature-gated, two-profile proposal. The revised design keeps Architecture B for source isolation, but the prepared CenturyArks source always builds and installs both live-device plugins:
 
@@ -29,7 +29,19 @@ The validated implementation has these properties:
 - The adapted entrypoint contains no fixed serial, serial hash, product or firmware gate, no EEPROM/pixel-mask/facility behavior and no `PseeFileDiscovery`.
 - No-DYLD CLI identity, RAW-to-HDF5 conversion/readback, HDF5 ECF loading, install RPATH/linkage and OpenEB 5.1.1 contamination checks passed.
 - A physical `31f7:0003` IMX636 device enumerated and opened through `CenturyArks:hal_plugin_centuryarks:<runtime serial>`; `--short`, `--system` and the three-second reopen smoke passed. The tracked identity is limited to serial SHA-256 prefix `cb823604ea92`, which identifies only the tested instance and is not an implementation input. The observed system release was `3.9.0`.
-- PIDs `0002` and `0004` are registered from the audited vendor source but have not been tested with hardware. Live events, EEPROM, pixel masks, facility changes and Linux configure/build/runtime validation were not performed.
+- PIDs `0002` and `0004` are registered from the audited vendor source but have not been tested with hardware. B1 did not run live events; EEPROM, pixel masks, facility changes and Linux configure/build/runtime validation remain unperformed.
+
+### Post-B1 bounded live-event update
+
+Milestone 2C-B2 subsequently used the repository-owned, headless
+[bounded live-event validation](centuryarks_openeb_5_2_live_event_validation.md)
+against this existing install. An explicit selector completed one 5-second and
+one 3-second CD-event run with normal stop/callback cleanup and a bounded
+reopen; neither run recorded event data or changed parameters. This verifies
+OpenEB-level bounded live CD delivery for the tested `31f7:0003` device. It
+does not verify EBplus GUI live integration, recording, facilities/parameter
+mutation, sustained quality/throughput, physical reconnect, other PIDs, or
+Linux.
 
 ## 2. Milestone 2C-B0 evidence
 
@@ -369,11 +381,14 @@ Required sequence in the repository-local OpenEB 5.2 CenturyArks environment:
 9. A second `--short` reopens the same runtime identity successfully.
 10. Full serial values remain only in ignored logs; reports use a redacted or hashed identity.
 
-Passing this sequence validates enumeration/open and a single-process reopen smoke. It does not validate live events, unplug/replug, facilities, parameter mutation, EEPROM data or pixel-mask behavior.
+Passing this B1 sequence validates enumeration/open and a single-process reopen
+smoke. B1 itself does not validate live events, unplug/replug, facilities,
+parameter mutation, EEPROM data or pixel-mask behavior; the later B2 result is
+recorded separately above.
 
 This sequence passed for the available `31f7:0003` IMX636 device. The plugin integrator was `CenturyArks`, the runtime plugin was `hal_plugin_centuryarks`, `--short` and `--system` succeeded, and the device reopened after the required three-second wait. The anonymized serial evidence is `cb823604ea92`; no full device serial is stored in tracked documentation. The observed system release was `3.9.0`.
 
-## 14. Live-event follow-up
+## 14. B1 live-event follow-up (historical)
 
 After the new OpenEB 5.2 plugin passes enumeration/open, audit the new install prefix for a headless command that has:
 
@@ -389,7 +404,7 @@ If no command satisfies all gates, record:
 Live event delivery: Not run
 ```
 
-The installed-tool audit found no command satisfying all bounded, headless and non-mutating gates. Live event delivery was therefore not run.
+The installed-tool audit found no command satisfying all bounded, headless and non-mutating gates. Live event delivery was therefore not run in B1.
 
 Do not run an infinite recorder, GUI viewer or unreviewed sample. A maximum five-second live stream or RAW recording requires a separate authorization after the candidate and disk-output bound are reviewed.
 
@@ -488,6 +503,9 @@ Complete
 Milestone 2C OpenEB 5.2 PID 0003 enumeration/open:
 Verified
 
+Milestone 2C PID 0003 bounded live CD event delivery:
+Verified (post-B1 B2; see centuryarks_openeb_5_2_live_event_validation.md)
+
 Milestone 2C PID 0002 hardware:
 Not tested
 
@@ -495,10 +513,12 @@ Milestone 2C PID 0004 hardware:
 Not tested
 
 Milestone 2C live event stream:
-Not tested
+Verified only as bounded OpenEB-level B2 delivery; EBplus GUI live path remains not tested
 ```
 
-Milestone 2 remains `In progress`. Compile/open success must not be described as completed CenturyArks camera support.
+Milestone 2 is `Complete` for its bounded OpenEB isolation/plugin/enumeration/
+delivery scope. This must not be described as completed CenturyArks or EBplus
+GUI camera support.
 
 ## 20. Rollback and update strategy
 

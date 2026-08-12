@@ -2,42 +2,52 @@
 
 ## 1. 使用说明
 
-本矩阵始于 Milestone 1 对当前 tracked source 的静态审计，用于后续 macOS
-功能对齐。审计基线为分支 `docs/linux-baseline-inventory`、提交
-`d80642817d2581687aa0b2a55f171c0c1e84901a`，审计日期为 2026-07-18。后续
-仅在行内明确引用证据时，纳入 M3 或 M4A 的实际结果。
+本矩阵始于 Milestone 1 对 tracked source 的静态审计，用于后续 macOS
+功能对齐。M1 基线为分支 `docs/linux-baseline-inventory`、提交
+`d80642817d2581687aa0b2a55f171c0c1e84901a`，审计日期为 2026-07-18；它是
+历史 source snapshot，而不是当前 registry 或 Linux runtime 结论。当前 frozen
+integrated source 的独立证据层见 [macOS frozen upstream baseline integration
+validation](macos_upstream_baseline_integration_validation.md)。
 
 - Milestone 1 静态审计本身未执行 CMake configure、构建、GUI 启动、RAW 回放、真实相机、算法、模型或导出测试。
 - `Linux source status` 描述当前源码和应用接线；`Linux runtime status` 描述运行验证状态。代码存在或已接入应用不等于运行验证通过。
 - 未有后续明确证据的 Linux runtime 状态继续保持 `Requires verification`；证据不足时使用 `Unknown`。
 - 未有后续明确证据的 macOS 项目保持 `Not started`；只有发现明确且已证实的阻塞条件时才使用 `Blocked`。
 - 静态分析无法证明必然错误的事项统一写为“潜在风险，需要运行时验证”，不视为已经复现的 Bug。
+- source/static、automated CTest、Mach-O/linkage、CLI runtime、macOS GUI
+  runtime、physical-camera 和 Linux evidence 必须分开解释；风险接受不是验证证据。
 
 状态值限定为：`Implemented in source`、`Wired into application`、`Documented only`、`Previously reported`、`Requires verification`、`Unknown`、`Not started`、`In progress`、`Blocked`、`Verified`、`Not applicable`。
 
 ## 2. 算法注册计数
 
-从当前 HEAD 的 `AlgoBridge::AlgoBridge()` 及七个注册函数重新统计：
+两层事实必须并列保留：
 
-| Category | Unique registered names |
-| --- | ---: |
-| OpenEB filters | 10 |
-| OpenEB frame modes | 7 |
-| OpenEB preprocessors | 7 |
-| OpenEB utilities | 6 |
-| Self-developed CV | 21 |
-| Self-developed analytics | 8 |
-| Self-developed calibration | 1 |
-| Total | 60 |
+| Source state | Registry result | Interpretation |
+| --- | --- | --- |
+| M1 historical snapshot at `d806428…` | 60 = 30 self + 30 OpenEB | historical source-level inventory only |
+| Frozen integrated source | 33 = 26 self (19 CV + 7 analytics) + 7 OpenEB transforms | current source/static baseline |
 
-统计依据为最终写入 `AlgoBridge::registry_` 的唯一 `name`：59 个 `add({...})` 调用，加上手动写入的 `sensor_self_test`。当前没有重复注册名。测试名称、backend 类名、注释和文件名均未计入。源码顶部仍写“29 个自研模块 + 30 个 OpenEB 能力 = 59 项”，与当前实际 30 个自研、30 个 OpenEB、共 60 项不一致。
+The seven current OpenEB FilterChain transforms are `polarity_filter`,
+`polarity_invert`, `flip_x`, `flip_y`, `rotate`, `transpose` and `rescale`.
+Unified ROI/RONI is a separate workflow, not an eighth transform. `sensor_self_test`
+is a Devices hardware diagnostic; `intrinsic_calibration` is a
+Tools/CalibrationWizard workflow; neither is in the registry. A registry test
+or count does not demonstrate all-algorithm runtime behavior.
 
 ## 3. Build and launch
 
-Milestone 3 的 macOS configure/build/CTest/install 证据记录于
+Milestone 3 的 historical macOS configure/build/CTest/install 证据记录于
 [Milestone 3 macOS CMake Configuration Validation](macos_milestone_3_validation.md)。
 Native Linux configure/build/CTest/install 未执行；所有 Linux runtime 状态继续保持
 `Requires verification`，维护者接受该验证缺口并据此关闭 M3。
+
+The frozen integration candidate adds a separate current-source qualification:
+Release/arm64 configure and normal full build passed, focused CTest `42/42`
+and full CTest `341/341` passed, and the current GUI is arm64 with
+repository-local OpenEB 5.2 CenturyArks provenance. See the integration
+validation report; this does not change any Linux status or establish
+standalone loader closure.
 
 | ID | Feature area | Feature | Linux source status | Linux runtime status | macOS status | Evidence | Required verification | Target milestone | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -94,19 +104,19 @@ or `Not run / unverified` as recorded by the relevant evidence.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | RAW-001 | RAW | File picker extensions | Wired into application | Requires verification | Not started | `MainWindow::on_open_file()` filter：`*.raw *.hdf5 *.h5 *.dat`。2026-07-22 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：该 `.raw` picker facet 通过；HDF5/H5/DAT 未验证；见 [macOS RAW core playback validation](macos_raw_core_playback_validation.md)。2026-07-26 <code>.hdf5</code> and <code>.h5</code> picker/open facets passed on macOS build-tree with one known ECF fixture；见 [HDF5/H5 validation](macos_hdf5_h5_generic_offline_validation.md)。2026-07-27 the <code>.dat</code> picker/open facet passed for one generated CD DAT fixture. Together with earlier RAW/HDF5/H5 evidence, all four picker extensions have bounded macOS build-tree coverage; the broader file corpus remains unverified；见 [DAT validation](macos_dat_playback_validation.md) | 每种格式分别打开 | M5 | Picker 中出现不代表 decoder/plugin 可用 |
 | RAW-002 | RAW | Open file source | Wired into application | Requires verification | Not started | `PlaybackController::open_file()` → `CameraController::connect_file()` → `Metavision::Camera::from_file`。2026-07-22 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：成功打开；corrupt、permission、plugin、other-format failure paths 未验证；见 [macOS RAW core playback validation](macos_raw_core_playback_validation.md)。2026-07-24 pre-fix zero-byte RAW reproduced an uncaught HalException / SIGABRT. Post-fix zero-byte RAW and unsupported extension were handled as controlled file-open failures without process abort; valid RAW recovery succeeded. permission-denied and missing-plugin cases remain unverified；见 [lifecycle validation](macos_raw_file_lifecycle_validation.md)。2026-07-26 HDF5/H5 generic-offline source initially reproduced <code>CameraException</code> 102113 <code>DeviceUnavailable</code> when connected panels queried a HAL Device that generic offline cameras do not provide. After the shared facility compatibility fix, HDF5 and H5 opened successfully without recurrence of 102113；见 [HDF5/H5 validation](macos_hdf5_h5_generic_offline_validation.md)。2026-07-27 a generated CD DAT was successfully opened after repository-local CLI prevalidation; generic-offline DeviceUnavailable did not recur；见 [DAT validation](macos_dat_playback_validation.md)。2026-07-28 a fresh EBplus-exported HDF5 reopened in the GUI without `SIGSEGV` or 102113；见 [HDF5 export round-trip validation](macos_hdf5_export_round_trip_validation.md) | 成功、损坏文件、无权限和缺 plugin | M5 | 使用 `FileConfigHints::real_time_playback(false)` |
-| RAW-003 | RAW | Geometry and camera metadata | Wired into application | Requires verification | Not started | `CameraController::fetch_sensor_info()`；`FileConverter::info()`。2026-07-28 focused regression exported fresh HDF5, reopened it through `Metavision::Camera::from_file()`, and required `camera.geometry()` positive width/height. The matching GUI reopen reached geometry-dependent setup without a null-geometry crash；见 [HDF5 export round-trip validation](macos_hdf5_export_round_trip_validation.md) | RAW/HDF5/DAT metadata 对比 | M5 | 缺失 facility 时字段可能保持默认值；external missing-geometry HDF5 robustness 未验证 |
+| RAW-003 | RAW | Geometry and camera metadata | Wired into application | Requires verification | In progress | Historical HDF5 focused regression required positive reopened geometry. Frozen integration requalification additionally observed RAW A 640x480 → synthetic B 320x240 → A geometry/state replacement and a fresh HDF5 preserving the tested 640x480 geometry; see [integration validation](macos_upstream_baseline_integration_validation.md) | RAW/HDF5/DAT metadata 对比 | M5 | B is synthetic, not a second real sensor recording; external missing-geometry HDF5 robustness remains unverified |
 | RAW-004 | RAW | Duration | Wired into application | Requires verification | Not started | `PlaybackController::query_duration()` 与 `FileFrameGenerator` last timestamp。2026-07-22 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：duration/current position 可观察；alternate metadata/duration cases 未验证；见 [macOS RAW core playback validation](macos_raw_core_playback_validation.md)。2026-07-26 HDF5/H5 CLI prevalidation reported duration 95,871 us; GUI displayed usable nonzero duration/position and playback progressed；见 [HDF5/H5 validation](macos_hdf5_h5_generic_offline_validation.md)。2026-07-27 DAT CLI reported duration 95,871 us; GUI showed usable nonzero duration and advancing position；见 [DAT validation](macos_dat_playback_validation.md)。2026-07-28 fresh EBplus HDF5 CLI output exactly matched RAW duration 95,871 us, and GUI playback/autoplay/seek smoke passed；见 [HDF5 export round-trip validation](macos_hdf5_export_round_trip_validation.md) | 有/无 OSC、空文件、长文件 | M5 | 两个来源取较大值 |
 | RAW-005 | RAW | Event buffering | Implemented in source | Requires verification | Not started | `FileFrameGenerator::add_events()` 将全部 events 加入 `events_` | 小/大文件内存与加载时间 | M5 | 全量内存缓冲可能产生明显占用；潜在风险，需要运行时验证 |
-| RAW-006 | RAW | Playback | Wired into application | Requires verification | Not started | `PlaybackController::play()` → `FramePipeline::play_file()`。2026-07-22 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：normal playback 产生变化 event display；见 [macOS RAW core playback validation](macos_raw_core_playback_validation.md)。2026-07-23 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：x0.5/x1/x2 均可播放且人工观察到预期相对推进顺序；numerical deltas 未记录，因此 exact timing、ratio、real-time behavior 和 extremes 未验证；见 [macOS RAW transport controls validation](macos_raw_transport_controls_validation.md)。2026-07-26 tested HDF5 and H5 generic-offline sources produced non-empty changing display and autoplay after the fix；见 [HDF5/H5 validation](macos_hdf5_h5_generic_offline_validation.md)。2026-07-27 DAT produced a non-empty changing visualization and autoplay；见 [DAT validation](macos_dat_playback_validation.md) | 真实速度、慢放、快进 | M5 | 速率由 fps 与 accumulation window 计算 |
-| RAW-007 | RAW | Pause and resume | Wired into application | Requires verification | Not started | `PlaybackController::pause()`、`toggle_play_pause()`。2026-07-22 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：一个 pause/resume sequence 通过；repeated/stress state behavior 未验证；见 [macOS RAW core playback validation](macos_raw_core_playback_validation.md)。2026-07-26 one HDF5 pause/resume smoke sequence passed；见 [HDF5/H5 validation](macos_hdf5_h5_generic_offline_validation.md)。2026-07-27 one DAT pause/resume smoke sequence passed；见 [DAT validation](macos_dat_playback_validation.md) | 暂停位置、恢复、重复操作 | M5 | 状态同步是潜在风险，需要运行时验证 |
+| RAW-006 | RAW | Playback | Wired into application | Requires verification | In progress | Historical RAW/HDF5/H5/DAT evidence is retained. The frozen integration GUI session again observed dynamic RAW, HDF5, H5 and CD-DAT playback, pause/resume and EOF without DeviceUnavailable/102113; see [integration validation](macos_upstream_baseline_integration_validation.md) | 真实速度、慢放、快进 | M5 | bounded fixture evidence, not a file corpus or timing/numerical claim |
+| RAW-007 | RAW | Pause and resume | Wired into application | Requires verification | In progress | Frozen integration requalification repeated pause/resume across the exercised RAW, HDF5, H5 and DAT sources; see [integration validation](macos_upstream_baseline_integration_validation.md) | 暂停位置、恢复、重复操作 | M5 | repeated/stress state behavior remains unverified |
 | RAW-008 | RAW | Step | Wired into application | Requires verification | Not started | `PlaybackControls` 以一个 accumulation window 调用 `seek()`。2026-07-23 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：single Step 与连续三次 Step 均在 paused 状态推进并更新显示；exact delta、different windows、exact EOF 和 stress behavior 未验证；见 [macOS RAW transport controls validation](macos_raw_transport_controls_validation.md) | EOF 前后和不同 window | M5 | step 会先 pause 再同步 render |
-| RAW-009 | RAW | Seek and timeline | Wired into application | Requires verification | In progress | slider → `PlaybackController::seek()` → `FileFrameGenerator::seek()`。2026-07-22 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：forward/backward seek 和 post-EOF recovery 通过；见 [macOS RAW core playback validation](macos_raw_core_playback_validation.md)。2026-07-23 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：near-0% 和 near-EOF seek 通过，起点后 Step 与末尾 EOF 正常；exact timestamp boundaries 和 broader invalid/out-of-range cases 未验证；见 [macOS RAW transport controls validation](macos_raw_transport_controls_validation.md)。2026-07-26 one HDF5 seek smoke operation passed；见 [HDF5/H5 validation](macos_hdf5_h5_generic_offline_validation.md)。2026-07-27 one forward and one backward DAT seek smoke operation passed; exact numeric seek accuracy was not measured；见 [DAT validation](macos_dat_playback_validation.md)。2026-07-28 paused forward/back seek each immediately updated the displayed target window without Resume; numerical timestamp/pixel correctness was not measured；见 [macOS paused seek immediate-render validation](macos_paused_seek_immediate_render_validation.md) | 前向、后向、边界和 EOF 后 seek | M5 | seek 使用内存 buffer，不使用 OSC seek |
+| RAW-009 | RAW | Seek and timeline | Wired into application | Requires verification | In progress | Historical seek evidence is retained. The frozen integration session observed forward and backward paused seek immediately update the display without Resume for RAW, and exercised seek on HDF5/H5/DAT; see [integration validation](macos_upstream_baseline_integration_validation.md) | 前向、后向、边界和 EOF 后 seek | M5 | numeric timestamp/pixel accuracy and broader bounds remain unverified |
 | RAW-010 | RAW | Loop | Wired into application | Requires verification | Not started | `set_loop()`、`FileFrameGenerator::looped`、MainWindow reset algorithms。2026-07-23 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：观察到一次 Loop wrap 回到起点附近并继续播放；multiple loops、algorithm reset、XYT/filter cleanup、stress 和 timestamp semantics 未验证；见 [macOS RAW transport controls validation](macos_raw_transport_controls_validation.md) | 多轮 loop、算法状态和 XYT 清理 | M5/M7 | 潜在风险，需要运行时验证 |
 | RAW-011 | RAW | Playback speed | Wired into application | Requires verification | Not started | `PlaybackControls` time-window/fps/multiplier；`PlaybackController::set_multiplier()`。2026-07-23 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：Window/Rate/multiplier 显示联动正常，x0.5/x1/x2 的相对推进顺序符合人工预期；exact values/deltas 未记录，conversion formula、rounding、exact ratio、real-time timing、极慢与上限仍未验证；见 [macOS RAW transport controls validation](macos_raw_transport_controls_validation.md) | 极慢、1x、快进和上限 | M5 | 算法输入 timestamp 会按 playback rate 缩放 |
-| RAW-012 | RAW | EOF handling | Implemented in source | Requires verification | Not started | `FileFrameGenerator::eof_reached` → `PlaybackController::on_file_eof()`。2026-07-22 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：natural EOF 无观察到 crash 且 playback recovered；见 [macOS RAW core playback validation](macos_raw_core_playback_validation.md)。2026-07-23 macOS arm64 build-tree / repository-local OpenEB 5.2 CenturyArks / Terminal.app/Aqua / only tracked `algo/tests/sparklers.raw` / no Linux comparison：验证了一次 Loop EOF wrap，以及关闭 Loop 后正常 EOF 停止；decoder-error/EOF internal distinction、multiple-loop EOF 和 failure cases 未验证；见 [macOS RAW transport controls validation](macos_raw_transport_controls_validation.md)。2026-07-24 a generated truncated RAW was exercised without an observed process crash or hang and valid RAW recovery subsequently succeeded, but its exact UI classification (short EOF vs controlled error vs other) was not transcribed. Do not treat this as complete decode-error/EOF evidence；见 [lifecycle validation](macos_raw_file_lifecycle_validation.md)。2026-07-26 one HDF5 natural EOF was observed while GUI remained responsive；见 [HDF5/H5 validation](macos_hdf5_h5_generic_offline_validation.md)。2026-07-27 DAT natural EOF was observed without crash or hang, followed by successful Recent reopen recovery；见 [DAT validation](macos_dat_playback_validation.md) | 正常 EOF、decode error、loop EOF | M5 | file runtime error 与 EOF 的区分是潜在风险，需要运行时验证 |
-| RAW-013 | RAW | Filter-chain processing | Wired into application | Requires verification | In progress | `FileFrameGenerator::render_frame()` 对 window events 应用 `FilterChain`。2026-07-28 one ROI Filter configuration remained effective through paused forward/back seek; disable restored the full display, re-enable restored the restricted display, and same-file reopen kept state consistent；见 [macOS paused seek immediate-render validation](macos_paused_seek_immediate_render_validation.md) | 每个 filter、运行中切换和坐标变化 | M5/M7 | 与 live 路径结果一致性需对比 |
-| RAW-014 | RAW | Algorithm processing | Wired into application | Requires verification | In progress | `events_window_ready` → `MainWindow::on_events_window_ready()` → enabled `AlgoInstance::push_events()`。2026-07-28 Time Surface processed one RAW fixture with visibly distinct, non-empty dynamic output using default parameters. Numerical correctness was not evaluated；见 [macOS Time Surface algorithm validation](macos_time_surface_algorithm_validation.md) | 每个实际算法的 RAW smoke test | M5/M7 | 运行能力不由静态接线保证 |
-| RAW-015 | RAW | Algorithm reset on seek/loop/source switch | Implemented in source | Requires verification | In progress | `file_seeked`、`file_looped` 和 `camera connected` handlers 调用 `AlgoInstance::reset()`。2026-07-28 Pause/resume, forward/back seek recovery and same-source reopen/reset remained usable. Several transient white frames were observed after seek before dynamic output recovered；见 [macOS Time Surface algorithm validation](macos_time_surface_algorithm_validation.md) | stateful 算法回放连续性 | M5/M7 | 潜在风险，需要运行时验证 |
+| RAW-012 | RAW | EOF handling | Implemented in source | Requires verification | In progress | Existing EOF evidence is retained. The frozen integration session again observed normal EOF/stop and clean recovery across the exercised file sources; the focused very-short CTest also covered loop-off terminal EOF and loop-on non-terminal wrap; see [integration validation](macos_upstream_baseline_integration_validation.md) | 正常 EOF、decode error、loop EOF | M5 | zero-duration, decoder-error distinction, repeated-loop stress and broad failure cases remain unverified |
+| RAW-013 | RAW | Unified ROI / FilterChain processing | Wired into application | Requires verification | In progress | `FileFrameGenerator::render_frame()` applies the seven-transform FilterChain; unified ROI is separate. Frozen integration requalification observed file-source software ROI enable/disable/re-enable and paused-seek lifecycle; see [integration validation](macos_upstream_baseline_integration_validation.md) | 每个 transform、ROI/RONI 坐标、运行中切换和 live path | M5/M7 | representative file-source evidence only; not hardware ROI/RONI or numerical event-count evidence |
+| RAW-014 | RAW | Algorithm processing | Wired into application | Requires verification | In progress | `events_window_ready` → `MainWindow::on_events_window_ready()` → enabled `AlgoInstance::push_events()`. Frozen integration requalification observed representative Time Surface output through enable, pause/resume and seek; see [integration validation](macos_upstream_baseline_integration_validation.md) | 每个实际算法的 RAW smoke test | M5/M7 | current Time Surface modes/parameters and numerical correctness remain unverified |
+| RAW-015 | RAW | Algorithm reset on seek/loop/source switch | Implemented in source | Requires verification | In progress | `file_seeked`, `file_looped` and `camera connected` handlers reset instances. The frozen integration Time Surface session remained responsive across pause/resume, bidirectional paused seek and re-enable; see [integration validation](macos_upstream_baseline_integration_validation.md) | stateful 算法回放连续性 | M5/M7 | no all-algorithm, reset-latency or numerical claim |
 | RAW-016 | RAW | Switch between file and live source | Implemented in source | Requires verification | Not started | connect paths 先 `teardown()`；MainWindow 切换前停止 recorder | live→RAW→live、不同 geometry 和失败回滚 | M5/M6 | 生命周期和 UI 状态是潜在风险，需要运行时验证 |
 | RAW-017 | RAW | File-to-file switch | Implemented in source | Requires verification | In progress | 再次调用 <code>PlaybackController::open_file()</code> 会经 <code>CameraController::connect_file()</code> teardown 旧 source。2026-07-24 same-file reopen and different-path same-content RAW switch both succeeded post-fix and automatically resumed playback; Recent reopen also auto-resumed. 2026-07-26 HDF5→H5 same-content/different-extension file switch succeeded and autoplay continued post-fix. 2026-07-28 same-file reopen kept the ROI Filter state consistent in the paused-seek lifecycle session；见 [lifecycle validation](macos_raw_file_lifecycle_validation.md)、[HDF5/H5 validation](macos_hdf5_h5_generic_offline_validation.md) 和 [macOS paused seek immediate-render validation](macos_paused_seek_immediate_render_validation.md)。2026-08-10 tracked A (640x480) → OpenEB 5.2-generated synthetic EVT2 B (320x240, 128000 CD events, ~2 s) → A updated geometry, duration/position and displayed source; pause/resume and paused seek remained usable, GUI exited 0, and scoped fatal scan was clean；见 [M5 validation](macos_milestone_5_validation.md) | 播放中打开另一文件、不同 geometry、失败回滚 | M5 | synthetic B is bounded geometry/lifecycle evidence, not a second real sensor recording; broader corpus and failure rollback remain unverified |
 | RAW-018 | RAW | Disconnect and reopen file | Implemented in source | Requires verification | In progress | <code>CameraController::disconnect()</code> 与后续 <code>PlaybackController::open_file()</code> 路径均存在。2026-08-10 `Camera → Devices → Disconnect` cleared the tested file source/playback/display state; reopening tracked A restored 640x480 dynamic playback, position and seek without dialog, hang or crash. The session exited 0 with a clean scoped fatal scan；见 [M5 validation](macos_milestone_5_validation.md) | disconnect 后重开、play state、export source 和 UI 清理 | M5 | one file-source disconnect/reopen path only; active export/algorithm teardown and broader failure paths remain unverified |
@@ -121,75 +131,43 @@ or `Not run / unverified` as recorded by the relevant evidence.
 | CAM-004 | Camera | Live event stream | Wired into application | Requires verification | Not started | `CameraController::start()`；CD callback → `FramePipeline` 与 statistics | 持续事件、空流、高事件率 | M6 | callback 运行于 SDK thread |
 | CAM-005 | Camera | Device information | Wired into application | Requires verification | Not started | `fetch_sensor_info()` 读取 geometry、serial、integrator、plugin、encoding、firmware、generation | 多设备字段完整性 | M6 | facility/SDK exception 被静默降级为空字段 |
 | CAM-006 | Camera facility | Bias access and changes | Wired into application | Requires verification | Not started | `biases_facility()`、`BiasesPanel` 读写 `I_LL_Biases` | 枚举、范围、修改、保存/加载 | M6 | facility 可用性依设备；潜在风险，需要运行时验证 |
-| CAM-007 | Camera facility | ROI/RONI access and changes | Wired into application | Requires verification | Not started | `roi_facility()`、`RoiPanel`、display ROI drag | enable、window、RONI、边界 | M6 | facility 可用性依设备；潜在风险，需要运行时验证 |
+| CAM-007 | Camera facility | Unified ROI/RONI access and changes | Wired into application | Requires verification | Not started | live source: `I_ROI::set_mode/set_windows/enable`; file source: software crop/RONI. The latter has representative M5 evidence only | live facility availability, enable/window/RONI/bounds and mutation restoration | M6 | file-source ROI must not be treated as hardware ROI evidence |
 | CAM-008 | Camera facility | Anti-flicker | Wired into application | Requires verification | Not started | `anti_flicker_facility()`、`EspPanel` | enable、frequency band、unsupported device | M6 | 潜在风险，需要运行时验证 |
 | CAM-009 | Camera facility | Trail filter | Wired into application | Requires verification | Not started | `trail_filter_facility()`、`EspPanel` | enable、type、threshold | M6 | 潜在风险，需要运行时验证 |
 | CAM-010 | Camera facility | ERC | Wired into application | Requires verification | Not started | `erc_facility()`、`EspPanel` | enable、target rate、device limits | M6 | 潜在风险，需要运行时验证 |
 | CAM-011 | Camera facility | Trigger input | Wired into application | Requires verification | Not started | `trigger_in_facility()`、`TriggerPanel` | channels、enable、trigger events | M6 | facility 接线效果是潜在风险，需要运行时验证 |
 | CAM-012 | Camera facility | Trigger output | Wired into application | Requires verification | Not started | `trigger_out_facility()`、`TriggerPanel` | enable、period、duty cycle | M6 | facility 接线效果是潜在风险，需要运行时验证 |
-| CAM-013 | Camera | Sensor self-test | Wired into application | Requires verification | Not started | Devices panel action → `on_open_algo_window("sensor_self_test")` → `SensorSelfTestBackend` | live sensor coverage、heatmap、report、shutdown | M6/M7 | 源码未把入口限制为某一特定传感器型号 |
-| CAM-014 | Camera | Manual disconnect | Wired into application | Requires verification | Not started | `MainWindow::on_disconnect()` → `CameraController::disconnect()` | streaming、recording、algorithm active 时断开 | M6 | 需确认 UI 和 facilities 全部清理 |
-| CAM-015 | Camera | Runtime disconnect/error handling | Implemented in source | Requires verification | Not started | `add_runtime_error_callback()` 对 live error 停流并发出 error/stopped | 拔线、firmware error、callback exception | M6 | 潜在风险，需要运行时验证 |
-| CAM-016 | Camera | Manual reconnect | Implemented in source | Requires verification | Not started | 用户可再次调用 connect first/serial；连接前 `teardown()` | 断开后同设备及其他设备重连 | M6 | 未发现自动重连策略；手动重连需验证 |
-| CAM-017 | Camera | Automatic reconnect | Unknown | Unknown | Not started | 当前非 OpenEB 源码中未找到 retry/backoff 自动重连路径 | 先确认产品需求，再做断线场景测试 | M6 | 不据此断言自动重连一定不可用 |
+| CAM-013 | Camera diagnostic | Sensor self-test | Wired into application | Requires verification | Not started | Devices-panel hardware diagnostic; not an `AlgoBridge` registry entry | live sensor coverage, heatmap/report, shutdown | M6 | requires separate device-safe scope/authorization |
+| CAM-014 | Camera | Manual Disconnect | Wired into application | Requires verification | Not started | `MainWindow::on_disconnect()` → `CameraController::disconnect()` | streaming/recording/algorithm-active manual Disconnect and UI/facility cleanup | M6 | not physical loss evidence |
+| CAM-015 | Camera | Physical loss / runtime error handling | Implemented in source | Requires verification | Not started | `add_runtime_error_callback()` emits error/stopped for live errors | unplug, transport/firmware errors and manual recovery | M6 | physical loss must be observed, not inferred from manual Disconnect |
+| CAM-016 | Camera | Manual selected-device reopen | Implemented in source | Requires verification | Not started | user reselects a device and calls `connect_serial()` after teardown | same-device and other-device reopen | M6 | distinct from automatic reconnect |
+| CAM-017 | Camera | Automatic reconnect | Unknown | Unknown | Not started | no retry/backoff application path found in current source | first decide product contract, then exercise physical-loss case | M6 | do not infer absence/presence beyond source audit |
 | CAM-018 | Camera | Clean shutdown | Implemented in source | Requires verification | Not started | `CameraController::teardown()` 先移除 callbacks、停止 camera，再停止 pipeline | 正常退出、异常断开和反复重连 | M6 | 潜在风险，需要运行时验证 |
 | CAM-019 | Camera | Live RAW recording | Wired into application | Requires verification | Not started | `RecorderController` 使用 `I_EventsStream::log_raw_data/get_latest_raw_data/stop_log_raw_data` | start、flush、stop、错误、文件可回放 | M6/M7 | 仅 live source；可能生成大文件 |
+| CAM-020 | Recording | Live processed RAW recording | Wired into application | Requires verification | Not started | `RecorderController::start_processed()` writes display-preprocessed events through `RAWEvt2EventFileWriter` | live prerequisite, semantic/output integrity, readback and error cleanup | M6/M7 | not covered by file-source M5 evidence |
 
-## 7. Algorithms
+## 7. Algorithms and workflows
 
-所有算法行均来自当前 HEAD 的真实 `AlgoBridge::registry_` 写入点。`AlgorithmsPanel` 只显示 `source == "self"` 的 30 个自研项，并通过 `AlgoBridge::find_or_create()` → `AlgoInstance` 接入 live/RAW 数据流。OpenEB 项中只有 `roi_filter`、`polarity_filter`、`polarity_invert`、`flip_x`、`flip_y`、`rotate`、`transpose`、`rescale` 由 `PreprocessingPanel` 接入 `FilterChain`；其余 22 个 OpenEB registry 项虽有注册信息，部分也有 backend class，但当前未发现普通 GUI 入口。逐行的运行验证必须覆盖入口、启停、参数、live、RAW、显示模式、reset 和资源释放。
+The following rows describe the frozen integrated source, not the M1
+historical 60-item roster. `AlgorithmsPanel` presents the current self registry
+items; every runtime claim still requires its own fixed-input, lifecycle and
+output evidence.
 
-### 7.1 OpenEB filters
-
-| ID | Feature area | Feature | Linux source status | Linux runtime status | macOS status | Evidence | Required verification | Target milestone | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ALG-OEB-F01 | OpenEB filter | `roi_filter` | Wired into application | Requires verification | In progress | registry + `FilterChain::RoiFilterStage`。2026-07-28 one fixed ROI configuration on one tracked RAW remained visibly effective through paused seek; disable restored the full display, re-enable restored the restricted display, and same-file reopen kept state consistent；见 [macOS paused seek immediate-render validation](macos_paused_seek_immediate_render_validation.md) | 参数、relative coordinates、live/RAW | M7 | one qualitative file-source lifecycle smoke; no coordinate/event-count correctness, live path, or all-filter claim |
-| ALG-OEB-F02 | OpenEB filter | `roi_mask` | Implemented in source | Requires verification | Not started | registry + `RoiMaskBackend` | 建立 GUI/调用入口后验证 mask loading、尺寸、live/RAW | M7 | 有 backend，但当前未发现普通 GUI 入口 |
-| ALG-OEB-F03 | OpenEB filter | `polarity_filter` | Wired into application | Requires verification | Not started | registry + `FilterChain::PolarityFilterStage` | ON/OFF polarity、live/RAW | M7 | FilterChain stage |
-| ALG-OEB-F04 | OpenEB filter | `polarity_invert` | Wired into application | Requires verification | Not started | registry + `FilterChain::PolarityInvertStage` | polarity inversion | M7 | FilterChain stage |
-| ALG-OEB-F05 | OpenEB filter | `flip_x` | Wired into application | Requires verification | Not started | registry + `FilterChain::FlipXStage` | geometry、display、algorithm parity | M7 | FilterChain stage |
-| ALG-OEB-F06 | OpenEB filter | `flip_y` | Wired into application | Requires verification | Not started | registry + `FilterChain::FlipYStage` | geometry、display、algorithm parity | M7 | FilterChain stage |
-| ALG-OEB-F07 | OpenEB filter | `rotate` | Wired into application | Requires verification | Not started | registry + `FilterChain::RotateStage` | 0/90/180/270、非方形 sensor | M7 | 坐标裁剪是潜在风险，需要运行时验证 |
-| ALG-OEB-F08 | OpenEB filter | `transpose` | Wired into application | Requires verification | Not started | registry + `FilterChain::TransposeStage` | geometry、bounds、live/RAW | M7 | FilterChain stage |
-| ALG-OEB-F09 | OpenEB filter | `rescale` | Wired into application | Requires verification | Not started | registry + `FilterChain::RescaleStage` | scale range、geometry 和 downstream | M7 | FilterChain stage |
-| ALG-OEB-F10 | OpenEB filter | `adaptive_rate_split` | Implemented in source | Requires verification | Not started | registry + `AdaptiveRateSplitBackend` | 建立 GUI/调用入口后验证 threshold、downsampling、event output | M7 | 有 backend，但当前未发现普通 GUI 入口 |
-
-### 7.2 OpenEB frame modes
+### 7.1 OpenEB FilterChain transforms
 
 | ID | Feature area | Feature | Linux source status | Linux runtime status | macOS status | Evidence | Required verification | Target milestone | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ALG-OEB-R01 | OpenEB frame | `frame_integration` | Implemented in source | Requires verification | Not started | registry + `FrameIntegrationBackend` | 建立入口后验证 decay、Replace display、live/RAW | M7 | 有 backend，但当前未发现普通 GUI 入口 |
-| ALG-OEB-R02 | OpenEB frame | `frame_diff` | Implemented in source | Requires verification | Not started | registry + `FrameDiffBackend` | 建立入口后验证 bit size、rollover、live/RAW | M7 | 有 backend，但当前未发现普通 GUI 入口 |
-| ALG-OEB-R03 | OpenEB frame | `frame_histogram` | Implemented in source | Requires verification | Not started | registry + `FrameHistoBackend` | 建立入口后验证 channel bits、packed、color mapping | M7 | 有 backend，但当前未发现普通 GUI 入口 |
-| ALG-OEB-R04 | OpenEB frame | `frame_time_decay` | Implemented in source | Requires verification | Not started | registry + `FrameTimeDecayBackend` | 建立入口后验证 decay、palette、reset | M7 | 有 backend，但当前未发现普通 GUI 入口 |
-| ALG-OEB-R05 | OpenEB frame | `frame_contrast_map` | Implemented in source | Requires verification | Not started | registry + `FrameContrastMapBackend` | 建立入口后验证 ON/OFF contrast、reset | M7 | 有 backend，但当前未发现普通 GUI 入口 |
-| ALG-OEB-R06 | OpenEB frame | `frame_periodic` | Implemented in source | Requires verification | Not started | registry + `FramePeriodicBackend` | 建立入口后验证 accumulation、fps、live/RAW | M7 | callback/timing 是潜在风险，需要运行时验证 |
-| ALG-OEB-R07 | OpenEB frame | `frame_on_demand` | Implemented in source | Requires verification | Not started | registry + `FrameOnDemandBackend` | 建立入口后验证 on-demand generation、window | M7 | pull/result timing 需验证 |
+| ALG-OEB-F01 | OpenEB transform | `polarity_filter` | Wired into application | Requires verification | Not started | current seven-transform FilterChain | ON/OFF polarity, live/file and downstream parity | M7 | not an all-filter result |
+| ALG-OEB-F02 | OpenEB transform | `polarity_invert` | Wired into application | Requires verification | Not started | current seven-transform FilterChain | inversion semantics and lifecycle | M7 | |
+| ALG-OEB-F03 | OpenEB transform | `flip_x` | Wired into application | Requires verification | Not started | current seven-transform FilterChain | geometry/display/downstream parity | M7 | |
+| ALG-OEB-F04 | OpenEB transform | `flip_y` | Wired into application | Requires verification | Not started | current seven-transform FilterChain | geometry/display/downstream parity | M7 | |
+| ALG-OEB-F05 | OpenEB transform | `rotate` | Wired into application | Requires verification | Not started | current seven-transform FilterChain | 0/90/180/270 and non-square geometry | M7 | |
+| ALG-OEB-F06 | OpenEB transform | `transpose` | Wired into application | Requires verification | Not started | current seven-transform FilterChain | bounds and geometry | M7 | |
+| ALG-OEB-F07 | OpenEB transform | `rescale` | Wired into application | Requires verification | Not started | current seven-transform FilterChain | scale range and downstream effects | M7 | |
+| ALG-WF-ROI | Workflow | Unified ROI/RONI | Wired into application | Requires verification | In progress | file software crop/RONI passed representative lifecycle on frozen integration; live path is `I_ROI`/RONI | coordinate/event-count correctness, live facility behavior and interaction with algorithms | M6/M7 | separate from FilterChain |
+| ALG-WF-PRE | Workflow | Shared preprocessing/noise | Wired into application | Requires verification | Not started | nine noise modes, including KNoise mode 8 | each mode, reset, fixed input and algorithm interaction | M7 | not registry entries |
 
-### 7.3 OpenEB preprocessors
-
-| ID | Feature area | Feature | Linux source status | Linux runtime status | macOS status | Evidence | Required verification | Target milestone | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ALG-OEB-P01 | OpenEB preprocessor | `preproc_diff` | Implemented in source | Requires verification | Not started | registry + `PreprocDiffBackend` | 建立入口后验证 tensor shape、normalization、frame | M7 | 有 backend，但当前未发现普通 GUI 入口 |
-| ALG-OEB-P02 | OpenEB preprocessor | `preproc_histo` | Implemented in source | Requires verification | Not started | registry + `PreprocHistoBackend` | 建立入口后验证 CHW/HWC、polarity channels | M7 | 有 backend，但当前未发现普通 GUI 入口 |
-| ALG-OEB-P03 | OpenEB preprocessor | `preproc_hw_diff` | Implemented in source | Requires verification | Not started | registry entry；factory 和 FilterChain 中未找到同名处理路径 | 确认 intended backend、hardware input 和 UI output | M7 | 当前只有注册与通用 UI；不把测试/注释视为实现 |
-| ALG-OEB-P04 | OpenEB preprocessor | `preproc_hw_histo` | Implemented in source | Requires verification | Not started | registry entry；factory 和 FilterChain 中未找到同名处理路径 | 确认 intended backend、hardware input 和 UI output | M7 | 当前只有注册与通用 UI |
-| ALG-OEB-P05 | OpenEB preprocessor | `preproc_time_surface` | Implemented in source | Requires verification | Not started | registry + `PreprocTimeSurfaceBackend` | 建立入口后验证 1/2 channel、decay image、reset | M7 | 有 backend，但当前未发现普通 GUI 入口 |
-| ALG-OEB-P06 | OpenEB preprocessor | `preproc_event_cube` | Implemented in source | Requires verification | Not started | registry + `PreprocEventCubeBackend` | 建立入口后验证 bins、polarity、projection、memory | M7 | tensor 内存占用是潜在风险，需要运行时验证 |
-| ALG-OEB-P07 | OpenEB preprocessor | `preproc_factory` | Implemented in source | Requires verification | Not started | registry + `PreprocFactoryBackend` | 建立入口后验证 JSON config parsing 和实际 processor creation | M7 | backend 明确标记为 stub/pass-through；无普通 GUI 入口 |
-
-### 7.4 OpenEB utilities
-
-| ID | Feature area | Feature | Linux source status | Linux runtime status | macOS status | Evidence | Required verification | Target milestone | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| ALG-OEB-U01 | OpenEB utility | `util_rate_estimator` | Implemented in source | Requires verification | Not started | registry + `UtilRateEstimatorBackend` | 建立入口后与 Statistics panel 数值对比 | M7 | status-only stub；无普通 GUI 入口 |
-| ALG-OEB-U02 | OpenEB utility | `util_frame_composer` | Implemented in source | Requires verification | Not started | registry + `UtilFrameComposerBackend` | 建立入口后验证 subimage composition API 和输出 | M7 | passive container，未实现 composition workflow；无普通 GUI 入口 |
-| ALG-OEB-U03 | OpenEB utility | `util_rolling_buffer` | Implemented in source | Requires verification | Not started | registry + `UtilRollingBufferBackend` | 建立入口后验证 N_EVENTS、N_US、capacity、reset | M7 | 实际使用 `RollingEventBuffer`，但无普通 GUI 入口 |
-| ALG-OEB-U04 | OpenEB utility | `util_video_writer` | Implemented in source | Requires verification | Not started | registry + `UtilVideoWriterBackend` | 明确预期与 ExporterController 的关系 | M7 | stub，提示使用 Export menu；无普通 GUI 入口 |
-| ALG-OEB-U05 | OpenEB utility | `util_data_synchronizer` | Implemented in source | Requires verification | Not started | registry + `UtilDataSynchronizerBackend` | 建立入口后验证 trigger data、period 和多流同步 | M7 | stub/pass-through；无普通 GUI 入口 |
-| ALG-OEB-U06 | OpenEB utility | `util_timing_profiler` | Implemented in source | Requires verification | Not started | registry + `UtilTimingProfilerBackend` | 建立入口后验证 timing measurements 和展示 | M7 | status-only stub；无普通 GUI 入口 |
-
-### 7.5 Self-developed CV
+### 7.2 Self-developed CV
 
 | ID | Feature area | Feature | Linux source status | Linux runtime status | macOS status | Evidence | Required verification | Target milestone | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -199,23 +177,21 @@ or `Not run / unverified` as recorded by the relevant evidence.
 | ALG-SELF-CV04 | Self CV | `sparse_optical_flow` | Wired into application | Requires verification | Not started | registry + `SparseOpticalFlowBackend` | 4 modes、vector scale、live/RAW | M7 | Overlay |
 | ALG-SELF-CV05 | Self CV | `blob_detector` | Wired into application | Requires verification | Not started | registry + `BlobDetectorBackend` | threshold、learning、bbox | M7 | Overlay |
 | ALG-SELF-CV06 | Self CV | `object_tracker` | Wired into application | Requires verification | Not started | registry + `ObjectTrackerBackend` | 4 modes、IDs、lost age、trajectory | M7 | Stateful overlay |
-| ALG-SELF-CV07 | Self CV | `corner_detector` | Wired into application | Requires verification | Not started | registry + `CornerDetectorBackend` | 每个 mode、score、GUI label 对应关系 | M7 | registry 标签与 backend enum 的一致性需专项核对 |
+| ALG-SELF-CV07 | Self CV | `corner_detector` | Wired into application | Requires verification | Not started | registry + `CornerDetectorBackend`; current modes are EndStopped, TypeCoincidence, Harris and Arc | each mode, score and GUI/backend correspondence | M7 | Arc is mode 3; no runtime claim |
 | ALG-SELF-CV08 | Self CV | `line_segment` | Wired into application | Requires verification | Not started | registry + `LineSegmentBackend` | length、gap、line coordinates | M7 | Overlay |
 | ALG-SELF-CV09 | Self CV | `hough_line` | Wired into application | Requires verification | Not started | registry + `HoughLineBackend` | bins、decay、threshold、CPU | M7 | 潜在性能风险，需要运行时验证 |
 | ALG-SELF-CV10 | Self CV | `hough_circle` | Wired into application | Requires verification | Not started | registry + `HoughCircleBackend` | radius、threshold、decay、CPU | M7 | 潜在性能风险，需要运行时验证 |
 | ALG-SELF-CV11 | Self CV | `orientation_cluster` | Wired into application | Requires verification | Not started | registry + `OrientationClusterBackend` | orientation、RF、history、clusters | M7 | Overlay |
 | ALG-SELF-CV12 | Self CV | `cluster_lif` | Wired into application | Requires verification | Not started | registry + `ClusterLifBackend` | tau、threshold、receptive field、spikes | M7 | Overlay |
 | ALG-SELF-CV13 | Self CV | `background_mask` | Wired into application | Requires verification | Not started | registry + `BackgroundMaskBackend` | learning、threshold、erosion、Replace | M7 | Stateful mask |
-| ALG-SELF-CV14 | Self CV | `perspective_undistort` | Wired into application | Requires verification | Not started | registry + `PerspectiveUndistortBackend` | calibration/LUT input、zoom、geometry | M7 | 未发现 GUI calibration data 注入路径；潜在风险，需要运行时验证 |
-| ALG-SELF-CV15 | Self CV | `trigger_synced` | Wired into application | Requires verification | Not started | registry + `TriggerSyncedBackend` | external trigger feed、channel、window | M7 | 未发现 trigger events 注入 backend 的明确路径；潜在风险，需要运行时验证 |
-| ALG-SELF-CV16 | Self CV | `bandpass_filter` | Wired into application | Requires verification | Not started | registry + `BandpassFilterBackend` | cutoff、frequency response、overlay | M7 | 需合成信号和真实流对比 |
-| ALG-SELF-CV17 | Self CV | `optical_gyro` | Wired into application | Requires verification | Not started | registry + `OpticalGyroBackend` | translation、rotation、stabilize | M7 | Overlay；准确性需基准数据 |
-| ALG-SELF-CV18 | Self CV | `ultra_slow_motion` | Wired into application | Requires verification | Not started | registry + `UltraSlowMotionBackend` | dilation factor、timestamp output | M7 | Passive；与 playback rate 交互需验证 |
-| ALG-SELF-CV19 | Self CV | `xyt_visualizer` | Wired into application | Requires verification | Not started | registry + `XYTVisualizerBackend` + `SpaceTimeDisplay` | point limit、time window、live/RAW | M7 | 独立 3D window |
-| ALG-SELF-CV20 | Self CV | `overlay` | Wired into application | Requires verification | Not started | registry + `OverlayBackend` | event overlay 和 display strategy | M7 | 需确认输出对用户可见 |
-| ALG-SELF-CV21 | Self CV | `time_surface` | Wired into application | Requires verification | In progress | registry + `TimeSurfaceBackend`。2026-07-28 one tracked RAW/default-parameter session produced visibly distinct, non-empty dynamic output and remained usable through pause/resume, bidirectional seek recovery and same-source reopen/reset；见 [macOS Time Surface algorithm validation](macos_time_surface_algorithm_validation.md) | decay、palette、channels、reset | M7 | qualitative one-fixture evidence only; numerical correctness, other parameters/algorithms, models and Linux remain unverified |
+| ALG-SELF-CV14 | Self CV | `trigger_synced` | Wired into application | Requires verification | Not started | registry + `TriggerSyncedBackend` | external trigger feed, channel and window | M7 | current GUI has no verified trigger-feed evidence |
+| ALG-SELF-CV15 | Self CV | `bandpass_filter` | Wired into application | Requires verification | Not started | registry + `BandpassFilterBackend` | cutoff/frequency response/overlay | M7 | |
+| ALG-SELF-CV16 | Self CV | `optical_gyro` | Wired into application | Requires verification | Not started | registry + `OpticalGyroBackend` | translation/rotation/stabilize | M7 | |
+| ALG-SELF-CV17 | Self CV | `xyt_visualizer` | Wired into application | Requires verification | Not started | registry + `XYTVisualizerBackend` + `SpaceTimeDisplay` | time window/live/file/cleanup | M7 | |
+| ALG-SELF-CV18 | Self CV | `overlay` | Wired into application | Requires verification | Not started | registry + `OverlayBackend` | visible output and display strategy | M7 | |
+| ALG-SELF-CV19 | Self CV | `time_surface` | Wired into application | Requires verification | In progress | current Linear/Exponential, `decay_time_us`/`tau_us`, palette, merged/split channels and refresh rate. Frozen integration has one qualitative file-source lifecycle session | modes/parameters/reset/numerical correctness/live behavior | M7 | representative evidence only |
 
-### 7.6 Self-developed analytics and calibration
+### 7.3 Self-developed analytics
 
 | ID | Feature area | Feature | Linux source status | Linux runtime status | macOS status | Evidence | Required verification | Target milestone | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -226,8 +202,12 @@ or `Not run / unverified` as recorded by the relevant evidence.
 | ALG-SELF-AN05 | Self analytics | `particle_counter` | Wired into application | Requires verification | Not started | registry + `ParticleCounterBackend` | line crossing、min area、count reset | M7 | Overlay |
 | ALG-SELF-AN06 | Self analytics | `auto_bias` | Wired into application | Requires verification | Not started | registry + `AutoBiasBackend` | target rate、建议值、是否写入 device | M7 | 未发现 backend 调用 `CameraController` bias facility 的路径 |
 | ALG-SELF-AN07 | Self analytics | `freq_detector` | Wired into application | Requires verification | Not started | registry + `FreqDetectorBackend` | frequency estimate、min events、update interval | M7 | Standalone |
-| ALG-SELF-AN08 | Self analytics | `sensor_self_test` | Wired into application | Requires verification | Not started | manual registry entry + `SensorSelfTestBackend` + Devices panel action | 全传感器、heatmap、bad pixels、报告 | M6/M7 | 不附加 registry ROI/preprocessing 参数 |
-| ALG-SELF-CAL01 | Self calibration | `intrinsic_calibration` | Wired into application | Requires verification | Not started | registry entry；Tools → `CalibrationWizard` → `algo/calibration/intrinsic.cpp` | board types、capture、solve、save YAML | M7 | generic backend factory 未注册同名 backend；实际流程由 wizard 驱动 |
+### 7.4 Non-registry workflows
+
+| ID | Feature area | Feature | Linux source status | Linux runtime status | macOS status | Evidence | Required verification | Target milestone | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| ALG-WF-SELF | Device diagnostic | Sensor self-test | Wired into application | Requires verification | Not started | Devices-panel hardware diagnostic, not registry | safe hardware scope, report/heatmap and shutdown | M6 | facility/device behavior unverified |
+| ALG-WF-CAL | Tools workflow | Intrinsic calibration | Wired into application | Requires verification | Not started | Tools → `CalibrationWizard`; current asymmetric circle-grid / manual Space capture | live capture, solve, YAML schema/load-to-undistort and failures | M6/M7 | not a registry entry |
 
 ## 8. Models and inference
 
@@ -244,16 +224,15 @@ or `Not run / unverified` as recorded by the relevant evidence.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | EXP-001 | Recording | Live RAW `.raw` | Wired into application | Requires verification | Not started | `RecorderController` + `MainWindow::on_record_start()` | start/stop、回放、file growth、disk full | M6/M7 | 用户选择路径；可快速增长为大文件 |
 | EXP-002 | Recording | Companion bias `.bias` | Wired into application | Requires verification | Not started | `on_record_start()` 以 RAW basename 调用 biases `save_to_file()` | 有/无 bias facility、命名、可加载性 | M6/M7 | best-effort，与 RAW 同目录 |
-| EXP-003 | Conversion/export | HDF5 `.h5` | Wired into application | Requires verification | In progress | `FileConverter::run_convert(HDF5)` 与 `ExporterController::run_hdf5()`。2026-07-28 `ExporterController` HDF5 export preserved canonical source metadata before event writes; focused RAW→HDF5→reopen→positive geometry regression 1/1 and full CTest 310/310 passed. One fresh GUI export reached `Done`, output CLI read succeeded, GUI reopen/autoplay/pause/resume/seek and exit 0 passed; CD count, timestamps, duration and generation matched the RAW source；见 [HDF5 export round-trip validation](macos_hdf5_export_round_trip_validation.md) | plugin、metadata、cancel、disk full、重开 | M7 | HDF5 export/reopen has bounded macOS evidence; cancel、overwrite、disk-full、large-file、ExtTrigger and Linux remain unverified |
+| EXP-003 | Conversion/export | HDF5 `.h5` source events | Wired into application | Requires verification | In progress | `FileConverter::run_convert(HDF5)` and `ExporterController::run_hdf5()`. Frozen integration fresh GUI RAW→HDF5→reopen/readback preserved tested geometry, 521,252 CD events and 0–95,871 us timestamps/duration; see [integration validation](macos_upstream_baseline_integration_validation.md) | plugin, metadata, cancel, overwrite, disk-full, large files and reopen | M7 | scoped source-event export, not general algorithm-result export |
 | EXP-004 | Conversion | CSV `.csv` | Wired into application | Requires verification | Not started | `FileConverter::run_convert(CSV)` 写 `t,x,y,p` | 数据行、时间戳、cancel、大文件 | M7 | 文本输出可能显著放大磁盘占用 |
 | EXP-005 | File tools | RAW clip `.raw` | Wired into application | Requires verification | Not started | `FileConverter::run_cut()` + `RAWEvt2EventFileWriter` | seek/no-seek、边界、metadata、回放 | M7 | 输出固定 EVT2 writer |
-| EXP-006 | Video export | AVI `.avi` | Wired into application | Requires verification | Not started | `ExporterController::run_avi()` + `CvVideoRecorder` | H264/MJPG、color/gray、fps、codec availability | M7 | codec 可用性是潜在风险，需要运行时验证 |
+| EXP-006 | Video export | AVI `.avi` | Wired into application | Requires verification | Not started | `ExporterController::run_avi()` uses `PeriodicFrameGenerationAlgorithm` plus direct synchronous `cv::VideoWriter` | H264/MJPG, color/gray, fps, codec availability | M7 | unverified runtime; not `CDFrameGenerator`/`CvVideoRecorder` |
 | EXP-007 | Calibration | YAML `.yml/.yaml` | Wired into application | Requires verification | Not started | `CalibrationWizard::on_intrinsic_save()` | schema、数值、重载/消费方 | M7 | intrinsic result export |
 | EXP-008 | Configuration | Camera/config JSON | Wired into application | Requires verification | Not started | `ConfigManager::save_to_file/load_from_file()` | round-trip、sensor mismatch、损坏 JSON | M7 | 用户选择路径 |
-| EXP-009 | Configuration | Algorithm params JSON | Wired into application | Requires verification | Not started | File menu → `save_algo_params_to_file/load_algo_params_from_file` | 全部 60 项、enabled state、未知 key | M7 | lazy instance cache 需运行验证 |
+| EXP-009 | Configuration | Algorithm params JSON | Wired into application | Requires verification | Not started | File menu → `save_algo_params_to_file/load_algo_params_from_file` | current 33 registry entries, enabled state and unknown/obsolete keys | M7 | non-registry workflows are separate |
 | EXP-010 | Configuration | Layout JSON | Wired into application | Requires verification | Not started | `LayoutManager::save/load()`；View menu | round-trip、跨屏幕、损坏 JSON | M4 | 默认 layout 另写平台 config 目录 |
-| EXP-011 | Annotation | Target labels JSON | Implemented in source | Requires verification | Not started | `TargetLabeler::save_to_json/load_from_json()` | GUI 入口、bbox、class、timestamp round-trip | M7 | 需确认主应用中完整入口与工作流 |
-| EXP-012 | Algorithm output | General algorithm-result export | Unknown | Unknown | Not started | 未发现将通用 `AlgoResult` 写入文件的统一 controller | 明确需求，并逐算法验证导出 | M7 | 不与 AVI/HDF5 原始事件导出混同 |
+| EXP-012 | Algorithm output | General algorithm-result export | Deferred / product decision | Unknown | Not started | no unified controller found for generic `AlgoResult` persistence | define product contract, then verify per result type | Deferred | do not conflate with AVI or HDF5 source-event export |
 | EXP-013 | Media export | MP4 or screenshot | Unknown | Unknown | Not started | 当前非 OpenEB 源码中未找到 MP4 或 screenshot export 路径 | 确认 Linux baseline 是否要求 | M7 | 不根据文案或图标推断支持 |
 
 ## 10. Configuration, state and logging
@@ -275,8 +254,8 @@ or `Not run / unverified` as recorded by the relevant evidence.
 | ID | Feature area | Feature | Linux source status | Linux runtime status | macOS status | Evidence | Required verification | Target milestone | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | PKG-001 | Packaging | macOS `.app` bundle | Not applicable | Not applicable | Not started | 当前 CMake 只创建普通 `add_executable(gui_for_openeb)` | 配置 MACOSX_BUNDLE 并启动 bundle | M8 | 尚未实现 |
-| PKG-002 | Packaging | macOS RPATH | Not applicable | Not applicable | In progress | Repository-local install manifest 仅含 `bin/gui_for_openeb`；installed binary 为 non-fat arm64 且 `LC_RPATH` 精确为 `@executable_path/../lib`；见 [M3 validation](macos_milestone_3_validation.md) | Dependency staging、portable loader closure、ONNX linkage 和 `.app` bundle launch | M3/M8 | M3 install-RPATH portion 已验证；未执行 installed binary，M8 staging/bundle 仍 pending |
-| PKG-003 | Packaging | Dependency bundling | Unknown | Unknown | Not started | 当前未找到 Qt/OpenEB/OpenCV/ONNX bundle staging 逻辑 | 检查 `.app/Contents/Frameworks` 与 plugins | M8 | 尚未实现 |
+| PKG-002 | Packaging | macOS RPATH | Not applicable | Not applicable | In progress | historical M3 install RPATH and frozen integration build-tree Mach-O provenance are recorded | dependency staging, portable loader closure, ONNX linkage and `.app` launch | M3/M8 | RPATH evidence is not standalone/bundle evidence |
+| PKG-003 | Packaging | Dependency bundling | Unknown | Unknown | Not started | no current staging closure for Qt frameworks/plugins, OpenCV, OpenEB/HAL/HDF5 ECF or optional ONNX/models | inspect `.app/Contents/Frameworks`, plugins and clean-environment launch | M8 | no developer-path fallback |
 | PKG-004 | Packaging | Code signing | Not applicable | Not applicable | Not started | 当前未找到签名配置或脚本 | ad-hoc/Developer ID 签名验证 | M8 | 后续可选工作 |
 | PKG-005 | Packaging | Notarization | Not applicable | Not applicable | Not started | 当前未找到 notarization 配置 | Apple notarization workflow | M8 | 后续可选工作 |
 | PKG-006 | Packaging | DMG | Not applicable | Not applicable | Not started | 当前未找到 DMG 生成逻辑 | 安装、卸载和空间预算 | M8 | 仅 milestone 需要时生成 |
@@ -287,5 +266,5 @@ or `Not run / unverified` as recorded by the relevant evidence.
 - 每个 milestone 开始时更新目标行的 `macOS status`；只有实际开始实施才改为 `In progress`。
 - 只有执行并记录了对应检查，才能把 runtime status 改为 `Verified`。编译成功不能替代 GUI、RAW、相机、算法或导出验证。
 - 若实现存在但没有应用入口，使用 `Implemented in source`；确认已连接到 GUI/controller/data flow 后使用 `Wired into application`。
-- 新增、删除或重命名 registry 项时，必须从 `AlgoBridge::registry_` 写入点重新统计并同步算法各行，不以本次 60 项为永久常量。
+- 新增、删除或重命名 registry 项时，必须从 `AlgoBridge::registry_` 写入点重新统计并同步算法各行；M1 的 60 项是历史事实，当前 frozen baseline 的 33 项也不是永久常量。
 - 发现静态风险时记录证据和验证方法；除非源码能证明确定性事实，否则使用“潜在风险，需要运行时验证”。

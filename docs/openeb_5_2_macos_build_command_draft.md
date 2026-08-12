@@ -1,12 +1,21 @@
 # OpenEB 5.2.0 macOS build command draft
 
-> **Status: Primary profile validated; RPATH portability verified for the three required CLI targets**
+> **Status: historical M2B generic-profile reproduction record; RPATH portability verified for the three required CLI targets**
 >
 > The root repository declares the complete pinned `hdf5_ecf` submodule. The primary `Release`/arm64 profile has completed configure, bootstrap/full build, repository-local install, no-DYLD validation of the three required CLI targets, RAW/HDF5 regression, and an Apple-only target-specific RPATH rebuild. Every future execution must still use an empty approved output path, repeat Git/dependency/disk preflight, and obtain the authorization required for that operation.
 
+> This document does **not** describe the current EBplus/CenturyArks producer.
+> That producer uses the prepared source, build and install paths recorded in
+> [`centuryarks_openeb_5_2_overlay_build.md`](centuryarks_openeb_5_2_overlay_build.md).
+> Do not recreate this generic profile alongside it without separate
+> authorization and a new disk budget.
+
 These commands now reflect the locally validated Milestone 2B sequence. The preserved baseline and separate `-rpath` validation directories were used only to compare the original install with the CMake fix; normal future runs should not create duplicate trees unless a comparison explicitly requires them.
 
-The primary profile below preserves the current Milestone 2 requirement for built-in OpenEB CLI validation. Because OpenEB has no fine-grained CLI switch, this requires `BUILD_SAMPLES=ON` and the `ui` module in addition to `base`, `core`, and `stream`.
+The historical primary profile below preserved the Milestone 2 requirement for
+built-in OpenEB CLI validation. Because OpenEB has no fine-grained CLI switch,
+this required `BUILD_SAMPLES=ON` and the `ui` module in addition to `base`,
+`core`, and `stream`.
 
 ## Preflight
 

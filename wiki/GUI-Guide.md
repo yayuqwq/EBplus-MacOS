@@ -11,7 +11,7 @@ The `CustomTitleBar` (36 px tall) shows the "EB plus" chip on the left, followed
 | **File** | Open File, Open Recent, Save/Load Camera Config, Save/Load Biases, Save/Load Algo Params, Exit |
 | **View** | Toggle Playback Panel, Reset/Save/Load Layout, Fullscreen |
 | **Theme** | Color submenu (5 colors) + Mode submenu (Follow System / Light / Dark) |
-| **Tools** | Intrinsic Wizard (calibration), Sharpness |
+| **Tools** | Intrinsic Wizard (calibration), Focus Assistant |
 | **Help** | About, About Qt |
 
 Window control buttons (minimize / maximize / close) are on the right. The title bar follows the active theme.
@@ -24,9 +24,9 @@ The left sidebar is a 48 px icon column (`ActivityBar`) that switches between 5 
 |-------|------|---------|--------|
 | **Camera** | `camera` | Camera devices and connection info | Devices, Information |
 | **Display & Stats** | `chart` | Display settings and statistics | Display, Statistics |
-| **Hardware** | `cpu` | Biases, ROI, ESP and trigger configuration | Biases, ROI, ESP, Trigger, Preprocessing |
-| **Algorithms** | `blocks` | Algorithm selection and preprocessing | File Tools, Algorithms |
-| **Tools** | `tools` | File conversion and tools | (Calibration wizard placeholder) |
+| **Hardware** | `cpu` | Biases, ROI, ESP and trigger configuration | Biases, ROI, ESP, Trigger |
+| **Algorithms** | `blocks` | Algorithm selection and preprocessing | Preprocessing, Algorithms |
+| **Tools** | `tools` | File conversion and tools | File Tools |
 
 - The sidebar can be collapsed to 48 px (icon-only) or expanded to the default 380 px.
 - Drag the blank area of the ActivityBar to resize (cursor feedback: open hand → closed hand).
@@ -44,38 +44,37 @@ The left sidebar is a 48 px icon column (`ActivityBar`) that switches between 5 
 
 ### Hardware group
 - **Biases** — dynamically enumerates all HAL LL-biases; slider + spinbox + reset per bias; save/load `.bias` files.
-- **ROI** — multi-rectangle ROI / RONI via `I_ROI`; drag-to-select on the display; apply/clear.
+- **ROI** — unified ROI/RONI. A live camera uses hardware `I_ROI`/RONI; file
+  playback uses software crop/RONI. The current UI provides Enable ROI and
+  ROI Settings rather than a legacy multi-rectangle filter stage.
 - **ESP** — Anti-Flicker (mode / band / presets / duty cycle / threshold), Trail Filter (type / threshold), ERC (target event rate).
 - **Trigger** — Trigger In (per-channel enable) + Trigger Out (enable / period / duty cycle).
-- **Preprocessing** — 8-stage filter chain (see [Preprocessing](#preprocessing-filter-chain)).
 
-All hardware panels auto-disable during file playback (no HAL facility available) and degrade gracefully when a device lacks a facility.
+Facility-backed Biases, ESP and Trigger controls degrade when their facility is
+unavailable. Unified ROI remains software-backed during file playback.
 
-### Algorithms group
-- **File Tools** — RAW recording, file cutter, format conversion (RAW ↔ HDF5 ↔ CSV), AVI export.
-- **Algorithms** — algorithm selection + shared preprocessing (ROI, noise filter, 1/4 downsample, undistort) + per-algorithm parameters. See [Algorithms](Algorithms.md).
+### Algorithms and Tools groups
+- **Preprocessing** — polarity/invert/geometry transforms for the display path.
+- **Algorithms** — current registry selection, shared preprocessing controls and
+  per-algorithm parameters. See [Algorithms](Algorithms.md).
+- **File Tools** — live recording, file cutter, event-file conversion and
+  source-event export workflows.
 
 ## Display
 
-The central `EventDisplayWidget` is an OpenGL 3.3 core-profile widget with a letterboxed viewport (preserves aspect ratio). It renders events using one of 7 frame modes:
+The central `EventDisplayWidget` is an OpenGL 3.3 core-profile widget with a
+letterboxed viewport (preserves aspect ratio). Current display controls expose
+accumulation time, frame rate/FPS limit and the Dark, Light, CoolWarm and Gray
+palettes. Historical OpenEB frame-wrapper registrations are not current
+algorithm-registry entries.
 
-| Frame Mode | Description |
-|------------|-------------|
-| Integration | Time-integrated event accumulation with decay |
-| Diff | Frame-to-frame event difference |
-| Histogram | ON/OFF event count histogram |
-| Time Decay | Exponential decay visualization |
-| Contrast Map | ON-OFF contrast difference |
-| Periodic | Fixed-period frame generation |
-| On-Demand | Manual/snapshot frame |
-
-Color palettes: Dark, Light, CoolWarm, Gray.
-
-The display also supports overlays drawn by algorithms (bounding boxes, trajectories, vectors, arrows) via `FrameAnnotator`, and a pixel probe (click to inspect an event sequence / ISI / polarity).
+The display also supports overlays drawn by algorithms (bounding boxes,
+trajectories, vectors and arrows) via `FrameAnnotator`.
 
 ## Preprocessing Filter Chain
 
-Thread-safe pipeline of 8 stackable stages, toggled from the Preprocessing panel. Applied in order:
+Thread-safe pipeline of 7 stackable event transforms, toggled from the
+Preprocessing panel. Applied in order:
 
 1. Polarity Filter (OFF / ON)
 2. Polarity Invert
@@ -84,39 +83,39 @@ Thread-safe pipeline of 8 stackable stages, toggled from the Preprocessing panel
 5. Rotate (0 / 90 / 180 / 270)
 6. Transpose
 7. Rescale (Scale X, Scale Y)
-8. ROI Filter (X0, Y0, X1, Y1)
-
-The filter chain is applied to both display rendering and algorithm event windows, so flipped/rotated/filtered events stay consistent everywhere.
+Unified ROI/RONI is not a FilterChain stage. It is a separate state: software
+crop/RONI for files and hardware `I_ROI`/RONI for live cameras. The precise
+algorithm-path and coordinate/numerical behavior requires dedicated validation.
 
 ## Tools Menu
 
-The **Tools** dropdown menu (in the custom title bar) hosts two calibration-adjacent utilities:
+The **Tools** dropdown menu (in the custom title bar) hosts calibration and
+focus utilities.
 
 ### Intrinsic Wizard
 
-A dialog that calibrates the camera intrinsics using only events (no APS frames). Workflow:
+A dialog for asymmetric Zhou circle-grid calibration from CD events. After a
+connected, running camera provides events, **Space** or **Capture** takes a
+recent 5,000 us event window. Accepted captures are processed against the
+configured asymmetric grid; after the configured target (default 15), the
+workflow can solve and export YAML. This is a physical-camera/calibration
+workflow, not a registry algorithm and not yet a runtime-validation claim.
 
-1. **Show Chessboard** — opens an independent fullscreen window displaying a black-and-white chessboard that inverts at 20 Hz (one flip every 50 ms). The board geometry is computed from the target screen's pixel dimensions and physical DPI, so the reported square size in millimeters is physically meaningful for `cv::calibrateCamera`'s object-point scale. Press **F** to toggle fullscreen, **Esc** to close.
-2. **Start Auto-Capture** — the wizard subscribes to CD events via `CameraController::cd_events_ready`, accumulates them in a 1 ms / 50 ms windowed buffer, and on each 50 ms tick picks the 1 ms sub-window with the most events (the one aligned with the chessboard flip burst). It renders that window to a grayscale frame (ON events white, OFF black, background grey), runs `cv::findChessboardCorners`, and rejects duplicates via MSE against the last accepted frame (default threshold 50.0).
-3. **Auto-end + Export** — when the captured frame count reaches the target (default 30), the wizard stops capture, runs `cv::calibrateCamera`, and enables the **Export...** button. The export dialog defaults to `~/Documents/EBplus/calibration/intrinsic.yml` (identical to the undistort preprocessor's default path) and writes `image_width`, `image_height`, `camera_matrix`, `distortion_coefficients`, `rms`.
+### Focus Assistant
 
-Controls: target screen selector, inner-corner cols/rows (default 9×6), target frames (default 30), duplicate MSE threshold (default 50.0), progress bar, live preview of the last accepted frame.
-
-### Sharpness
-
-A dialog that plots the **variance of Laplacian** of the current event visualization frame as a rolling 2-second line chart, polled at 10 Hz. Higher values = sharper. Useful for bias tuning and lens focus: point the camera at a high-contrast static scene and watch the line climb as focus improves.
-
-The chart's Y-axis uses a **fixed ceiling** computed from the current frame resolution rather than auto-scaling: the algorithm estimates the theoretical maximum variance for an ideal single-pixel checkerboard under `cv::Laplacian` (ksize=3, `BORDER_REPLICATE`) — `σ²_max = [n_int·1020² + n_edge·765² + n_corner·510²] / (W·H)` — so the scale stays stable across time and the line never jumps as the data range shifts. The ceiling converges to `1020² = 1 040 400` for large sensors and is recomputed each tick from the live frame dimensions.
-
-### Undistort Preprocessing
-
-Not a menu item, but related: in the **Algorithms** panel's Preprocessing group, the **Undistort (apply calibration)** checkbox loads the YAML written by the Intrinsic Wizard and applies a forward event-address LUT (via `cv::undistortPoints`, with K adjusted for the ROI origin and downsample factor) to every event after filter + downsample. Default path: `~/Documents/EBplus/calibration/intrinsic.yml` — identical to the wizard's default export path, so the two defaults always point at the same file. Click **Browse...** to point at any other YAML.
+The current focus tool presents a rotating Siemens-star target for visual focus
+assistance. It is distinct from calibration and does not provide a numerical
+sharpness validation claim.
 
 ## Recording & Playback
 
 - **RAW recording** — record live camera streams to `.raw` with real-time buffer flushing.
-- **Playback** — open `.raw` files; speed control, seek, pause/resume, position tracking. Playback window displays integer microseconds (no scientific notation); playback rate shows 6 decimal places.
-- **Loop playback** — cyclic playback; algorithm temporal state resets on each loop to avoid frozen output.
+- **Playback** — open `.raw`, `.hdf5`, `.h5`, or `.dat` file sources; speed
+  control, pause/resume, immediate seek rendering, loop, EOF restart and
+  position tracking are wired into the file playback path.
+- **Loop playback** — cyclic playback; temporal algorithm state is reset on
+  loop/seek/source transitions. This does not substitute for numerical or
+  all-algorithm validation.
 - **File cutter** — extract a time range from an event file.
 
 The playback dock can be toggled with `Ctrl+Shift+P`.
@@ -125,8 +124,12 @@ The playback dock can be toggled with `Ctrl+Shift+P`.
 
 Available from the File Tools panel:
 
-- **Format conversion**: RAW ↔ HDF5 ↔ CSV (background worker thread).
-- **AVI export**: render events to a video file via `CDFrameGenerator` + `CvVideoRecorder`. Configurable FPS, accumulation time, quality, color mode.
+- **Format conversion**: event-file source to HDF5 or CSV, plus RAW clip.
+- **Export**: source-event HDF5 or AVI. AVI uses
+  `PeriodicFrameGenerationAlgorithm` plus direct synchronous `cv::VideoWriter`.
+
+HDF5 source-event export must not be described as general algorithm-result
+export.
 
 ## Theming
 

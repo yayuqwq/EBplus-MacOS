@@ -29,7 +29,9 @@ The binary is output to `build/gui/gui_for_openeb`.
 | `GUI_BUILD_TESTS` | `ON` | Build GUI unit tests (`gui/tests/`) |
 | `CMAKE_BUILD_TYPE` | `Release` | Recommended `Release` |
 
-CMake auto-detects Qt6, OpenCV, openEB SDK, and ONNX Runtime (if placed in `third_party/onnxruntime/`).
+CMake discovers Qt6, OpenCV and openEB SDK. ONNX Runtime/model support is
+optional and requires a separately compatible, qualified pair; do not infer
+inference availability from configuration alone.
 
 ## Run
 
@@ -99,7 +101,7 @@ If this fails, the SDK cannot find your vendor's HAL plugins — check `MV_HAL_P
 | `NonMonotonicTimeHigh` warning | Transient Evt3 protocol warning on some Gen3.x cameras at startup | Non-fatal; EB plus keeps the stream running. No action needed |
 | HDF5 file open fails | HDF5 plugin path not set | Set `HDF5_PLUGIN_PATH` to the HDF5 plugin directory |
 | Dark mode not following system | Qt < 6.5 | Use Theme → Mode → Dark |
-| E2VID falls back to heuristic mode | ONNX Runtime not installed | See [Algorithms § E2VID](Algorithms.md#e2vid-setup) |
+| E2VID falls back to heuristic mode | ONNX Runtime not installed | See [Algorithms § E2VID](Algorithms.md#event-to-video-e2vid) |
 
 ## Tests
 
@@ -108,6 +110,9 @@ cd build
 ctest --output-on-failure
 ```
 
-Test suites:
-- `gui/tests/`: 5 executables, 40 `TEST()` macros (algo_bridge, config_manager, display_strategy, layout_manager, theme_tokens)
-- `algo/tests/`: 4 executables, 288 `TEST()`/`TEST_F()` macros (phase6_common, phase7_cv, phase8_10, raw_algos)
+CTest discovery is configuration-dependent. Inspect the current registered
+tests rather than relying on a historical aggregate count:
+
+```bash
+ctest -N
+```

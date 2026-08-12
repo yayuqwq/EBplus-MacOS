@@ -79,7 +79,7 @@ $REPO_ROOT/gui/build
 $REPO_ROOT/algo/build
 ```
 
-OpenEB 5.2.0 和 EBplus 的标准路径固定为：
+Historical M2B generic-profile evidence used the following paths:
 
 ```text
 Source:
@@ -94,6 +94,30 @@ $REPO_ROOT/.deps/openeb-5.2.0-macos
 EBplus build:
 $REPO_ROOT/.build/ebplus-macos
 ```
+
+The currently validated EBplus producer is instead the prepared CenturyArks
+profile:
+
+```text
+Prepared OpenEB source:
+$REPO_ROOT/.tmp/openeb-5.2.0-centuryarks-source
+
+OpenEB build:
+$REPO_ROOT/.build/openeb-5.2.0-centuryarks-macos
+
+OpenEB install:
+$REPO_ROOT/.deps/openeb-5.2.0-centuryarks-macos
+
+EBplus build:
+$REPO_ROOT/.build/ebplus-macos
+```
+
+An authorized operation must use the profile selected for its task and must not
+recreate the historical generic and CenturyArks full producer profiles side by
+side merely to bypass cache or disk checks. The canonical tracked `openeb/`
+tree remains separate from the prepared source. Exact current OpenEB
+provenance and reproduction constraints are recorded in
+[`openeb_version_isolation.md`](openeb_version_isolation.md).
 
 不得另建内容相同的仓库外 build tree，也不得为了不同尝试随意复制已有构建树。
 
@@ -324,7 +348,7 @@ No project-controlled files were written outside the repository.
 
 ## 既有 Linux 工作流说明
 
-现有 README、`run.sh` 或 `doc/compile.md` 中可能仍记录 Linux 基线使用的 `build/`、`/tmp` 或 `/usr/local` 路径。这些内容是需要在后续独立 milestone 中审计和协调的 legacy baseline：
+现有 README、`run.sh` 或 `devlog/compile.md` 中可能仍记录 Linux 基线使用的 `build/`、`/tmp` 或 `/usr/local` 路径。这些内容是需要在后续独立 milestone 中审计和协调的 legacy baseline：
 
 - 本规范不授权新的开发任务继续向这些外部位置写入项目产物。
 - 本轮为避免改变 Linux 安装和运行说明，不修改这些既有流程或功能代码。

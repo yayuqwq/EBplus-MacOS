@@ -34,10 +34,21 @@ metavision_psee_hw_layer
 | Physical `31f7:0003` enumeration/open | Passed |
 | Physical `31f7:0003` single-process reopen | Passed after 3 seconds |
 | Physical `31f7:0002` and `31f7:0004` | Registered; hardware not tested |
-| Live event delivery | Not run |
+| B1 live event delivery | Not run |
 | Linux configure/build/runtime | Not run |
 
-This is not a claim of complete CenturyArks camera support. Phase 1 validates source delivery, build/install topology, plugin loading, OpenEB 5.2 enumeration and device open for one physical `31f7:0003` camera. It does not validate event streaming, recording, EEPROM, pixel masks, facility-specific vendor behavior, parameter changes, firmware operations, multiple simultaneous cameras, physical reconnect, or the other two registered PIDs.
+This is not a claim of complete CenturyArks camera support. Phase 1 validates source delivery, build/install topology, plugin loading, OpenEB 5.2 enumeration and device open for one physical `31f7:0003` camera. It does not validate B1 event streaming, recording, EEPROM, pixel masks, facility-specific vendor behavior, parameter changes, firmware operations, multiple simultaneous cameras, physical reconnect, or the other two registered PIDs.
+
+### Post-B1 evidence update
+
+The later repository-owned [bounded live-event validation](centuryarks_openeb_5_2_live_event_validation.md)
+ran against this installed profile with an explicit selector: 5-second and
+3-second CD-event sessions, normal stop and a bounded reopen, no parameter
+changes and no recording output. This changes the current OpenEB-level status
+from “B1 not run” to bounded delivery verified for the tested `31f7:0003`
+instance. It does not establish EBplus GUI live behavior, sustained
+quality/throughput, recording, facilities, physical reconnect, other PIDs or
+Linux.
 
 ## 2. Delivered architecture
 
@@ -695,7 +706,7 @@ The final tracked preparation script reproduced the validated prepared source by
 
 Still unvalidated or deliberately excluded:
 
-- live event delivery and bounded recording;
+- EBplus GUI live integration, sustained event quality/throughput and bounded recording;
 - EEPROM reads and pixel-mask behavior;
 - CenturyArks-specific facility or system-information changes;
 - bias, ROI, trigger, anti-flicker, ERC, or other parameter modification;
