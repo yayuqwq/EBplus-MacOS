@@ -201,7 +201,6 @@ TEST(EventPacketTest, MutablePacket) {
 
 TEST(PerformanceMeterTest, InitialState) {
     PerformanceMeter pm;
-    EXPECT_EQ(pm.fps(), 0.0);
     EXPECT_EQ(pm.latency_us(), 0.0);
     EXPECT_EQ(pm.total_events(), 0u);
     EXPECT_EQ(pm.total_frames(), 0u);
@@ -245,38 +244,7 @@ TEST(PerformanceMeterTest, Reset) {
     EXPECT_EQ(pm.total_events(), 0u);
     EXPECT_EQ(pm.total_frames(), 0u);
     EXPECT_EQ(pm.total_dropped(), 0u);
-    EXPECT_EQ(pm.fps(), 0.0);
-}
-
-TEST(PerformanceMeterTest, FPSPositiveAfterTwoFrames) {
-    PerformanceMeter pm(1.0f);
-    pm.tick_frame();
-    // Sleep to ensure measurable dt.
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    pm.tick_frame();
-    EXPECT_GT(pm.fps(), 0.0);
-    EXPECT_LT(pm.fps(), 1000.0);  // sane upper bound
-}
-
-TEST(PerformanceMeterTest, StartStopPerFilterMetrics) {
-    // jAER EventProcessingPerformanceMeter: start(n)/stop() records ns/event.
-    PerformanceMeter pm;
-    pm.start(1000);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    pm.stop();
-    EXPECT_GT(pm.ns_per_event(), 0.0);
-    EXPECT_GT(pm.eps(), 0.0);
-    EXPECT_EQ(pm.n_samples(), 1u);
-    // Accumulate a second sample for avg/stderr.
-    pm.start(2000);
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    pm.stop();
-    EXPECT_EQ(pm.n_samples(), 2u);
-    EXPECT_GT(pm.avg_ns_per_event(), 0.0);
-    EXPECT_GE(pm.stderr_ns_per_event(), 0.0);
-    pm.reset();
-    EXPECT_EQ(pm.n_samples(), 0u);
-    EXPECT_EQ(pm.avg_ns_per_event(), 0.0);
+    EXPECT_EQ(pm.latency_us(), 0.0);
 }
 
 // =========================================================================
@@ -597,8 +565,13 @@ TEST(LifIntegratorTest, LeakDecays) {
     LifIntegrator lif(10, 10, 1000, 100.0);  // tau=1ms, threshold=100
     lif.add_event(0, 0, 1, 0);  // pot = 1
     // Leak 1000us with tau=1000us → decay = e^(-1) ≈ 0.368
-    lif.leak_global(1000);
+    lif.leak_global(1000, 1000);
     EXPECT_NEAR(lif.potential(0, 0), 0.367879, 0.01);
+    // leak_global synchronises last_ts_ to `now`, so the next event decays
+    // only the interval after the global leak (no double decay, §四-低3):
+    // at t=2000, dt=1000 → 0.368*e^(-1)+1 ≈ 1.135 (not 0.368*e^(-2)+1).
+    lif.add_event(0, 0, 1, 2000);
+    EXPECT_NEAR(lif.potential(0, 0), 1.135335, 0.01);
 }
 
 TEST(LifIntegratorTest, PerPixelLeakOnEvent) {

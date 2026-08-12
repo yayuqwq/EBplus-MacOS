@@ -62,11 +62,14 @@ TEST(ExporterController, Hdf5ExportPreservesGeometry) {
     ASSERT_TRUE(completed) << failure.toStdString();
     ASSERT_TRUE(std::filesystem::is_regular_file(output));
 
+    auto source_camera = Metavision::Camera::from_file(
+        source.string(), Metavision::FileConfigHints().real_time_playback(false));
+    const auto& source_geometry = source_camera.geometry();
     auto camera = Metavision::Camera::from_file(
         output.string(), Metavision::FileConfigHints().real_time_playback(false));
     const auto& geometry = camera.geometry();
-    EXPECT_GT(geometry.get_width(), 0);
-    EXPECT_GT(geometry.get_height(), 0);
+    EXPECT_EQ(geometry.get_width(), source_geometry.get_width());
+    EXPECT_EQ(geometry.get_height(), source_geometry.get_height());
     EXPECT_GT(camera.offline_streaming_control().get_duration(), 0);
 }
 

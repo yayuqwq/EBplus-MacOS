@@ -20,13 +20,26 @@ git status --short --branch
 git branch --show-current
 ```
 
+### Actual-state preflight
+
+- Prompt、handoff、历史报告中的 SHA、路径、数量、测试数和 artifact 仅可作为
+  expected baseline/reference，不能替代本轮只读检查。
+- 每个任务开始时先核对实际 Git、工作区、依赖和所需 artifact 状态；实际只读
+  结果优先。
+- 不得为了让仓库看起来符合 prompt 或历史记录而修改、恢复、删除或伪造状态。
+- 如果实际差异破坏了任务的明确授权前提或 hard gate，必须停止并报告；不得静默
+  调整任务范围或替换基线。
+
 工作规则：
 
 - 不直接修改 `main`；在目的和范围明确的分支上工作。
 - 修改前先检查工作区，不覆盖、不暂存、不丢弃用户已有改动。
 - 修改范围必须与当前任务直接相关，不进行无关格式化、重命名、大范围清理或顺手修复。
 - 保持 `main` 可构建、可运行，并保持 Linux 原有行为。
-- 每次只推进一个清晰的 milestone；不同 milestone 不混在同一分支或变更集中。
+- 每次只推进一个清晰、独立、可审核的 scope、phase 或 gate；未经明确授权，
+  不得把不相关的 milestone implementation 混入同一变更集。upstream integration、
+  qualification、runtime requalification 和 documentation closure 可以作为各自独立
+  的维护 scope。
 - 优先形成小而可审核的修改。
 - 如果发现超出当前任务范围的问题，只记录并报告，不自行扩大范围。
 - 生成文件、构建目录、安装目录、应用包、模型缓存和本地运行配置不得提交。
@@ -45,6 +58,16 @@ git branch --show-current
 - Git 历史重写
 
 不得执行 `git clean -fd`、`git reset --hard`、`git checkout -- <path>`、`git restore <path>` 或其他会删除、覆盖、回退现有修改的破坏性命令，除非用户明确指定了对象并授权该操作。
+
+### Git authority is separate
+
+- 实施授权不自动包含 `commit`、`push`、创建 PR 或完成 merge 的授权；这些权限
+  彼此独立，必须分别明确取得。
+- 默认保持可审计的祖先关系：PR 合并使用 normal two-parent merge；不得 squash、
+  rebase 或 force-push，除非用户明确改变该规则。
+- upstream synchronization 必须 pin 到明确 commit。live upstream 在任务期间前进
+  不会自动改变当前 frozen integration scope；后续同步是新的任务，且 frozen
+  baseline 的证据只适用于其对应 source state。
 
 ## Branch conventions
 
@@ -191,6 +214,11 @@ $REPO_ROOT/.artifacts/  测试、导出、应用包及其他生成产物
 - CMake 只允许 out-of-source build，build tree 必须位于 `.build/`，安装前缀必须位于 `.deps/`。不得通过 `sudo` 安装、`pip install --user`、未经授权的 Homebrew 操作、复制文件到系统 prefix 或创建全局 symlink 来解决依赖问题。
 - 项目临时文件应优先使用 `$REPO_ROOT/.tmp`；项目专用进程可临时设置 `TMPDIR`，但不得永久修改全局 `TMPDIR`。
 
+项目主动生成的 agent/test/diagnostic artifact 必须使用上述 repository-local
+目录。真正产品功能中由用户明确选择的 export 或 recording destination 属于产品
+语义：必须在相应 workflow 中单独审计、说明和授权，不能把它与测试偷偷写入
+`/tmp` 或仓库外目录混为一谈。
+
 任何可能明显增加磁盘占用的构建、安装、venv、下载、测试、模型、导出或打包操作开始前，必须检查并报告当前可用空间、仓库总大小、现有生成目录大小、预计新增空间以及是否会形成重复构建树。
 
 - 单次操作预计新增达到或超过 `1 GiB` 时，必须说明预计大小和主要来源，并获得针对该操作的明确授权。无法合理估算时按可能超过 `1 GiB` 处理；不得拆分操作规避授权。
@@ -230,6 +258,28 @@ Dynamic library linkage check
 - 测试报告必须区分实际执行、未执行、无法执行和失败的检查。
 - 无法访问目标平台、相机、RAW 样本或模型时，应明确写出限制，不得推断验证通过。
 - 平台特定修改应同时检查目标平台路径和 Linux 回归风险。
+
+### Evidence taxonomy and boundaries
+
+报告必须明确区分 source/static、configure、build、CTest、Mach-O/linkage、CLI
+runtime、GUI runtime、physical-camera、human observation、inference 和 risk
+acceptance 证据。它们不可互相替代，尤其：
+
+- build passed ≠ GUI passed；CTest passed ≠ Cocoa GUI passed；
+- OpenEB camera passed ≠ EBplus GUI camera passed；
+- source inspection ≠ Linux runtime；risk acceptance ≠ validation evidence。
+
+GUI 不是默认禁止项，但首次 launch 前必须报告实际 binary、fixture 或 device、
+预期窗口、用户观察 checklist 和 crash/hang/error-dialog stop conditions。一项
+明确授权可以覆盖预先声明的同一 bounded runtime session。GUI evidence 应尽可能
+记录 fresh runtime root、binary UUID、wrapper/direct PID、stdout/stderr、exit code、
+fatal-marker scan 和人工观察，并将人工观察与自动证据分开。
+
+涉及硬件时，manual Disconnect → reopen、physical unplug/loss → manual recovery、
+automatic reconnect 是三种不同的行为，不能相互替代。使用 explicit selector，
+不要在报告中披露完整 serial；运行应有界。firmware/EEPROM 操作禁止；facility
+mutation 和 recording 都需要独立 scope 与明确授权。enumeration 不等于 EBplus GUI
+live validation。
 
 涉及相机时，应分别验证：
 
@@ -276,6 +326,9 @@ Export
    - Remaining-space protection-line result
    - Any writes outside repository
 ```
+
+报告正文还必须按以下固定分类组织实际结果：`Passed`、`Failed`、`Observed
+limitations`、`Not run`、`Blocked`。若某类为空，也应明确说明。
 
 报告要求：
 

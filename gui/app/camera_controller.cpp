@@ -5,6 +5,8 @@
 #include <QMetaObject>
 #include <QString>
 
+#include <filesystem>
+
 #include <metavision/sdk/stream/camera_error_code.h>
 #include <metavision/sdk/stream/camera_exception.h>
 #include <metavision/sdk/stream/file_config_hints.h>
@@ -41,8 +43,29 @@ Facility *optional_facility(Metavision::Camera *camera, bool is_file) {
 
 namespace gui {
 
+namespace {
+// OOM guard for file playback (audit §六-C2a). RAW Evt3 encodes events at
+// ~8 bytes/event on average (CD events dominate; headers/time-high words
+// amortized), so file_size / 8 is a rough event-count estimate. Buffered
+// Metavision::EventCD is 16 bytes/event, so 150M events ≈ 2.4 GB resident
+// in the FileFrameGenerator buffer — warn above that, but never block the
+// open: the user decides whether to continue.
+constexpr unsigned long long kEvt3BytesPerEventEstimate = 8;
+constexpr unsigned long long kWarnEventCount = 150'000'000;
+} // namespace
+
 CameraController::CameraController(QObject* parent)
-    : QObject(parent), frame_pipeline_(nullptr), statistics_(nullptr) {}
+    : QObject(parent), frame_pipeline_(nullptr), statistics_(nullptr) {
+    // Surface the FileFrameGenerator's OOM guard (audit §六-C2b) through
+    // the existing warning chain (status bar in MainWindow). The signal
+    // is emitted from the SDK streaming thread; Qt queues it here.
+    connect(&frame_pipeline_, &FramePipeline::file_buffer_truncated,
+            this, [this]() {
+                emit runtime_warning(
+                    tr("Event buffer memory limit reached; events beyond "
+                       "this point were discarded."));
+            });
+}
 
 CameraController::~CameraController() {
     teardown();
@@ -109,6 +132,17 @@ bool CameraController::connect_serial(const std::string& serial) {
 
 bool CameraController::connect_file(const std::string& path) {
     teardown();
+    // OOM guard (audit §六-C2a): estimate the event count from the file
+    // size BEFORE opening (RAW Evt3 ≈ 8 bytes/event) and warn if the
+    // buffer would grow huge. Non-blocking: the file still opens.
+    unsigned long long estimated_events = 0;
+    {
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(path, ec);
+        if (!ec) {
+            estimated_events = size / kEvt3BytesPerEventEstimate;
+        }
+    }
     try {
         // Always use real_time_playback=false: read all events as fast as
         // possible and buffer them in the FileFrameGenerator. Playback rate
@@ -118,6 +152,17 @@ bool CameraController::connect_file(const std::string& path) {
         hints.real_time_playback(false);
         auto cam = Metavision::Camera::from_file(path, hints);
         setup_camera(std::move(cam), true);
+        // setup_camera() reports and tears down a failed file pipeline itself.
+        // Keep this bool result transactional without emitting a duplicate UI
+        // error from this caller.
+        if (!camera_ || !is_file_) {
+            return false;
+        }
+        if (estimated_events > kWarnEventCount) {
+            emit runtime_warning(
+                tr("Very large file (est. %1M events): playback may use a "
+                   "lot of memory.").arg(estimated_events / 1'000'000));
+        }
         return true;
     } catch (const Metavision::BaseException& e) {
         // setup_camera() can fail after installing callbacks or emitting the
@@ -176,34 +221,6 @@ bool CameraController::is_running() const {
     return camera_ && camera_->is_running();
 }
 
-Metavision::timestamp CameraController::last_timestamp_us() const {
-    return last_ts_.load(std::memory_order_relaxed);
-}
-
-bool CameraController::save_config(const std::string& path) {
-    if (!camera_) {
-        return false;
-    }
-    try {
-        return camera_->save(path);
-    } catch (const Metavision::CameraException& e) {
-        emit error(QString::fromUtf8(e.what()));
-        return false;
-    }
-}
-
-bool CameraController::load_config(const std::string& path) {
-    if (!camera_) {
-        return false;
-    }
-    try {
-        return camera_->load(path);
-    } catch (const Metavision::CameraException& e) {
-        emit error(QString::fromUtf8(e.what()));
-        return false;
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Phase 2 facility accessors
 // ---------------------------------------------------------------------------
@@ -215,6 +232,63 @@ facility::Biases* CameraController::biases_facility() {
 }
 facility::Roi* CameraController::roi_facility() {
     return optional_facility<facility::Roi>(camera_.get(), is_file_);
+}
+
+bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
+                                       std::optional<bool> roni) {
+    const bool roni_mode = roni.value_or(roi_roni_);
+    if (is_file_) {
+        // File playback: no hardware — software crop with the same
+        // "sensor outputs only ROI events" semantics (Phase 2.6). RONI
+        // inverts the crop (Phase 2.6 debug D-5).
+        frame_pipeline_.set_file_roi(enabled, x, y, w, h, roni_mode);
+        roi_roni_ = roni_mode;
+        bool en = false;
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        frame_pipeline_.file_roi(en, x0, y0, x1, y1);
+        emit roi_state_changed(en, x0, y0, x1, y1);
+        return true;
+    }
+    auto* roi = roi_facility();
+    if (!roi) return false;
+    try {
+        // Compute the window (auto-center on -1, clamp to sensor), mirroring
+        // ProcessRegion::compute so live and file paths agree.
+        const int sw = sensor_info_.width > 0 ? sensor_info_.width : 1280;
+        const int sh = sensor_info_.height > 0 ? sensor_info_.height : 720;
+        const int rw = (w <= 0) ? sw : std::min(w, sw);
+        const int rh = (h <= 0) ? sh : std::min(h, sh);
+        const int rx = (x < 0) ? (sw - rw) / 2 : std::min(std::max(0, x), sw - rw);
+        const int ry = (y < 0) ? (sh - rh) / 2 : std::min(std::max(0, y), sh - rh);
+        if (rw <= 0 || rh <= 0) return false;
+        // Phase 2.6 debug D-5: the mode is part of the unified state (was
+        // hardcoded ROI, clobbering RONI set via the RoiPanel), and the
+        // window/mode are configured even when disabling so callers can
+        // pre-configure a rect while the ROI is off (mirrors the file path,
+        // which stores the rect unconditionally).
+        roi->set_mode(roni_mode ? Metavision::I_ROI::Mode::RONI
+                                : Metavision::I_ROI::Mode::ROI);
+        roi->set_windows({Metavision::I_ROI::Window(rx, ry, rw, rh)});
+        roi->enable(enabled);
+        roi_enabled_ = enabled;
+        roi_roni_ = roni_mode;
+        roi_x0_ = rx; roi_y0_ = ry;
+        roi_x1_ = rx + rw; roi_y1_ = ry + rh;
+    } catch (const std::exception&) {
+        return false;
+    }
+    emit roi_state_changed(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_);
+    return true;
+}
+
+void CameraController::unified_roi(bool& enabled, int& x0, int& y0,
+                                   int& x1, int& y1) const {
+    if (is_file_) {
+        frame_pipeline_.file_roi(enabled, x0, y0, x1, y1);
+        return;
+    }
+    enabled = roi_enabled_;
+    x0 = roi_x0_; y0 = roi_y0_; x1 = roi_x1_; y1 = roi_y1_;
 }
 facility::AntiFlicker* CameraController::anti_flicker_facility() {
     return optional_facility<facility::AntiFlicker>(camera_.get(), is_file_);
@@ -232,6 +306,10 @@ facility::TriggerOut* CameraController::trigger_out_facility() {
     return optional_facility<facility::TriggerOut>(camera_.get(), is_file_);
 }
 
+void CameraController::set_cd_broadcast(bool enabled) {
+    cd_broadcast_.store(enabled, std::memory_order_relaxed);
+}
+
 // ---------------------------------------------------------------------------
 // Internals
 // ---------------------------------------------------------------------------
@@ -242,8 +320,12 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
     fetch_sensor_info();
 
     // Runtime error callback: file EOF, disconnects, firmware errors arrive here.
+    // Capture the camera pointer: this callback's queued lambdas may execute
+    // AFTER the user has connected a different source — without the identity
+    // check, a stale error from source A would stop the freshly-connected
+    // source B and emit a spurious stopped() (audit §六-C1).
     err_cb_id_ = camera_->add_runtime_error_callback(
-        [this](const Metavision::CameraException& e) {
+        [this, cam = camera_.get()](const Metavision::CameraException& e) {
             // Reaching end-of-file is a normal stop condition for playback.
             const QString msg = QString::fromUtf8(e.what());
 
@@ -268,8 +350,12 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
             } else if (is_file_) {
                 // File source + non-glitch error → genuine EOF.
                 emit runtime_warning(tr("Playback ended: %1").arg(msg));
-                QMetaObject::invokeMethod(this, [this]() {
-                    if (!camera_) return;
+                QMetaObject::invokeMethod(this, [this, cam]() {
+                    if (camera_.get() != cam) return;  // stale callback, see above
+                    // The whole file is now buffered: allow the
+                    // FileFrameGenerator's EOF handling (stop / loop wrap)
+                    // to engage (audit §六-P2).
+                    frame_pipeline_.set_file_loading_complete(true);
                     if (camera_->is_running()) {
                         try { camera_->stop(); } catch (...) {}
                     }
@@ -278,8 +364,8 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
             } else {
                 // Live camera + genuine error: stop and report.
                 emit error(msg);
-                QMetaObject::invokeMethod(this, [this]() {
-                    if (!camera_) return;
+                QMetaObject::invokeMethod(this, [this, cam]() {
+                    if (camera_.get() != cam) return;  // stale callback, see above
                     if (camera_->is_running()) {
                         try { camera_->stop(); } catch (...) {}
                     }
@@ -294,6 +380,18 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
             if (status == Metavision::CameraStatus::STARTED) {
                 emit started();
             } else {
+                // A file source stopping on its own means EOF: everything
+                // the file will ever yield is now buffered. Signal
+                // loading-complete so the FileFrameGenerator's EOF handling
+                // (stop / loop wrap) can engage. The runtime-error EOF path
+                // (above) also does this, but the SDK does not guarantee an
+                // error callback at EOF — relying on it alone left
+                // loading_complete_ unset and loop playback stalled at the
+                // buffer top forever. Idempotent; on user-initiated stops
+                // the pipeline is being torn down anyway.
+                if (is_file_) {
+                    frame_pipeline_.set_file_loading_complete(true);
+                }
                 emit stopped();
             }
         });
@@ -309,9 +407,6 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
         [this](const Metavision::EventCD* b, const Metavision::EventCD* e) {
             try {
                 statistics_.add_events(b, e);
-                if (b != e) {
-                    last_ts_.store((e - 1)->t, std::memory_order_relaxed);
-                }
                 // File mode: buffer RAW events — FilterChain is applied
                 // per-frame in FileFrameGenerator::render_frame() so that
                 // filter toggles take effect immediately during playback.
@@ -326,6 +421,15 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
                 } else {
                     frame_pipeline_.add_events(b, e);
                 }
+                // Optional CD broadcast for calibration tools. The atomic
+                // check is cheap; the copy only happens when a listener has
+                // explicitly opted in via set_cd_broadcast(true). The emit
+                // crosses to the GUI thread via Qt's queued-connection
+                // machinery (the shared_ptr is captured by value).
+                if (cd_broadcast_.load(std::memory_order_relaxed) && b != e) {
+                    auto batch = std::make_shared<std::vector<Metavision::EventCD>>(b, e);
+                    emit cd_events_ready(batch);
+                }
             } catch (const std::exception& ex) {
                 QMetaObject::invokeMethod(this, [this, msg = std::string(ex.what())]() {
                     emit runtime_warning(QString::fromUtf8(msg.c_str()));
@@ -337,7 +441,6 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
         });
 
     statistics_.reset();
-    last_ts_.store(-1, std::memory_order_relaxed);
     filter_chain_.set_geometry(sensor_info_.width, sensor_info_.height);
 
     // Start the frame pipeline for the new sensor geometry. File sources use
@@ -352,11 +455,20 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
     if (is_file) {
         frame_pipeline_.set_file_filter_chain(&filter_chain_);
         if (!frame_pipeline_.start_file(w, h, fps, acc)) {
-            emit runtime_warning(tr("Failed to start file frame pipeline."));
+            // Without a running pipeline the display stays black forever —
+            // abort the connection instead of reporting "Connected"
+            // (audit §六-C4).
+            teardown();
+            emit disconnected();
+            emit error(tr("Failed to start file frame pipeline."));
+            return;
         }
     } else {
         if (!frame_pipeline_.start(w, h, fps, acc)) {
-            emit runtime_warning(tr("Failed to start frame pipeline."));
+            teardown();
+            emit disconnected();
+            emit error(tr("Failed to start frame pipeline."));
+            return;
         }
     }
 
@@ -368,6 +480,8 @@ void CameraController::teardown() {
     //    FramePipeline / FilterChain / StatisticsController. Without this,
     //    stopping the pipeline (which resets generator_) races with the CD
     //    callback's frame_pipeline_.add_events() — a use-after-free.
+    // Also disable CD broadcast so no in-flight emit references the camera.
+    cd_broadcast_.store(false, std::memory_order_relaxed);
     if (camera_) {
         if (cd_cb_id_) {
             camera_->cd().remove_callback(*cd_cb_id_);
@@ -392,7 +506,6 @@ void CameraController::teardown() {
 
     sensor_info_ = SensorInfo{};
     is_file_ = false;
-    last_ts_.store(-1, std::memory_order_relaxed);
 }
 
 void CameraController::fetch_sensor_info() {

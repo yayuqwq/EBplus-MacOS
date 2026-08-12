@@ -85,8 +85,8 @@ struct AlgoResult {
     std::vector<OverlayText> texts;
     std::vector<ColoredEvent> colored_events;       ///< 朝向/方向着色事件
     std::vector<OverlayTrajectory> trajectories;    ///< 聚类轨迹
-    bool has_aux_frame{false};
-    cv::Mat aux_frame;                              ///< 辅助可视化帧（Hough 空间等）
+    // Phase 2.6 debug D-2: has_aux_frame / aux_frame deleted with the hough
+    // aux display (jAER-style debug view, never visible in baseline practice).
 };
 
 /// @brief 类型擦除的算法后端接口。
@@ -117,8 +117,12 @@ public:
 
     /// @brief Updates the sensor dimensions and recomputes the ROI.
     /// Called when a new camera/file connects with different dimensions.
-    /// Backends that don't use sensor dimensions (overlay detectors, etc.)
-    /// can use the default no-op implementation.
+    /// This is effectively MANDATORY for every backend that filters by ROI
+    /// or holds sensor-sized buffers (audit §五-D1): the default no-op leaves
+    /// the backend computing its ROI at the stale construction dimensions,
+    /// which silently filters out most events on a smaller sensor.
+    /// Backends holding w×h algorithm state must additionally rebuild or
+    /// resize the algorithm here.
     virtual void set_sensor_dimensions(int /*width*/, int /*height*/) {}
 };
 

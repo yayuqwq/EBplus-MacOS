@@ -39,6 +39,28 @@
 
 EBplus 应使用仓库自带的 OpenEB 5.2.0 源码，并把源码、构建树、安装树和 EBplus GUI 构建树严格分开。
 
+### Current validated producer profile
+
+The current validated EBplus producer is the repository-local CenturyArks
+prepared profile, not the historical generic M2B profile:
+
+| 用途 | 当前路径 / provenance |
+|---|---|
+| Canonical tracked OpenEB | `$REPO_ROOT/openeb` at imported OpenEB 5.2 commit `9003b5416676e78ba994d912087486cfa94fae73` |
+| Prepared OpenEB source | `$REPO_ROOT/.tmp/openeb-5.2.0-centuryarks-source` |
+| OpenEB build | `$REPO_ROOT/.build/openeb-5.2.0-centuryarks-macos` |
+| OpenEB install | `$REPO_ROOT/.deps/openeb-5.2.0-centuryarks-macos` |
+| EBplus GUI build | `$REPO_ROOT/.build/ebplus-macos` |
+| HDF5 ECF | locked/checked-out `b982d908a0bc0afd9104d226607bedb1a11b2a95` |
+
+The CenturyArks overlay is materialized only in the prepared source; it does
+not patch the canonical tracked `openeb/` tree. The old generic
+`openeb-5.2.0-macos` build/install paths below are retained as historical M2B
+base/RPATH evidence, not as the current EBplus producer. Do not recreate that
+generic profile alongside the CenturyArks profile without separate
+authorization and a disk budget. Current producer reproduction is governed by
+[`centuryarks_openeb_5_2_overlay_build.md`](centuryarks_openeb_5_2_overlay_build.md).
+
 | 用途 | 隔离路径 |
 |---|---|
 | OpenEB 5.2.0 source | `$REPO_ROOT/openeb` |
@@ -51,7 +73,13 @@ EBplus 应使用仓库自带的 OpenEB 5.2.0 源码，并把源码、构建树�
 | Controlled temporary files | `$REPO_ROOT/.tmp/openeb-5.2.0-macos` |
 | Generated artifacts | `$REPO_ROOT/.artifacts/openeb-5.2.0-macos` |
 
-这些目录必须保持为未跟踪的项目本地目录。OpenEB 5.2.0 默认只允许使用一个标准的 macOS arm64 `Release` build tree：`$REPO_ROOT/.build/openeb-5.2.0-macos`。不得进行 in-source build，不得使用仓库外 build tree，也不得复用曾经指向 5.1.1 或 `/usr/local` 的 CMake cache。需要重建时，应先检查并报告现有标准目录，再在用户授权清理后复用同一路径；不得通过另建 Debug、RelWithDebInfo 或重复 Release build tree 绕过缓存或磁盘规则。
+这些目录必须保持为未跟踪的项目本地目录。对当前 EBplus producer，唯一标准
+macOS arm64 `Release` build tree 是
+`$REPO_ROOT/.build/openeb-5.2.0-centuryarks-macos`。不得进行 in-source build，
+不得使用仓库外 build tree，也不得复用曾经指向 5.1.1 或 `/usr/local` 的 CMake
+cache。需要重建时，应先检查并报告现有 selected profile，再在用户授权清理后复用
+同一路径；不得通过另建 Debug、RelWithDebInfo、重复 Release 或 generic parallel
+profile 绕过缓存或磁盘规则。
 
 ### 5.2.0 硬性规则
 
@@ -115,7 +143,12 @@ du -sh \
 
 ## 未来建议命令
 
-以下命令记录下一阶段建议的隔离流程，**本轮基础建设不得执行这些命令，不得构建或安装 OpenEB 5.2.0**。执行时先在 EBplus 仓库内设置当前 shell 使用的仓库根目录变量：
+The generic commands below are retained only as the historical M2B
+base/RPATH-profile reproduction record. They are **not** the current
+CenturyArks/EBplus producer recipe and must not be executed beside that profile
+without separate authorization. For current producer reproduction, use the
+reviewed CenturyArks record linked above. In every case, first set the current
+shell's repository root variable:
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"

@@ -4,7 +4,7 @@
 
 A polished, open-source Qt 6 desktop app for event cameras — built on [openEB](https://github.com/prophesee-ai/openeb) v5.2.0.
 
-Real-time visualization · camera control · recording & playback · calibration · 59 algorithms · customizable themes
+Real-time visualization · camera control · recording & playback · calibration · current 33-entry registry · customizable themes
 
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
@@ -25,7 +25,7 @@ Real-time visualization · camera control · recording & playback · calibration
 - **Control** the camera — biases, ROI, anti-flicker, triggers
 - **Record & replay** RAW event files with speed control and seek
 - **Run algorithms** — noise filtering, optical flow, object tracking, event-to-video, and more
-- **Calibrate** the camera with a chessboard wizard
+- **Calibrate** the camera with an asymmetric circle-grid workflow
 - **Export** to HDF5 / CSV / AVI
 
 The whole project is open source — feel free to fork it and adapt it to whatever you need.
@@ -45,16 +45,20 @@ cmake --build build -- -j$(nproc)
 
 That's it. The launcher handles Wayland compatibility, HAL plugin paths, and OpenGL backend selection automatically.
 
-> **Requirements**: Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4. See [doc/compile.md](doc/compile.md) for details.
+> **Requirements**: Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4. See [devlog/compile.md](devlog/compile.md) for details.
 
 ## Development Documentation
 
 macOS support is under active development and is not yet a released platform. The build and run instructions above remain the current Linux workflow.
 
-The OpenEB 5.2 side-by-side CenturyArks plugin has been built and validated for enumeration/open/reopen with one PID `0003` camera on macOS arm64. Live event streaming and full camera lifecycle validation remain in progress.
+The OpenEB 5.2 side-by-side CenturyArks profile has been validated for
+enumeration/open/reopen and bounded OpenEB-level CD-event delivery with one
+PID `0003` camera on macOS arm64. EBplus GUI live lifecycle and facility
+validation remain in progress.
 
 - [Repository workflow and contribution rules](AGENTS.md)
 - [macOS porting plan](docs/macos_porting_plan.md)
+- [macOS frozen upstream baseline integration validation](docs/macos_upstream_baseline_integration_validation.md)
 - [OpenEB version isolation](docs/openeb_version_isolation.md)
 - [OpenEB 5.2 macOS build audit](docs/openeb_5_2_macos_build_audit.md)
 - [HDF5 ECF dependency recovery](docs/hdf5_ecf_dependency_recovery.md)
@@ -72,83 +76,78 @@ The OpenEB 5.2 side-by-side CenturyArks plugin has been built and validated for 
 
 ### Real-time Display
 - OpenGL-accelerated rendering with letterboxed viewport
-- 7 frame modes: Integration, Diff, Histogram, Time Decay, Contrast Map, Periodic, On-Demand
+- Configurable accumulation time, frame rate/FPS limit, and display palette
 - 4 color palettes: Dark, Light, CoolWarm, Gray
 - Live statistics: event rate, ON/OFF ratio, FPS, timestamp
 
 ### Camera Control
 - **Biases** — all HAL biases with slider + spinbox, save/load `.bias` files
-- **ROI** — multi-rectangle ROI / RONI, drag-to-select on the display
+- **Unified ROI/RONI** — one state: hardware `I_ROI`/RONI for live cameras,
+  software crop/RONI for file playback
 - **ESP** — Anti-Flicker, Trail Filter, Event Rate Control
 - **Trigger** — Trigger In (per-channel) + Trigger Out
 
-All panels degrade gracefully when the device lacks the corresponding HAL facility (e.g. the four hardware panels auto-disable during file playback).
+Facility-backed Biases, ESP and Trigger controls degrade when their HAL
+facility is unavailable. Unified ROI remains available for file playback
+through its software crop/RONI path.
 
 ### Recording & Playback
 - RAW recording from live cameras
-- File playback with speed control, seek, pause/resume
+- File playback for `.raw`, `.hdf5`, `.h5`, and `.dat` with speed control,
+  immediate seek rendering, pause/resume, loop and EOF restart
 - File cutter — extract a time range from an event file
 
 ### Export & Conversion
-- Convert between RAW, HDF5, and CSV
-- Export events to AVI video (configurable FPS, accumulation, quality, color mode)
+- Convert event-file sources to HDF5 or CSV and cut RAW clips
+- Export source events to HDF5 or AVI; AVI uses
+  `PeriodicFrameGenerationAlgorithm` plus direct synchronous `cv::VideoWriter`
+
+HDF5 source-event export is not a general algorithm-result export claim.
 
 ### Preprocessing Filter Chain
-8 stackable stages applied in a thread-safe pipeline: Polarity Filter, Polarity Invert, Flip X, Flip Y, Rotate, Transpose, Rescale, ROI Filter. Toggled from the sidebar.
+Seven stackable OpenEB event transforms are applied in a thread-safe pipeline:
+Polarity Filter, Polarity Invert, Flip X, Flip Y, Rotate, Transpose, and
+Rescale. Unified ROI/RONI is a separate state, not an eighth FilterChain stage.
 
-### Algorithms (59 total)
-EB plus ships **29 self-developed algorithms** plus **30 OpenEB-wrapped capabilities**, all registered in a single `AlgoBridge` registry.
+### Algorithms (current registry: 33)
+The current `AlgoBridge` registry has **26 self-developed algorithms**
+(19 CV + 7 analytics) and **7 OpenEB FilterChain event transforms**. Registry
+inventory is source availability, not a statement that all algorithms have
+runtime validation.
 
 | Category | Examples |
 |----------|----------|
 | **Filtering** | Hot Pixel Filter, Background Mask, Bandpass Filter, Trigger Synced |
 | **Motion** | Sparse Optical Flow (4 modes), Direction Selective, EIS / Optical Gyro |
-| **Detection** | Blob Detector, Corner Detector (Harris/FAST/AGAST), Line Segment (ELiSeD) |
+| **Detection** | Blob Detector, Corner Detector (EndStopped/TypeCoincidence/Harris/Arc), Line Segment (ELiSeD) |
 | **Tracking** | Object Tracker (RCT/Median/Kalman/MultiHypothesis), Hough Circle, Hough Line, Active Marker |
 | **Reconstruction** | Event-to-Video — **E2VID** (default, DL), BardowVariational, InteractingMaps |
 | **Analytics** | Frequency Detector, Flow Statistics, ISI Analyzer, Particle Counter, Auto Bias |
-| **Visualization** | Time Surface, XYT 3D Point Cloud, Ultra Slow Motion, Orientation Cluster |
-| **Calibration** | Intrinsic Calibration (chessboard / circle grid / aruco) |
+| **Visualization** | Time Surface, XYT 3D Point Cloud, Orientation Cluster |
+| **Workflows outside registry** | Devices-panel Sensor Self-Test; Tools → Intrinsic Wizard |
 
-Algorithms are **mutually exclusive** — enabling one disables the previous. Each self-developed algorithm supports a **global ROI** (default: center 128×128) and a shared **"ROI → noise filter → 1/4 downsample"** preprocessing stage to bound computational cost. All algorithm parameters are adjusted exclusively in the **sidebar** (`AlgorithmsPanel`); algorithm display windows show only the title and output, preventing parameter drift between two independent control panels.
+Algorithms are **mutually exclusive** — enabling one disables the previous.
+Self-developed algorithms use the shared preprocessing controls, while unified
+ROI/RONI is managed separately. All algorithm parameters are adjusted in the
+**sidebar** (`AlgorithmsPanel`); algorithm display windows show only the title
+and output, preventing parameter drift between two independent control panels.
 
 #### Noise Filter (shared preprocessing)
-8 modes exposed in the sidebar based on the selected filter: BAF, STCF, Refractory, DWF, AgePolarity, Harmonic, Repetitious, SpatialBP.
+9 modes are exposed in the sidebar based on the selected filter: BAF, STCF,
+Refractory, DWF, AgePolarity, Harmonic, Repetitious, SpatialBP, and KNoise.
 
-#### E2VID Neural Network Reconstruction (Default)
+#### E2VID / Event-to-Video
 
-The Event-to-Video algorithm defaults to **E2VID** — a deep-learning model that reconstructs grayscale images from raw event streams. It is ported from [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid) and runs via ONNX Runtime (CPU, multi-threaded).
-
-**Setup** (one-time, ~5 minutes):
-
-```bash
-# 1. Download ONNX Runtime 1.19.2 (Linux x64 CPU) into third_party/
-cd /path/to/GUI-for-openEB
-mkdir -p third_party/onnxruntime && cd third_party/onnxruntime
-wget https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/onnxruntime-linux-x64-1.19.2.tgz
-tar xzf onnxruntime-linux-x64-1.19.2.tgz --strip-components=1
-cd ../..
-
-# 2. Create Python venv for model conversion
-python3 -m venv .venv && . .venv/bin/activate
-pip install torch --index-url https://download.pytorch.org/whl/cpu onnx onnxscript onnxruntime numpy
-deactivate
-
-# 3. Download pre-trained PyTorch weights (~41 MB)
-wget -P models/ http://rpg.ifi.uzh.ch/data/E2VID/models/E2VID_lightweight.pth.tar
-
-# 4. Convert to ONNX (produces models/e2vid_lightweight.onnx)
-. .venv/bin/activate && python models/convert_to_onnx.py && deactivate
-
-# 5. Rebuild (CMake auto-detects ONNX Runtime)
-cmake --build build -- -j$(nproc)
-```
-
-After setup, launch EB plus and enable **Algorithm → Event → Video** — it defaults to E2VID mode with 128×128 ROI, 30 fps, and 1/4 downsample (64×64 inference → upsampled to 128×128). The GUI exposes toggleable parameters (model path, auto-HDR, unsharp mask, bilateral filter).
+Event-to-Video has BardowVariational, InteractingMaps and E2VID modes. E2VID
+can use an optional ONNX Runtime/model pair; this repository does not track a
+ready-to-run model or a complete portable runtime pair. A real inference claim
+therefore requires a separately qualified compatible runtime/model pair. When
+that pair is unavailable or fails to load, the application uses its heuristic
+fallback. The GUI exposes model, bin, auto-HDR, unsharp and bilateral controls.
 
 > **Without ONNX Runtime**: E2VID falls back to a heuristic mode (voxel-grid sum + sigmoid). BardowVariational and InteractingMaps modes work without any setup — BardowVariational jointly estimates optical flow and intensity via Chambolle-Pock primal-dual optimization (all six λ terms), and InteractingMaps uses six interconnected maps (I/G/V/F/C/R) with rotation estimation via least squares.
 
-See [doc/design.md §4.4.2](doc/design.md) for full algorithm specifications.
+See [devlog/design.md §4.4.2](devlog/design.md) for full algorithm specifications.
 
 ### Theming
 - **5 background colors**: Gray, Green, Yellow, Pink, Blue (default)
@@ -177,12 +176,12 @@ GUI-for-openEB/
 │   ├── recorder/         # RAW recording & playback
 │   ├── exporter/         # HDF5/CSV/AVI export
 │   ├── calibration/      # Intrinsic wizard
-│   └── widgets/          # Title bar, ActivityBar, AlgoWindow, pixel probe
-├── algo/              # Self-developed algorithm library (29 modules)
+│   └── widgets/          # Title bar, ActivityBar, AlgoWindow
+├── algo/              # Self-developed algorithm library
 ├── openeb/            # openEB SDK (Apache 2.0, v5.2.0)
 ├── models/            # E2VID PyTorch → ONNX conversion
 ├── run.sh             # Launcher (sets env vars)
-├── doc/               # Design spec + build guide + wiki
+├── devlog/               # Design spec + build guide + wiki
 └── pic/               # Screenshots
 ```
 

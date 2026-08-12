@@ -4,7 +4,7 @@
 
 基于 [openEB](https://github.com/prophesee-ai/openeb) v5.2.0 的开源 Qt 6 事件相机桌面应用。
 
-实时可视化 · 相机控制 · 录制回放 · 标定 · 59 个算法 · 可定制主题
+实时可视化 · 相机控制 · 录制回放 · 标定 · 当前 33 项 registry · 可定制主题
 
 ![License](https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue)
 ![Language](https://img.shields.io/badge/C%2B%2B17-Qt%206-orange)
@@ -25,7 +25,7 @@
 - **控制相机** —— biases、ROI、抗闪烁、触发
 - **录制与回放** RAW 事件文件，支持速度控制与跳转
 - **运行算法** —— 噪声过滤、光流、目标跟踪、事件转视频等
-- **标定相机** —— 棋盘格向导
+- **标定相机** —— 非对称圆点阵列工作流
 - **导出** 为 HDF5 / CSV / AVI
 
 本项目完全开源，欢迎 fork 并按需修改。
@@ -47,16 +47,19 @@ cmake --build build -- -j$(nproc)
 
 启动脚本会自动处理 Wayland 兼容、HAL 插件路径和 OpenGL 后端选择。
 
-> **环境要求**：Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4。详见 [doc/compile.md](doc/compile.md)。
+> **环境要求**：Ubuntu 22.04+ · GCC 13+ · Qt 6 · OpenCV 4。详见 [devlog/compile.md](devlog/compile.md)。
 
 ## 开发文档
 
 macOS 支持目前正在开发中，尚未达到正式发布状态。以上构建和运行说明仍是当前的 Linux 工作流。
 
-OpenEB 5.2 CenturyArks 并列插件已在 macOS arm64 上完成构建，并使用一台 PID `0003` 相机验证了枚举、打开和重新打开。实时事件流和完整相机生命周期验证仍在进行中。
+OpenEB 5.2 CenturyArks 并列 profile 已在 macOS arm64 上使用一台 PID `0003`
+相机验证了枚举、打开、重新打开和有界的 OpenEB-level CD event delivery。
+EBplus GUI live lifecycle 与 facility 验证仍在进行中。
 
 - [仓库工作流与协作规则](AGENTS.md)
 - [macOS 移植路线](docs/macos_porting_plan.md)
+- [macOS frozen upstream baseline integration validation](docs/macos_upstream_baseline_integration_validation.md)
 - [OpenEB 版本隔离规范](docs/openeb_version_isolation.md)
 - [OpenEB 5.2 macOS 构建审计](docs/openeb_5_2_macos_build_audit.md)
 - [HDF5 ECF 依赖恢复](docs/hdf5_ecf_dependency_recovery.md)
@@ -74,83 +77,67 @@ OpenEB 5.2 CenturyArks 并列插件已在 macOS arm64 上完成构建，并使�
 
 ### 实时事件显示
 - OpenGL 加速渲染（GLSL 3.30 core profile，letterbox 视口）
-- 7 种帧模式：Integration、Diff、Histogram、Time Decay、Contrast Map、Periodic、On-Demand
+- 可配置 accumulation time、frame rate/FPS limit 与 display palette
 - 4 种色彩主题：Dark、Light、CoolWarm、Gray
 - 实时统计：事件率、ON/OFF 比、FPS、时间戳
 
 ### 相机控制面板
 - **Biases 面板** —— 动态枚举所有 HAL bias，滑块 + 精确输入 + Reset，保存/加载 `.bias` 文件
-- **ROI 面板** —— 多矩形 ROI / RONI（`I_ROI`），显示区拖拽选区
+- **统一 ROI/RONI** —— 一个状态：live camera 使用硬件 `I_ROI`/RONI，文件回放使用软件 crop/RONI
 - **ESP 面板** —— Anti-Flicker（模式/频带/预设/占空比/阈值）、Trail Filter（类型/阈值）、ERC（目标事件率）
 - **Trigger 面板** —— Trigger In（逐通道启用）+ Trigger Out（启用/周期/占空比）
 
-所有面板在设备不支持对应 HAL facility 时优雅降级（如文件回放时四个硬件面板自动禁用）。
+依赖 HAL facility 的 Biases、ESP 和 Trigger 控件会在对应 facility 不可用时优雅
+降级；统一 ROI 在文件回放时仍通过 software crop/RONI 路径可用。
 
 ### 录制与回放
 - RAW 录制 —— 实时相机流录制，带实时缓冲刷新
-- 文件回放 —— 速度控制、跳转、暂停/恢复、位置追踪
+- 文件回放 —— 支持 `.raw`、`.hdf5`、`.h5`、`.dat`，并提供速度控制、立即渲染的跳转、暂停/恢复、loop、EOF restart 与位置追踪
 - 文件裁剪 —— 从事件文件中提取时间段
 
 ### 数据导出与转换
-- RAW、HDF5、CSV 格式互转
-- 事件数据导出为 AVI 视频（可配置 FPS、累积时间、画质、色彩模式）
+- 将事件文件源转换为 HDF5 或 CSV，并可裁剪 RAW 片段
+- 将 source events 导出为 HDF5 或 AVI；AVI 使用
+  `PeriodicFrameGenerationAlgorithm` 与同步 `cv::VideoWriter`
+
+HDF5 source-event export 不等于通用 algorithm-result export。
 
 ### 事件预处理滤波链
-8 级可叠加阶段，线程安全管线：Polarity Filter、Polarity Invert、Flip X、Flip Y、Rotate、Transpose、Rescale、ROI Filter。从侧栏切换。
+7 个可叠加 OpenEB event transforms，线程安全管线：Polarity Filter、Polarity
+Invert、Flip X、Flip Y、Rotate、Transpose、Rescale。统一 ROI/RONI 是独立状态，不是第 8 个 FilterChain stage。
 
-### 算法（共 59 项）
-EB plus 内置 **29 个自研算法** + **30 项 openEB 封装能力**，全部注册在统一的 `AlgoBridge` 注册表中。
+### 算法（当前 registry：33 项）
+当前 `AlgoBridge` registry 有 **26 个自研算法**（19 CV + 7 analytics）和
+**7 个 OpenEB FilterChain event transforms**。registry inventory 表示 source
+availability，不等于所有算法已经 runtime verified。
 
 | 类别 | 示例 |
 |------|------|
 | **滤波** | Hot Pixel Filter、Background Mask、Bandpass Filter、Trigger Synced |
 | **运动** | Sparse Optical Flow（4 模式）、Direction Selective、EIS / Optical Gyro |
-| **检测** | Blob Detector、Corner Detector（Harris/FAST/AGAST）、Line Segment（ELiSeD）|
+| **检测** | Blob Detector、Corner Detector（EndStopped/TypeCoincidence/Harris/Arc）、Line Segment（ELiSeD）|
 | **跟踪** | Object Tracker（RCT/Median/Kalman/MultiHypothesis）、Hough Circle、Hough Line、Active Marker |
 | **重建** | Event-to-Video —— **E2VID**（默认，DL）、BardowVariational、InteractingMaps |
 | **分析** | Frequency Detector、Flow Statistics、ISI Analyzer、Particle Counter、Auto Bias |
-| **可视化** | Time Surface、XYT 3D 点云、Ultra Slow Motion、Orientation Cluster |
-| **标定** | Intrinsic Calibration（棋盘格 / 圆阵列 / aruco）|
+| **可视化** | Time Surface、XYT 3D 点云、Orientation Cluster |
+| **非 registry 工作流** | Devices panel Sensor Self-Test；Tools → Intrinsic Wizard |
 
-算法**互斥**——启用一个会禁用上一个。每个自研算法支持**全局 ROI**（默认中心 128×128）和共享的 **"ROI → 噪声滤波 → 1/4 下采样"** 预处理阶段以控制计算量。所有算法参数仅在**侧栏**（`AlgorithmsPanel`）调节；算法显示窗口只展示标题与输出，避免两处独立参数面板不同步。
+算法**互斥**——启用一个会禁用上一个。自研算法使用共享 preprocessing
+controls，而 unified ROI/RONI 单独管理。所有算法参数仅在**侧栏**（`AlgorithmsPanel`）调节；算法显示窗口只展示标题与输出，避免两处独立参数面板不同步。
 
 #### 噪声滤波（共享预处理）
-8 种模式按所选滤波器在侧栏暴露：BAF、STCF、Refractory、DWF、AgePolarity、Harmonic、Repetitious、SpatialBP。
+9 种模式按所选滤波器在侧栏暴露：BAF、STCF、Refractory、DWF、AgePolarity、Harmonic、Repetitious、SpatialBP、KNoise。
 
-#### E2VID 神经网络重建（默认模式）
+#### E2VID / Event-to-Video
 
-Event-to-Video 算法默认使用 **E2VID** —— 从原始事件流重建灰度图像的深度学习模型，移植自 [rpg_e2vid](https://github.com/uzh-rpg/rpg_e2vid)，通过 ONNX Runtime（多线程 CPU）推理。
-
-**部署**（一次性，约 5 分钟）：
-
-```bash
-# 1. 下载 ONNX Runtime 1.19.2（Linux x64 CPU）到 third_party/
-cd /path/to/GUI-for-openEB
-mkdir -p third_party/onnxruntime && cd third_party/onnxruntime
-wget https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/onnxruntime-linux-x64-1.19.2.tgz
-tar xzf onnxruntime-linux-x64-1.19.2.tgz --strip-components=1
-cd ../..
-
-# 2. 创建 Python 转换环境
-python3 -m venv .venv && . .venv/bin/activate
-pip install torch --index-url https://download.pytorch.org/whl/cpu onnx onnxscript onnxruntime numpy
-deactivate
-
-# 3. 下载 PyTorch 预训练权重（约 41 MB）
-wget -P models/ http://rpg.ifi.uzh.ch/data/E2VID/models/E2VID_lightweight.pth.tar
-
-# 4. 转换为 ONNX（生成 models/e2vid_lightweight.onnx）
-. .venv/bin/activate && python models/convert_to_onnx.py && deactivate
-
-# 5. 重新编译（CMake 自动检测 ONNX Runtime）
-cmake --build build -- -j$(nproc)
-```
-
-完成后启动 EB plus，启用 **Algorithm → Event → Video** 即默认 E2VID 模式（128×128 ROI、30fps、1/4 下采样：64×64 推理 → 上采样回 128×128）。GUI 暴露可调参数：模型路径、auto-HDR、锐化强度、双边滤波。
+Event-to-Video 具有 BardowVariational、InteractingMaps 与 E2VID modes。E2VID
+可使用 optional ONNX Runtime/model pair；本仓库不跟踪 ready-to-run model 或完整的
+portable runtime pair。因此真实 inference 的结论需要单独合格的兼容 runtime/model
+pair；缺少或加载失败时应用使用 heuristic fallback。GUI 暴露模型、bin、auto-HDR、锐化与双边滤波控制。
 
 > **无 ONNX Runtime 时**：E2VID 自动回退到启发式模式（体素网格求和 + Sigmoid）。BardowVariational 和 InteractingMaps 模式无需任何额外依赖——BardowVariational 通过 Chambolle-Pock 原始-对偶优化联合估计光流与亮度（六个 λ 正则化项），InteractingMaps 使用六张互连图（I/G/V/F/C/R）交替松弛，旋转由线性最小二乘估计。
 
-详见 [doc/design.md §4.4.2](doc/design.md)。
+详见 [devlog/design.md §4.4.2](devlog/design.md)。
 
 ### 主题
 - **5 种背景色**：Gray、Green、Yellow、Pink、Blue（默认）
@@ -179,12 +166,12 @@ GUI-for-openEB/
 │   ├── recorder/         # RAW 录制 & 回放
 │   ├── exporter/         # HDF5/CSV/AVI 导出
 │   ├── calibration/      # 内参向导
-│   └── widgets/          # 标题栏、ActivityBar、AlgoWindow、像素探针
-├── algo/              # 自研算法库（29 模块）
+│   └── widgets/          # 标题栏、ActivityBar、AlgoWindow
+├── algo/              # 自研算法库
 ├── openeb/            # openEB SDK（Apache 2.0，v5.2.0）
 ├── models/            # E2VID PyTorch → ONNX 转换
 ├── run.sh             # 启动脚本（环境变量设置）
-├── doc/               # 设计规格 + 编译指南 + wiki
+├── devlog/               # 设计规格 + 编译指南 + wiki
 └── pic/               # 截图
 ```
 

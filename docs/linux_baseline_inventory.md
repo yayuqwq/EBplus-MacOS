@@ -2,7 +2,16 @@
 
 ## 1. Purpose and scope
 
-本文档记录 EBplus 当前 tracked source 所呈现的 Linux 功能范围、构建和运行入口、OpenEB 集成边界、平台专用假设及后续运行验证需求。它是后续 macOS 功能对齐工作的参考基线，不是运行验收报告。
+本文档记录 Milestone 1 historical tracked-source state 所呈现的 Linux 功能范围、构建和运行入口、OpenEB 集成边界、平台专用假设及后续运行验证需求。它是后续 macOS 功能对齐工作的历史参考基线，不是运行验收报告。
+
+> **Historical scope.** This is the Milestone 1 source-level Linux baseline
+> snapshot at `d80642817d2581687aa0b2a55f171c0c1e84901a` on 2026-07-18. Its
+> 60-entry inventory describes that historical source state. Frozen upstream
+> integration subsequently changed the current source baseline; see
+> [macOS frozen upstream baseline integration validation](macos_upstream_baseline_integration_validation.md)
+> and the current [platform parity matrix](platform_parity_matrix.md). This
+> document remains historical provenance, not Linux runtime evidence; current
+> macOS source inspection does not re-baseline Linux runtime.
 
 - 本轮只进行了源码、CMake、脚本和文档的静态审计。
 - 本轮未执行 CMake configure、编译、CTest、GUI 启动、RAW 回放、真实相机、算法、模型或导出。
@@ -52,7 +61,7 @@
 | <code>algo/</code> | 自研算法、公共数据结构、E2VID 和算法测试 |
 | <code>models/</code> | 当前只跟踪 ONNX 转换脚本，不跟踪模型权重 |
 | <code>openeb/</code> | 仓库自带 OpenEB 5.2.0 源码；本轮只审计 EBplus 集成边界 |
-| <code>doc/</code> | 既有设计、编译和优化文档 |
+| <code>devlog/</code> | 既有设计、编译和优化文档 |
 | <code>docs/</code> | macOS 移植、隔离、工作区和本基线文档 |
 
 ### 3.2 CMake 和 targets
@@ -396,12 +405,12 @@ Linux 上 <code>QSettings</code>/<code>QStandardPaths</code> 通常使用用户�
 
 ## 7. Documentation and implementation conflicts
 
-1. README 要求 Ubuntu 22.04+ / GCC 13+，<code>doc/compile.md</code> 记录 Ubuntu 26.04 / GCC 15。
-2. README 和 <code>run.sh</code> 使用 <code>build/gui/gui_for_openeb</code>，<code>doc/compile.md</code> 的直接运行示例使用 <code>build/gui_for_openeb</code>。
+1. README 要求 Ubuntu 22.04+ / GCC 13+，<code>devlog/compile.md</code> 记录 Ubuntu 26.04 / GCC 15。
+2. README 和 <code>run.sh</code> 使用 <code>build/gui/gui_for_openeb</code>，<code>devlog/compile.md</code> 的直接运行示例使用 <code>build/gui_for_openeb</code>。
 3. 既有编译文档把 GTest 描述为可选，但顶层无条件加入 <code>algo/tests</code>，其中 <code>find_package(GTest REQUIRED)</code>。
 4. README 和 <code>AlgoBridge</code> 文件头仍写 59 项（29 self + 30 OpenEB）；当前 registry 实际为 60 项（30 self + 30 OpenEB），测试源码也静态断言 60，但本轮未运行测试。
 5. 新工作区规范要求 <code>.build/</code>，现有 Linux README 和 <code>run.sh</code> 仍使用 legacy <code>build/</code>。
-6. <code>doc/compile.md</code> 包含 <code>/tmp</code>、仓库外 venv、sudo install、<code>/usr/local</code> 和 shell profile 修改；本轮只记录，不修改。
+6. <code>devlog/compile.md</code> 包含 <code>/tmp</code>、仓库外 venv、sudo install、<code>/usr/local</code> 和 shell profile 修改；本轮只记录，不修改。
 7. EBplus 顶层只使用 <code>find_package(MetavisionSDK)</code>，不会自动使用仓库内 OpenEB 源码；<code>run.sh</code> 默认又指向 <code>/usr/local</code>。
 8. 根仓库跟踪 mode 160000 的 <code>openeb/sdk/modules/stream/cpp/3rdparty/hdf5_ecf</code>，但根级缺少对应 <code>.gitmodules</code> mapping；<code>git submodule status</code> 会失败。
 9. <code>main_window.h</code> 注释仍提 6 menus/Camera menu，实际只有 File/View/Theme/Tools/Help；<code>EventDisplayWidget</code> 空状态仍提示 Camera menu。

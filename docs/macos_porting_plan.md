@@ -186,7 +186,12 @@ EBplus GUI live display、facility 和参数 parity、物理 disconnect/reconnec
 
 - 构建仓库自带的 OpenEB / Metavision SDK 5.2.0。
 - 使用项目内唯一的标准 `Release`/arm64 build tree 和独立 install prefix，不影响 `/usr/local` 中稳定的 5.1.1。
-- OpenEB build 固定为 `$REPO_ROOT/.build/openeb-5.2.0-macos`，install 固定为 `$REPO_ROOT/.deps/openeb-5.2.0-macos`；不得创建仓库外或不必要的重复构建树。
+- 当前经验证的 EBplus producer 是 CenturyArks prepared profile：source 为
+  `$REPO_ROOT/.tmp/openeb-5.2.0-centuryarks-source`，build 为
+  `$REPO_ROOT/.build/openeb-5.2.0-centuryarks-macos`，install 为
+  `$REPO_ROOT/.deps/openeb-5.2.0-centuryarks-macos`。历史 generic M2B
+  base/RPATH profile 仅保留为历史验证证据；不得并行重建两个完整 profile，亦不得
+  创建仓库外或不必要的重复 build tree。
 - 验证 OpenEB C++ CLI、RAW 文件读取和真实相机连接。
 - 参考已工作的 5.1.1 macOS 方案，逐项评估并记录 5.2.0 所需的最小补丁。
 - 不盲目复制全部 5.1.1 修改，不顺带升级 OpenEB 或其他依赖。
@@ -348,64 +353,133 @@ build 或 runtime 证据。维护者明确接受剩余 Linux regression risk，�
 
 **完成标准**
 
-- bounded macOS arm64 RAW/HDF5/H5/DAT file-source lifecycle、代表性 ROI FilterChain/Time Surface 和 RAW-to-HDF5 round-trip 均有实际 evidence；disconnect/reopen 与两种 geometry 的 A→B→A source switch 也已验证。
+- bounded macOS arm64 RAW/HDF5/H5/DAT file-source lifecycle、代表性 unified
+  ROI、FilterChain、Time Surface 和 RAW-to-HDF5 round-trip 均有实际 evidence；
+  disconnect/reopen 与两种 geometry 的 A→B→A source switch 也已验证。
 - 已复现的 empty RAW、same-file reopen、generic-offline DeviceUnavailable、HDF5 export null-geometry 和 paused seek presentation defects 均已有相应修复与有界验证；未验证事项保留为明确限制。
 - broader algorithms/models/AVI/general algorithm-result export、physical camera/live workflows、broader corpus 和 stress/performance/memory-safety 不因本 closure 被写成 passed，分别移交 Milestone 6、Milestone 7 或 backlog。
 - **Linux criterion status:** native Linux compilation、file-source runtime 和 export comparison 未运行；维护者明确接受该 M5 closure risk。此为管理性关闭决定，不是 Linux validation evidence；Linux remains <code>Not run / unverified</code>。
+
+### Frozen upstream baseline integration checkpoint
+
+**状态：** `Qualified on the frozen active integration tree; Git closure remains separate.`
+
+The candidate integrates fork baseline
+`d01f1c1a632dece8be10618d2212d6c3f76aeb23` with frozen upstream integration
+baseline `f72fdf750ab82c09eb1d11ba828a4ac0601a2ea9`, using merge base
+`e0439b79f4b272f249cb096f8daf7f73824ca788`. The latter is a pinned/frozen
+integration baseline, **not** a statement about current live `upstream/main`.
+
+The active merge reconciliation, Release/arm64 configure and full build,
+focused CTest `42/42`, full CTest `341/341`, Mach-O/OpenEB 5.2 CenturyArks
+provenance, and representative post-integration M5 GUI/file/export
+requalification are recorded in [macOS frozen upstream baseline integration
+validation](macos_upstream_baseline_integration_validation.md). The evidence
+belongs to this frozen candidate source state and does not rewrite historical
+M0–M5 validation records.
+
+**Linux integration configure/build/runtime regression: Not run / unverified.**
+The maintainer accepts this residual risk for the frozen integration closure
+only. **Risk acceptance is not Linux validation evidence.** It does not extend
+to M6, M7 or M8. Any later upstream movement is a separate synchronization
+scope and does not automatically reopen or change this pinned integration.
 
 ### Milestone 6: Live camera parity
 
 **状态：** `Planned`
 **独立分支：** `feat/macos-live-camera`
 
-**范围**
+Milestone 6 covers the current integrated source's live-camera and facility
+lifecycle. Source wiring exists, but no current macOS EBplus GUI physical-camera
+evidence is implied by that fact or by OpenEB-only camera evidence.
 
-- 在 macOS 发现并打开真实相机，显示实时事件流。
-- 验证 HAL plugin 加载、facility 访问和 Linux 基线支持的相机参数控制。
-- 支持正确关闭、再次打开、重连和异常断开处理。
-- 保持 Linux 相机路径、插件加载和厂商配置行为。
+#### M6-A: basic live lifecycle
 
-**检查方法**
+**范围与最小验收**
 
-- 分别验证 device enumeration、device open、live event stream、facility access、parameter changes、clean shutdown 和 reconnect。
-- 检查无设备、权限不足、插件缺失、设备占用和传输中断等失败路径。
-- 多次执行打开/关闭/重连，检查线程、回调、句柄、设备状态和 GUI 状态恢复。
-- 在 Linux 使用受支持相机执行对应回归，比较功能、参数范围和错误行为。
+```text
+Devices Refresh / enumerate
+-> explicit selected-device open (do not use "Connect first" as acceptance)
+-> visibly non-empty dynamic live display and responsive GUI
+-> manual Disconnect
+-> select and reopen the same device
+-> bounded second live observation
+-> clean quit
+```
 
-**完成标准**
+The runtime must use repository-local OpenEB 5.2 CenturyArks provenance with no
+`/usr/local` 5.1.1 fallback. It requires one authorized, visible supported
+device, an explicit selector without full serial disclosure, a bounded GUI
+session and fresh repository-local logs. A previously qualified build may be
+reused only while source and dependency provenance remain unchanged; otherwise
+configure/build qualification comes first. M6-A does not need a file fixture,
+recording, model or ONNX dependency.
 
-- 至少一台目标真实相机在 macOS 上完成完整枚举、打开、流式显示、控制、关闭和重连周期。
-- HAL 插件和依赖来自隔离的 OpenEB 5.2.0 环境，没有回退到稳定 5.1.1。
-- 断开和失败路径不会造成崩溃、挂起或不可恢复状态。
-- Linux 相机功能无回归；未覆盖的设备型号明确列为限制。
+**明确排除**
+
+- bias、ROI/RONI、ESP/ERC 或 trigger 写入；
+- sensor self-test、calibration、RAW/processed recording、algorithms/models；
+- physical unplug/replug、automatic reconnect、多相机和 live↔file switching。
+
+manual Disconnect → reopen is not evidence for physical loss/manual recovery
+or automatic reconnect. Later independently authorized M6 slices cover
+facility inventory and controlled mutation, live RAW/processed recording
+lifecycle, physical-loss/manual recovery, product-defined automatic reconnect,
+and live↔file switching. Linux M6 criteria remain a future maintainer decision;
+the frozen integration Linux-risk acceptance does not extend to M6.
+
+**M6-A 完成标准**
+
+- selected device is enumerated/opened through the repository-local OpenEB
+  5.2 profile and live display is visibly dynamic;
+- manual Disconnect clears the active state without crash/hang, and the same
+  selected device streams again after reopen;
+- normal quit has bounded clean exit/no scoped fatal marker; and
+- facility/UI presence may be observed read-only, but no mutation or
+  device-capability claim is made.
 
 ### Milestone 7: Algorithms, models and export
 
 **状态：** `Planned`
 **独立分支：** `feat/macos-algorithms-models-export`
 
-**范围**
+**当前 source baseline**
 
-- 验证 Milestone 1 盘点出的全部 Linux 算法在 macOS 的可用性和输出。
-- 验证模型发现、加载、推理、错误处理和已定义的回退模式。
-- 验证 CSV、视频、HDF5 及 Linux 基线中发现的其他导出格式。
-- 比较 Linux 与 macOS 的算法和导出结果，定义数值容差或格式一致性要求。
-- 记录暂不支持的功能及原因，不通过静默降级掩盖缺失能力。
+The current registry is `33 = 26 self-developed (19 CV + 7 analytics) + 7
+OpenEB FilterChain transforms`:
+`polarity_filter`, `polarity_invert`, `flip_x`, `flip_y`, `rotate`,
+`transpose`, and `rescale`. The unified ROI is separate from FilterChain;
+file playback uses a software crop while live ROI/RONI uses the hardware
+`I_ROI` facility. `sensor_self_test` is a Devices hardware diagnostic and
+intrinsic calibration is a Tools/CalibrationWizard workflow, not registry
+entries. Source existence or registry count is not a macOS runtime-completion
+metric.
 
-**检查方法**
+**独立可验收 slices**
 
-- 对每个算法使用固定 RAW/事件输入，记录参数、输出摘要、性能和失败信息。
-- 对需要模型的路径分别测试模型存在、缺失、损坏和版本不匹配。
-- 检查是否实际启用 ONNX Runtime；将真实模型推理与启发式回退分别报告。
-- 对每种导出检查文件创建、元数据、记录数量、时间戳、可重新读取性和错误清理。
-- 在 Linux/macOS 比较确定性输出；浮点结果使用预先记录的合理容差。
+1. current catalog/config persistence and migration;
+2. deterministic file-source preprocessing and category-based representative
+   algorithm lifecycle/numerical evidence (including nine shared noise modes,
+   KNoise, Arc and current Time Surface modes);
+3. E2VID/model qualification: heuristic fallback separately from a real,
+   compatible arm64 ONNX Runtime plus model;
+4. offline export: extend existing bounded HDF5 evidence independently for
+   CSV, RAW clip and AVI creation/readback/error behavior;
+5. calibration solve/YAML/undistort after the M6 live-capture prerequisite;
+6. processed-recording semantics and output integrity after M6 live lifecycle.
+
+General `AlgoResult` export remains a deferred product decision, not an
+assumed current feature. M7 must separate current source inventory, automated
+tests, representative macOS runtime and numerical/Linux comparison evidence.
+The frozen-integration Linux risk acceptance does not extend to M7.
 
 **完成标准**
 
-- Linux 基线中的每个算法、模型和导出项都有 macOS 结果及对照结论。
-- 支持项通过 smoke test 和结果校验，不能只以按钮可点击或进程未崩溃为依据。
-- 不支持项有清晰提示、文档和后续处理建议。
-- Linux 的算法选择、结果、模型回退和导出格式无回归。
+Each accepted slice records fixed inputs, actual parameters, output/error and
+reset/cleanup behavior. Real model inference, source-event export and
+algorithm-result export are reported separately. Linux/macOS comparison and
+future Linux acceptance remain explicit decisions rather than inherited risk
+acceptance.
 
 ### Milestone 8: Packaging and CI
 
@@ -415,14 +489,16 @@ build 或 runtime 证据。维护者明确接受剩余 Linux regression risk，�
 **范围**
 
 - 生成可运行的 macOS `.app` bundle。
-- 收集并验证 Qt、OpenEB、OpenCV、模型运行时、HAL plugin 和其他运行时依赖及 RPATH。
+- 收集并验证 Qt frameworks/plugins、OpenCV、OpenEB SDK/HAL plugins、HDF5/ECF
+  plugin、optional ONNX Runtime/models 和其他运行时依赖及 RPATH。
 - 根据需要提供 DMG；代码签名和 notarization 作为后续可选工作，不作为初始移植阻塞项。
 - 增加 Apple Silicon CI，同时保持 Linux CI 正常。
 - 记录打包输入、产物边界、运行环境、已知限制和回滚方法。
 
 **检查方法**
 
-- 在干净环境检查 `.app` 结构、资源、插件和 `otool -L`/RPATH 结果。
+- 在干净环境检查 `.app` 结构、资源、插件和 `otool -L`/RPATH 结果；从 Finder 与
+  terminal launch 均不得依赖 developer absolute path 或 fallback prefix。
 - 从 Finder 和终端分别启动，执行 GUI、RAW、算法和无需硬件的导出 smoke test。
 - 在可用硬件环境验证打包应用的设备发现和实时相机路径。
 - CI 执行 macOS arm64 configure/build/tests/packaging smoke test，并持续执行 Linux configure/build/tests。
@@ -430,7 +506,9 @@ build 或 runtime 证据。维护者明确接受剩余 Linux regression risk，�
 
 **完成标准**
 
-- `.app` 在规定的 macOS arm64 环境可独立启动，运行时依赖不指向开发者个人目录。
+- `.app` 在规定的 macOS arm64 环境可独立启动，运行时依赖不指向开发者个人目录；
+  build-tree/install RPATH evidence does not by itself satisfy standalone
+  loader or bundle closure.
 - CI 能阻止 macOS 构建回归，同时 Linux job 保持通过。
 - 打包文档列出支持范围、硬件限制、签名/notarization 状态和可复现命令。
 - 仅在对应功能 milestone 已完成后，才可对外声明相应 macOS 能力。
@@ -500,10 +578,11 @@ Export
 
 ## 已知风险与后续审计项
 
-- 仓库已有 `doc/`，本路线及版本隔离文档按要求位于新增的 `docs/`；两个目录暂时并存，本轮不重命名旧目录。
-- `README.md` 与 `README_CN.md` 写明 Ubuntu 22.04+，而 `doc/compile.md` 记录 Ubuntu 26.04；Milestone 1 应核实支持基线，本轮不修改既有 Linux 文档。
-- `doc/compile.md` 的直接运行示例使用 `./build/gui_for_openeb`，而 `run.sh` 和当前 CMake 目标布局指向 `build/gui/gui_for_openeb`；Milestone 1 应核实并记录正确入口，本轮不顺带修复。
+- `devlog/` 保存 legacy Linux design/build 文档，`docs/` 保存 macOS、workspace 和
+  validation 记录；两者的文档角色不同，不应把历史路径当作当前 build producer。
+- `README.md` 与 `README_CN.md` 写明 Ubuntu 22.04+，而 `devlog/compile.md` 记录 Ubuntu 26.04；Milestone 1 historical record 仍提示需要核实支持基线。
+- `devlog/compile.md` 的直接运行示例使用 `./build/gui_for_openeb`，而 `run.sh` 和当前 CMake 目标布局指向 `build/gui/gui_for_openeb`；需要在独立 Linux-documentation scope 中协调。
 - 根仓库的 HDF5 ECF gitlink 已建立完整根级 `.gitmodules` mapping，并在 prerequisite 分支检出锁定提交；该静态依赖完整性恢复尚未经过独立 fresh clone、configure、build 或运行验证。
 - `run.sh`、`gui/main.cpp` 和 `algo/CMakeLists.txt` 存在 Linux 系统路径、动态库和显示后端假设；它们是后续平台隔离热点，本轮仅记录，不修改。
-- 现有 Linux README、`run.sh` 和 `doc/compile.md` 仍包含传统 `build/`、系统 `/tmp` 或 `/usr/local` 流程。这些是需要后续协调的 legacy baseline，本轮保持原文以避免改变 Linux 指引，但不构成未来任务绕过仓库内工作区规范的授权。
+- 现有 Linux README、`run.sh` 和 `devlog/compile.md` 仍包含传统 `build/`、系统 `/tmp` 或 `/usr/local` 流程。这些是需要后续协调的 legacy baseline，本轮保持原文以避免改变 Linux 指引，但不构成未来任务绕过仓库内工作区规范的授权。
 - OpenEB 5.1.1 是已验证的稳定 macOS 环境，但 EBplus 的目标版本是 5.2.0；任何比较结果都不能成为覆盖 5.1.1 或将 EBplus 降级到 5.1.1 的理由。

@@ -71,11 +71,12 @@ target_compile_definitions(test_camera_controller_lifecycle PRIVATE
 target_link_libraries(test_camera_controller_lifecycle PRIVATE
     gui_core
     GTest::GTest
-    GTest::Main
 )
 target_compile_options(test_camera_controller_lifecycle PRIVATE ${GUI_TEST_COMPILE_OPTS})
 gtest_discover_tests(test_camera_controller_lifecycle
     DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
+    DISCOVERY_MODE POST_BUILD
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
 )
 
 # --- test_exporter_controller: HDF5 metadata preservation round-trip. ---

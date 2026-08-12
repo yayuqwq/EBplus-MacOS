@@ -36,7 +36,9 @@ class HoughLineBackend final : public AlgoBackend {
     int num_theta_bins_{90};
     int num_rho_bins_{0};
     int threshold_{50};
-    Metavision::timestamp decay_us_{100000};
+    // Persisted so rebuild() re-applies it (the algo ctor takes it directly;
+    // accumulator_decay_us was removed algo-side as a dead param, §7.3).
+    float hough_decay_factor_{0.6F};
     std::unique_ptr<gui_algo::HoughLineTracker> algo_;
     std::vector<Metavision::EventCD> passthrough_;
     std::vector<gui_algo::Event> roi_events_;
@@ -54,42 +56,47 @@ public:
         preproc_.init(aw, ah);
         const int f = preproc_.factor();
         algo_ = std::make_unique<gui_algo::HoughLineTracker>(
-            aw / f, ah / f, num_theta_bins_, num_rho_bins_, threshold_, decay_us_);
+            aw / f, ah / f, num_theta_bins_, num_rho_bins_, threshold_,
+            hough_decay_factor_);
     }
     void set_param(const std::string& k, const std::string& v) override {
         if (preproc_.set_param(k, v)) {
             if (k == "preproc_downsample") rebuild();
             return;
         }
+        // Snapshot ROI state BEFORE mutation so the rebuild below only runs
+        // when the effective dimensions actually change (audit §五-D4): ROI
+        // position moves (x/y) don't change the accumulator size, and
+        // apply_global_roi fires 5 set_param calls — rebuilding on each one
+        // would clear the accumulator 5 times.
+        const bool prev_roi_enabled = roi_.enabled;
+        const int prev_roi_rw = roi_.rw;
+        const int prev_roi_rh = roi_.rh;
         bool need_rebuild = false;
+        bool roi_changed = false;
         if (k == "threshold") { threshold_ = to_i(v); if (algo_) algo_->set_threshold(threshold_); }
         else if (k == "num_theta_bins") { num_theta_bins_ = to_i(v); need_rebuild = true; }
         else if (k == "num_rho_bins") { num_rho_bins_ = to_i(v); need_rebuild = true; }
-        else if (k == "accumulator_decay_us") {
-            decay_us_ = static_cast<Metavision::timestamp>(to_i(v));
-            if (algo_) algo_->set_accumulator_decay_us(decay_us_);
-        }
         else if (k == "hough_decay_factor") {
-            if (algo_) algo_->set_hough_decay_factor(static_cast<float>(to_d(v)));
+            hough_decay_factor_ = static_cast<float>(to_d(v));
+            if (algo_) algo_->set_hough_decay_factor(hough_decay_factor_);
         }
-        else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
-        else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
-        else if (k == "roi_y") { roi_.y = to_i(v); need_rebuild = true; }
-        else if (k == "roi_w") { roi_.w = to_i(v); need_rebuild = true; }
-        else if (k == "roi_h") { roi_.h = to_i(v); need_rebuild = true; }
+        // Phase 2.6: roi_* keys intentionally not handled.
         if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
+        else if (roi_changed) {
+            const int old_aw = prev_roi_enabled ? prev_roi_rw : sensor_w_;
+            const int old_ah = prev_roi_enabled ? prev_roi_rh : sensor_h_;
+            roi_.compute(sensor_w_, sensor_h_);
+            const int new_aw = roi_.enabled ? roi_.rw : sensor_w_;
+            const int new_ah = roi_.enabled ? roi_.rh : sensor_h_;
+            if (new_aw != old_aw || new_ah != old_ah) rebuild();
+        }
     }
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
-        if (k == "roi_enabled") return from_b(roi_.enabled);
-        if (k == "roi_x") return from_i(roi_.x);
-        if (k == "roi_y") return from_i(roi_.y);
-        if (k == "roi_w") return from_i(roi_.w);
-        if (k == "roi_h") return from_i(roi_.h);
         if (k == "threshold" && algo_) return from_i(algo_->threshold());
         if (k == "num_theta_bins") return from_i(num_theta_bins_);
         if (k == "num_rho_bins") return from_i(num_rho_bins_);
-        if (k == "accumulator_decay_us") return from_i(static_cast<int>(decay_us_));
         if (k == "hough_decay_factor" && algo_) return from_d(algo_->hough_decay_factor());
         return {};
     }
@@ -125,25 +132,9 @@ public:
             l.y2 = static_cast<int>(hl.end.y) * f + dy;
             r.lines.push_back(l);
         }
-        // Aux frame: Hough θ-ρ accumulator (jAER HoughLineTracker GL render).
-        if (algo_) {
-            const auto& accum = algo_->accum();
-            const int nt = algo_->num_theta_bins();
-            const int nr = algo_->num_rho_bins();
-            if (nt > 0 && nr > 0 && static_cast<int>(accum.size()) == nt * nr) {
-                cv::Mat hough(nt, nr, CV_32F, const_cast<float*>(accum.data()));
-                double mn, mx;
-                cv::minMaxLoc(hough, &mn, &mx);
-                cv::Mat vis;
-                if (mx > mn) {
-                    hough.convertTo(vis, CV_8U, 255.0 / (mx - mn), -mn * 255.0 / (mx - mn));
-                } else {
-                    vis = cv::Mat::zeros(nt, nr, CV_8U);
-                }
-                cv::applyColorMap(vis, r.aux_frame, cv::COLORMAP_JET);
-                r.has_aux_frame = true;
-            }
-        }
+        // Phase 2.6 debug D-2: the Hough θ-ρ aux display was deleted (user
+        // decision — it was a jAER-style debug view that was never visible
+        // in baseline practice: the window zoom view covered it every frame).
         r.status = "hough_line: " + std::to_string(last_.size()) + " lines" +
                    std::string(roi_.enabled ? " (ROI)" : " (full)");
         return r;
@@ -161,19 +152,31 @@ public:
 /// HoughCircleTracker backend — detected circles as overlay circles.
 ///
 /// Complex algorithm (design §4.3.15): the 3D accumulator (a, b, r) is built
-/// at ROI dimensions, NOT sensor dimensions. At sensor scale (e.g. 1280×720)
-/// with max_radius=50 the accumulator would be ~42M cells (168 MB) and
-/// find_peaks would scan every cell per frame — a memory/CPU blowup that
-/// freezes/crashes the GUI. Using the ROI (default 128×128) bounds this to
-/// ~750K cells. Events are cropped to ROI-relative coordinates; detected
-/// circle centers are shifted back by the ROI origin for overlay rendering.
+/// at the backend's CURRENT dimensions (set_sensor_dimensions), NOT the raw
+/// sensor dimensions. At full sensor scale (e.g. 1280×720) with
+/// max_radius=50 the accumulator would be ~42M cells (168 MB) and find_peaks
+/// would scan every cell per frame — a memory/CPU blowup that freezes the
+/// GUI. The unified-ROI automation (Phase 2.6 debug D-7 default-ROI list)
+/// resizes this backend to the ROI window via AlgoInstance::set_unified_roi,
+/// restoring the bound (256×144 → ~1.7M cells at f=1). Event cropping and
+/// coordinate translation are done by AlgoInstance::push_events; the backend
+/// sees the ROI window as its effective sensor.
 class HoughCircleBackend final : public AlgoBackend {
     int sensor_w_{0}, sensor_h_{0};
     ProcessRegion roi_;
-    int min_radius_{8};
+    // min_radius / accumulator_decay_us were removed algo-side as dead
+    // params (§三-32); the ctor no longer takes them.
     int max_radius_{30};
     int threshold_{50};
-    Metavision::timestamp decay_us_{100000};
+    // Adaptive defaults: while the user hasn't explicitly set a param,
+    // rebuild() derives it from the WORKING resolution (post-ROI,
+    // post-downsample) so the detector stays sane across ROI sizes:
+    //   max_radius = min(w,h)/8  (45px at full 720p+downsample, 8px in a
+    //                            128px downsampled ROI)
+    //   threshold  = 0.25 * 2π * max_radius  (≈ a quarter of the circle
+    //                            perimeter in votes; ≈ jAER's 15 at r=8)
+    bool radius_user_set_{false};
+    bool threshold_user_set_{false};
     // jAER params (persisted so rebuild() preserves them)
     float decay_{1.0f};
     int buffer_length_{4000};
@@ -201,8 +204,19 @@ public:
         const int ah = roi_.enabled ? roi_.rh : sensor_h_;
         preproc_.init(aw, ah);
         const int f = preproc_.factor();
+        const int w = aw / f, h = ah / f;
+        // Adaptive defaults for untouched params (see member comments):
+        // derive from the working resolution so a small ROI doesn't keep
+        // full-sensor parameters (and vice versa).
+        if (!radius_user_set_) {
+            max_radius_ = std::max(5, std::min(500, std::min(w, h) / 8));
+        }
+        if (!threshold_user_set_) {
+            threshold_ = std::max(2, std::min(500,
+                static_cast<int>(std::lround(0.25 * 2.0 * M_PI * max_radius_))));
+        }
         algo_ = std::make_unique<gui_algo::HoughCircleTracker>(
-            aw / f, ah / f, min_radius_, max_radius_, threshold_, decay_us_,
+            w, h, max_radius_, threshold_,
             decay_, buffer_length_, nr_max_, decay_mode_, loc_depression_);
     }
     void set_param(const std::string& k, const std::string& v) override {
@@ -210,37 +224,40 @@ public:
             if (k == "preproc_downsample") rebuild();
             return;
         }
+        // Snapshot ROI state BEFORE mutation so the rebuild below only runs
+        // when the effective dimensions actually change (audit §五-D4):
+        // apply_global_roi fires 5 set_param calls; rebuilding on each one
+        // would clear the 3D accumulator 5 times.
+        const bool prev_roi_enabled = roi_.enabled;
+        const int prev_roi_rw = roi_.rw;
+        const int prev_roi_rh = roi_.rh;
         bool need_rebuild = false;
-        if (k == "min_radius") { min_radius_ = to_i(v); need_rebuild = true; }
-        else if (k == "max_radius") { max_radius_ = to_i(v); need_rebuild = true; }
-        else if (k == "threshold") { threshold_ = to_i(v); if (algo_) algo_->set_threshold(threshold_); }
-        else if (k == "accumulator_decay_us") {
-            decay_us_ = static_cast<Metavision::timestamp>(to_i(v));
-            if (algo_) algo_->set_accumulator_decay_us(decay_us_);
-        }
+        bool roi_changed = false;
+        // Note: AlgoInstance replays the REGISTRY DEFAULTS through set_param
+        // at construction — that must not count as "user set", so the flag
+        // only flips when the value differs from the registered default.
+        if (k == "max_radius") { max_radius_ = to_i(v); if (max_radius_ != 30) radius_user_set_ = true; need_rebuild = true; }
+        else if (k == "threshold") { threshold_ = to_i(v); if (threshold_ != 50) threshold_user_set_ = true; if (algo_) algo_->set_threshold(threshold_); }
         else if (k == "decay") { decay_ = static_cast<float>(to_d(v)); if (algo_) algo_->set_decay(decay_); }
         else if (k == "buffer_length") { buffer_length_ = to_i(v); if (algo_) algo_->set_buffer_length(buffer_length_); }
         else if (k == "nr_max") { nr_max_ = to_i(v); if (algo_) algo_->set_nr_max(nr_max_); }
         else if (k == "decay_mode") { decay_mode_ = to_b(v); if (algo_) algo_->set_decay_mode(decay_mode_); }
         else if (k == "loc_depression") { loc_depression_ = to_b(v); if (algo_) algo_->set_loc_depression(loc_depression_); }
-        else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
-        else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
-        else if (k == "roi_y") { roi_.y = to_i(v); need_rebuild = true; }
-        else if (k == "roi_w") { roi_.w = to_i(v); need_rebuild = true; }
-        else if (k == "roi_h") { roi_.h = to_i(v); need_rebuild = true; }
+        // Phase 2.6: roi_* keys intentionally not handled.
         if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
+        else if (roi_changed) {
+            const int old_aw = prev_roi_enabled ? prev_roi_rw : sensor_w_;
+            const int old_ah = prev_roi_enabled ? prev_roi_rh : sensor_h_;
+            roi_.compute(sensor_w_, sensor_h_);
+            const int new_aw = roi_.enabled ? roi_.rw : sensor_w_;
+            const int new_ah = roi_.enabled ? roi_.rh : sensor_h_;
+            if (new_aw != old_aw || new_ah != old_ah) rebuild();
+        }
     }
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
-        if (k == "roi_enabled") return from_b(roi_.enabled);
-        if (k == "roi_x") return from_i(roi_.x);
-        if (k == "roi_y") return from_i(roi_.y);
-        if (k == "roi_w") return from_i(roi_.w);
-        if (k == "roi_h") return from_i(roi_.h);
-        if (k == "min_radius") return from_i(min_radius_);
         if (k == "max_radius") return from_i(max_radius_);
         if (k == "threshold") return from_i(threshold_);
-        if (k == "accumulator_decay_us") return from_i(static_cast<int>(decay_us_));
         if (k == "decay" && algo_) return from_d(algo_->decay());
         if (k == "buffer_length" && algo_) return from_i(algo_->buffer_length());
         if (k == "nr_max" && algo_) return from_i(algo_->nr_max());
@@ -250,16 +267,21 @@ public:
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
         passthrough_.assign(b, e);
-        // Throttle: skip the expensive process() call if not enough time has
-        // elapsed since the last run. The accumulator still receives events
-        // (accumulate is cheap), but find_peaks (the O(W×H×R) scan) only
-        // runs at ~20Hz. This eliminates the "满屏幕卡顿" lag.
+        // Throttle (audit §五-G4): EVERY packet feeds the accumulator via
+        // accumulate_only(); only the expensive O(W×H×R) find_peaks scan is
+        // throttled to ~20Hz. Previously the whole process() call was
+        // skipped, which silently dropped the events between scans AND
+        // stretched the decay dt (collapsing the accumulator by ~0.2× per
+        // kept packet).
+        //
+        // §11.2-H: pass passthrough_.back().t explicitly to accumulate_only
+        // so the algo's last_t_ stays monotonic even when ROI/preproc
+        // filtering removes the packet's tail event or empties the packet
+        // entirely. Without this, last_t_ stalls on the filtered tail and
+        // the next non-empty packet sees an inflated dt, distorting the
+        // decay factor (1/(0.0001*decay*dt)).
         const Metavision::timestamp cur_t =
             passthrough_.empty() ? last_process_t_ : passthrough_.back().t;
-        if (last_process_t_ > 0 && cur_t - last_process_t_ < kMinProcessIntervalUs) {
-            return;  // keep last_ cached result
-        }
-        last_process_t_ = cur_t;
         const auto* ev = as_events(passthrough_.data());
         std::size_t n = passthrough_.size();
         if (roi_.enabled && roi_.rw > 0 && roi_.rh > 0) {
@@ -273,7 +295,12 @@ public:
             n = m;
         }
         gui_algo::EventPacket pkt(ev, n);
-        last_ = algo_->process(pkt);
+        algo_->accumulate_only(pkt, cur_t);
+        if (last_process_t_ > 0 && cur_t - last_process_t_ < kMinProcessIntervalUs) {
+            return;  // keep last_ cached result
+        }
+        last_process_t_ = cur_t;
+        last_ = algo_->find_peaks();
     }
     AlgoResult pull_result() override {
         AlgoResult r;
@@ -289,28 +316,15 @@ public:
             oc.r = static_cast<int>(c.radius) * f;
             r.circles.push_back(oc);
         }
-        // Aux frame: per-pixel Hough accumulator (jAER HoughCircleTracker GL).
-        if (algo_) {
-            const auto& accum = algo_->accum();
-            const int aw = ((roi_.enabled && roi_.rw > 0) ? roi_.rw : sensor_w_) / f;
-            const int ah = ((roi_.enabled && roi_.rh > 0) ? roi_.rh : sensor_h_) / f;
-            if (aw > 0 && ah > 0 &&
-                static_cast<int>(accum.size()) == aw * ah) {
-                cv::Mat hough(ah, aw, CV_32F, const_cast<float*>(accum.data()));
-                double mn, mx;
-                cv::minMaxLoc(hough, &mn, &mx);
-                cv::Mat vis;
-                if (mx > mn) {
-                    hough.convertTo(vis, CV_8U, 255.0 / (mx - mn), -mn * 255.0 / (mx - mn));
-                } else {
-                    vis = cv::Mat::zeros(ah, aw, CV_8U);
-                }
-                cv::applyColorMap(vis, r.aux_frame, cv::COLORMAP_JET);
-                r.has_aux_frame = true;
-            }
-        }
+        // Phase 2.6 debug D-2: the per-pixel accumulator aux display was
+        // deleted (user decision — never visible in baseline practice).
         r.status = "hough_circle: " + std::to_string(last_.size()) + " circles" +
-                   std::string(roi_.enabled ? " (ROI)" : " (full)");
+                   std::string(roi_.enabled ? " (ROI)" : " (full)") +
+                   // Effective params may be resolution-adaptive (when the
+                   // user hasn't set them) — surface them so the status line
+                   // shows what the detector actually runs with.
+                   " r=" + std::to_string(max_radius_) +
+                   " thr=" + std::to_string(threshold_);
         return r;
     }
     void reset() override {
@@ -364,6 +378,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); last_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::LineSegmentDetector(w, h);  // sensor-sized buckets
+    }
 };
 
 /// OrientationCluster backend — detected orientation clusters as overlay lines.
@@ -377,8 +395,7 @@ public:
     OrientationClusterBackend(int w, int h) : algo_(w, h) { roi_.init(w, h); }
     void set_param(const std::string& k, const std::string& v) override {
         if (roi_.set_param(k, v)) return;
-        if (k == "min_events") algo_.set_min_cluster_size(to_i(v));
-        else if (k == "dt") algo_.set_dt(static_cast<float>(to_d(v)));
+        if (k == "dt") algo_.set_dt(static_cast<float>(to_d(v)));
         else if (k == "factor") algo_.set_factor(static_cast<float>(to_d(v)));
         else if (k == "rf_width") algo_.set_rf_width(to_i(v));
         else if (k == "rf_height") algo_.set_rf_height(to_i(v));
@@ -393,7 +410,6 @@ public:
     }
     std::string get_param(const std::string& k) const override {
         auto r = roi_.get_param(k); if (!r.empty()) return r;
-        if (k == "min_events") return from_i(algo_.min_cluster_size());
         if (k == "dt") return from_d(algo_.dt());
         if (k == "factor") return from_d(algo_.factor());
         if (k == "rf_width") return from_i(algo_.rf_width());
@@ -429,6 +445,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); last_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::OrientationCluster(w, h);  // sensor-sized grids
+    }
 };
 
 /// ClusterLIF backend — LIF clusters as overlay boxes.
@@ -478,6 +498,10 @@ public:
         return r;
     }
     void reset() override { algo_.reset(); passthrough_.clear(); last_.clear(); }
+    void set_sensor_dimensions(int w, int h) override {
+        roi_.set_sensor_dimensions(w, h);
+        algo_ = gui_algo::ClusterLIF(w, h);  // sensor-sized neuron grid
+    }
 };
 
 

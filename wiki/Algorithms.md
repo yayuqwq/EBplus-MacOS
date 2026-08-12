@@ -1,11 +1,18 @@
 # Algorithms
 
-EB plus ships **59 algorithms** registered in a single `AlgoBridge` registry (`gui/algo_bridge/algo_bridge.cpp`):
+The current `AlgoBridge` registry (`gui/algo_bridge/algo_bridge.cpp`) has **33
+entries**:
 
-- **29 self-developed** algorithms under `algo/` (21 Computer Vision + 7 Analytics + 1 Calibration)
-- **30 OpenEB-wrapped** capabilities (10 filters + 7 frame modes + 7 preprocessors + 6 utilities)
+- **26 self-developed** algorithms under `algo/` (19 Computer Vision + 7
+  Analytics).
+- **7 OpenEB FilterChain event transforms**: polarity filter/invert, flip X/Y,
+  rotate, transpose, and rescale.
 
-Algorithms are **mutually exclusive** — enabling one disables the previous. Each self-developed algorithm supports a global ROI (default: center 128×128) and a shared preprocessing stage. All parameters are adjusted exclusively in the sidebar's **Algorithms** panel; algorithm display windows show only the title and output.
+Registry inventory is source availability, not an all-algorithm runtime-pass
+claim. Algorithms are **mutually exclusive** — enabling one disables the
+previous. `sensor_self_test` is a Devices-panel hardware diagnostic and
+`intrinsic_calibration` is a **Tools → Intrinsic Wizard** workflow; neither is
+a registry entry.
 
 ## Display Modes
 
@@ -20,17 +27,13 @@ Each algorithm declares a display mode that controls how its output reaches the 
 
 ## Shared Preprocessing
 
-Every self-developed algorithm runs events through a stackable preprocessing stage, configured in the Algorithms panel:
+Self-developed algorithms use shared preprocessing controls. Unified ROI/RONI
+is a separate camera state: a live source uses hardware `I_ROI`/RONI, while a
+file source uses software crop/RONI. It is not an eighth FilterChain stage and
+file-source ROI evidence is not hardware-facility evidence.
 
-```
-ROI (default 128×128 center)  →  Noise Filter  →  1/4 Downsample
-```
-
-- **ROI** — bounds computational cost; default center 128×128.
-- **Noise Filter** — 8 modes (see below), exposed based on the selected mode.
-- **1/4 Downsample** — halves both dimensions (e.g. 128×128 → 64×64) before the algorithm runs; output is upsampled back.
-
-These stages are **not** mutually exclusive with algorithms — they stack on top.
+The shared noise controls have nine modes; the processing contract and each
+mode's numerical/lifecycle behavior require separate validation.
 
 ### Noise Filter Modes
 
@@ -46,10 +49,11 @@ Implemented in `algo/cv/noise_filter.h`. The GUI exposes parameters based on the
 | Harmonic | Harmonic mean filter |
 | Repetitious | Repetitious event filter |
 | SpatialBP | Spatial Band-Pass filter |
+| KNoise | KNoise filter |
 
 ## Self-Developed Algorithms
 
-### Computer Vision (21)
+### Computer Vision (19)
 
 | Algorithm | Display | Notes |
 |-----------|---------|-------|
@@ -59,21 +63,19 @@ Implemented in `algo/cv/noise_filter.h`. The GUI exposes parameters based on the
 | Sparse Optical Flow | Overlay | 4 modes: LocalPlanes / LucasKanade / BlockMatch / ClusterOF |
 | Blob Detector | Overlay | |
 | Object Tracker | Overlay | 4 modes: RCT / Median / Kalman / MultiHypothesis |
-| Corner Detector | Overlay | 3 modes: Harris / FAST / AGAST |
+| Corner Detector | Overlay | 4 modes: EndStopped / TypeCoincidence / Harris / Arc |
 | Line Segment (ELiSeD) | Overlay | |
 | Hough Line Tracker | Overlay | jAER HoughLineTracker |
 | Hough Circle Tracker | Overlay | jAER HoughCircleTracker |
 | Orientation Cluster | Overlay | |
 | Cluster LIF | Overlay | LIF neuron clustering |
 | Background Mask Filter | Replace | 2D histogram background modeling |
-| Perspective Undistort | Passive | |
 | Trigger Synced Filter | Passive | |
 | Bandpass Filter | Overlay | |
 | EIS (Optical Gyro) | Overlay | Electronic image stabilization |
-| Ultra Slow Motion | Passive | Time dilation |
 | XYT 3D Visualizer | Standalone | GPU 3D point cloud |
 | Overlay | Overlay | Generic overlay |
-| Time Surface | Standalone | Hot / Plasma / Turbo palettes |
+| Time Surface | Standalone | Gray / Hot / Plasma / Turbo palettes |
 
 ### Analytics (7)
 
@@ -87,11 +89,12 @@ Implemented in `algo/cv/noise_filter.h`. The GUI exposes parameters based on the
 | Auto Bias Controller | Overlay | Closed-loop bias tuning |
 | Frequency Detector | Standalone | Blinking frequency detection |
 
-### Calibration (1)
+### Non-registry workflows
 
-| Algorithm | Display | Notes |
-|-----------|---------|-------|
-| Intrinsic Calibration | Standalone | chessboard / circle_grid / aruco |
+- **Sensor Self-Test** — Devices-panel hardware diagnostic; it requires a
+  separately authorized physical-device scope.
+- **Intrinsic Wizard** — Tools workflow using the current asymmetric circle
+  grid and manual capture; it is not a registry algorithm.
 
 ## Event-to-Video (E2VID)
 
@@ -105,34 +108,13 @@ The Event-to-Video algorithm reconstructs grayscale intensity images from raw ev
 
 **Common parameters** (modes 0, 1): `output_fps` (1–120, default 30), `window_ms`, `decay_tau_ms` (0–5000, default 500).
 
-### E2VID Setup
+### E2VID runtime/model boundary
 
-E2VID (default mode) requires a converted ONNX model. One-time setup (~5 minutes):
-
-```bash
-# 1. Download ONNX Runtime 1.19.2 (Linux x64 CPU) into third_party/
-cd /path/to/GUI-for-openEB
-mkdir -p third_party/onnxruntime && cd third_party/onnxruntime
-wget https://github.com/microsoft/onnxruntime/releases/download/v1.19.2/onnxruntime-linux-x64-1.19.2.tgz
-tar xzf onnxruntime-linux-x64-1.19.2.tgz --strip-components=1
-cd ../..
-
-# 2. Create Python venv for model conversion
-python3 -m venv .venv && . .venv/bin/activate
-pip install torch --index-url https://download.pytorch.org/whl/cpu onnx onnxscript onnxruntime numpy
-deactivate
-
-# 3. Download pre-trained PyTorch weights (~41 MB)
-wget -P models/ http://rpg.ifi.uzh.ch/data/E2VID/models/E2VID_lightweight.pth.tar
-
-# 4. Convert to ONNX (produces models/e2vid_lightweight.onnx)
-. .venv/bin/activate && python models/convert_to_onnx.py && deactivate
-
-# 5. Rebuild (CMake auto-detects ONNX Runtime)
-cmake --build build -- -j$(nproc)
-```
-
-E2VID defaults to 128×128 ROI + 30 fps + 1/4 downsample (64×64 inference → upsampled to 128×128). `num_bins` is auto-determined by the ONNX model's input channel count when a model is loaded.
+The repository tracks model-conversion source but no ready-to-run model or
+complete portable ONNX Runtime pair. `num_bins` is auto-determined by the
+ONNX model's input channel count when a model is loaded. A compatible runtime/
+model pair and a dedicated test are required before claiming real ONNX
+inference; the configured heuristic fallback is not that claim.
 
 E2VID parameters exposed in the GUI: model path, `num_bins`, auto-HDR, unsharp amount/sigma, bilateral sigma.
 
@@ -153,16 +135,13 @@ Six interconnected maps updated by alternating relaxation:
 
 V values are clamped to [-1, 1] to prevent NaN divergence. `I_map_` is reinitialized from Vc every frame to prevent ghosting.
 
-## OpenEB-Wrapped Capabilities (30)
+## OpenEB FilterChain transforms (7)
 
-Registered in `AlgoBridge` under four categories — these wrap existing openEB SDK algorithms without reimplementation:
-
-| Category | Count | Examples |
-|----------|-------|----------|
-| `openeb_filter` | 10 | FlipX, FlipY, ROI, Polarity, Event Rate Filter, … |
-| `openeb_frame` | 7 | Integration, Diff, Histogram, Time Decay, Contrast Map, Periodic, On-Demand |
-| `openeb_preproc` | 7 | Diff, Histo, Hardware Diff/Histo, Time Surface, Event Cube, Preprocessor Factory |
-| `openeb_util` | 6 | Rate Estimator, Frame Composer, Rolling Buffer, Video Writer, Data Synchronizer, Timing Profiler |
+The current registry keeps seven event transforms under `openeb_filter`:
+polarity filter, polarity invert, flip X, flip Y, rotate, transpose and
+rescale. They are controlled by the preprocessing UI. Unified ROI/RONI is
+separate; older frame/preprocessor/utility wrapper catalogs are not current
+registry entries.
 
 ## Adding a New Algorithm
 

@@ -39,7 +39,6 @@
 #include "algo/cv/hough_circle_tracker.h"
 #include "algo/cv/background_mask_filter.h"
 #include "algo/cv/optical_gyro.h"
-#include "algo/cv/ultra_slow_motion.h"
 #include "algo/cv/xyt_visualizer.h"
 #include "algo/cv/time_surface.h"
 #include "algo/analytics/active_marker.h"
@@ -65,7 +64,6 @@ using gui_algo::CornerDetector;
 using gui_algo::LineSegmentDetector;
 using gui_algo::HoughCircleTracker;
 using gui_algo::OpticalGyro;
-using gui_algo::UltraSlowMotion;
 using gui_algo::XYTVisualizer;
 using gui_algo::TimeSurface;
 using gui_algo::ActiveMarker;
@@ -161,7 +159,29 @@ INSTANTIATE_TEST_SUITE_P(AllModes, NoiseFilterRawTest,
         NoiseFilter::Mode::BAF, NoiseFilter::Mode::STCF,
         NoiseFilter::Mode::Refractory, NoiseFilter::Mode::DWF,
         NoiseFilter::Mode::AgePolarity, NoiseFilter::Mode::Harmonic,
-        NoiseFilter::Mode::Repetitious, NoiseFilter::Mode::SpatialBP));
+        NoiseFilter::Mode::Repetitious, NoiseFilter::Mode::SpatialBP,
+        NoiseFilter::Mode::KNoise));
+
+// KNoise (dv-processing port) on real data: with the calibrated default
+// dt=3000 us the keep-rate on sparklers.raw is ~0.72 (keeps most real
+// motion, drops ~28% isolated noise). Assert a wide, non-brittle band.
+TEST_F(RawAlgoTest, NoiseFilterKNoiseKeepRate) {
+    const auto& s = stream();
+    NoiseFilter f(s.width(), s.height(), NoiseFilter::Mode::KNoise);
+    EXPECT_EQ(f.knoise_dt_us(), 3000); // calibrated default
+    std::size_t total_kept = 0;
+    std::size_t total_in = 0;
+    for (const auto& batch : s.batches(kBatchWindowUs)) {
+        std::vector<Event> ev(batch);
+        total_kept += f.filter(ev.data(), ev.size());
+        total_in += batch.size();
+    }
+    ASSERT_GT(total_in, 0u);
+    const double keep = static_cast<double>(total_kept) /
+                        static_cast<double>(total_in);
+    EXPECT_GT(keep, 0.5) << "KNoise dropped too much real activity";
+    EXPECT_LT(keep, 0.9) << "KNoise filtered almost nothing";
+}
 
 // =========================================================================
 // 3. HotPixelFilter — learns hot pixels from real activity, then suppresses.
@@ -249,6 +269,28 @@ TEST_F(RawAlgoTest, TimeSurfaceRenderIsNonEmpty) {
     EXPECT_GT(mx, 0.0);
 }
 
+// Exponential decay mode (dv EXPONENTIAL port): render must be non-empty
+// with all values finite and in [0, 255].
+TEST_F(RawAlgoTest, TimeSurfaceExponentialRenderIsNonEmpty) {
+    const auto& s = stream();
+    TimeSurface ts(s.width(), s.height(), TimeSurface::Channels::Merged,
+                   100000, TimeSurface::Palette::Gray, 30,
+                   TimeSurface::Decay::Exponential, 100000);
+    for (const auto& batch : s.batches(kBatchWindowUs)) {
+        ts.process(batch.data(), batch.size());
+    }
+    cv::Mat img = ts.render();
+    EXPECT_FALSE(img.empty());
+    EXPECT_EQ(img.rows, s.height());
+    EXPECT_EQ(img.cols, s.width());
+    double mn = 0, mx = 0;
+    cv::minMaxLoc(img, &mn, &mx);
+    EXPECT_GT(mx, 0.0);
+    EXPECT_LE(mx, 255.0);
+    EXPECT_TRUE(is_finite(mn));
+    EXPECT_TRUE(is_finite(mx));
+}
+
 // =========================================================================
 // 6. SparseOpticalFlow — must emit finite flow vectors on real motion.
 // =========================================================================
@@ -308,15 +350,24 @@ TEST_F(RawAlgoTest, ObjectTrackerPositionsAreFinite) {
         ot.process(batch.data(), batch.size());
     }
     for (const auto& o : ot.objects()) {
-        // The historical regression is NaN divergence (InteractingMaps-style).
-        // The RCT tracker legitimately extrapolates positions beyond sensor
-        // bounds via velocity prediction (e.g. x=-13849 on a 640-wide sensor),
-        // so in-bounds is NOT a valid invariant — only finiteness is.
+        // §四-S1 回归：旧实现（速度无低通 + 包级外推无 clamp）曾在本数据上
+        // 产生 x=-13849（640 宽传感器）的飞坐标，当时被误认为"合法速度外推"
+        // 而豁免断言。现已在 update_velocity 加 jAER 式一阶低通
+        // (velocityTauMs=100ms)，age() 外推位移 clamp 到 ±cluster_size_px，
+        // 跟踪位置不再漂移出传感器附近。不变量：位置有限且在传感器范围外扩
+        // 10×cluster_size_px 的余量内（静止目标不漂移）。
         EXPECT_TRUE(is_finite(o.x)) << "tracked object x NaN";
         EXPECT_TRUE(is_finite(o.y)) << "tracked object y NaN";
         EXPECT_TRUE(is_finite(o.vx));
         EXPECT_TRUE(is_finite(o.vy));
         EXPECT_TRUE(is_finite(o.age));
+        const float margin = 10.0F * static_cast<float>(ot.cluster_size_px());
+        EXPECT_GE(o.x, -margin) << "S1 regression: position drifted out of bounds";
+        EXPECT_LE(o.x, static_cast<float>(s.width()) + margin)
+            << "S1 regression: position drifted out of bounds";
+        EXPECT_GE(o.y, -margin) << "S1 regression: position drifted out of bounds";
+        EXPECT_LE(o.y, static_cast<float>(s.height()) + margin)
+            << "S1 regression: position drifted out of bounds";
     }
 }
 
@@ -340,12 +391,39 @@ TEST_F(RawAlgoTest, CornerDetectorCornersAreValid) {
     }
 }
 
+// Arc mode (dv Arc* port): must produce a stable, bounded number of
+// finite, in-bounds corners on real data. The response threshold (20000us,
+// vs the 1us dv-equivalent default) suppresses the thousands of weak
+// single-window flicker detections the dense sparkler trails produce;
+// min_track_len(3) keeps only corners persistent across windows.
+TEST_F(RawAlgoTest, CornerDetectorArcCornersAreValid) {
+    const auto& s = stream();
+    CornerDetector cd(s.width(), s.height(), CornerDetector::Mode::Arc);
+    cd.set_arc_min_response_us(20000.0);
+    cd.set_min_track_len(3);
+    for (const auto& batch : s.batches(kBatchWindowUs)) {
+        cd.process(batch.data(), batch.size());
+    }
+    EXPECT_GT(cd.corners().size(), 0u) << "Arc mode found no corners in real data";
+    EXPECT_LE(cd.corners().size(), 500u) << "Arc corner count exploded";
+    for (const auto& c : cd.corners()) {
+        EXPECT_TRUE(is_finite(c.x)) << "corner x NaN";
+        EXPECT_TRUE(is_finite(c.y)) << "corner y NaN";
+        EXPECT_TRUE(is_finite(c.strength));
+        EXPECT_GT(c.strength, 0.0F);
+        EXPECT_GE(c.x, -1.0F);
+        EXPECT_LE(c.x, static_cast<float>(s.width()));
+        EXPECT_GE(c.y, -1.0F);
+        EXPECT_LE(c.y, static_cast<float>(s.height()));
+    }
+}
+
 // =========================================================================
 // 10. ISIAnalyzer — histogram must contain real ISI samples from real events.
 // =========================================================================
 TEST_F(RawAlgoTest, ISIAnalyzerHistogramPopulated) {
     const auto& s = stream();
-    ISIAnalyzer isi(s.width(), s.height(), 32, 100.0f, false);
+    ISIAnalyzer isi(s.width(), s.height(), 32, 100.0f);
     isi.process(s.events().data(), s.events().size());
     std::uint64_t total = 0;
     for (auto c : isi.counts()) total += c;
@@ -378,7 +456,7 @@ TEST_F(RawAlgoTest, LineSegmentsAreFinite) {
 // =========================================================================
 TEST_F(RawAlgoTest, HoughCirclesAreFinite) {
     const auto& s = stream();
-    HoughCircleTracker hct(s.width(), s.height(), 5, 30, 30);
+    HoughCircleTracker hct(s.width(), s.height(), 30, 30);
     for (const auto& batch : s.batches(kBatchWindowUs)) {
         EventPacket pkt(batch.data(), batch.size());
         auto circles = hct.process(pkt);
@@ -439,27 +517,6 @@ TEST_F(RawAlgoTest, OpticalGyroMotionIsFinite) {
     EXPECT_TRUE(is_finite(m.dx));
     EXPECT_TRUE(is_finite(m.dy));
     EXPECT_TRUE(is_finite(m.dtheta));
-}
-
-// =========================================================================
-// 16. UltraSlowMotion — dilated timestamps stay monotonic and finite.
-// =========================================================================
-TEST_F(RawAlgoTest, UltraSlowMotionDilatesMonotonically) {
-    const auto& s = stream();
-    UltraSlowMotion usm(10.0f, 5);
-    Metavision::timestamp prev = -1;
-    std::size_t total_out = 0;
-    for (const auto& batch : s.batches(kBatchWindowUs)) {
-        auto out = usm.process(batch.data(), batch.size());
-        for (const auto& e : out) {
-            // Real events share timestamps (multiple events at the same t),
-            // so dilated output is non-decreasing, not strictly increasing.
-            EXPECT_GE(e.t, prev);
-            prev = e.t;
-        }
-        total_out += out.size();
-    }
-    EXPECT_EQ(total_out, s.size());
 }
 
 // =========================================================================

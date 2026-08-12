@@ -87,13 +87,6 @@ public:
     AlgorithmsPanel*    algorithms_panel()     const;
     FileToolsPanel*     file_tools_panel()     const;
 
-    /// @brief Installs an externally-built calibration panel (Phase 9).
-    void set_calibration_panel(QWidget* panel);
-
-    /// @brief Returns the title of the currently-active group, used by
-    /// MainWindow to update the dock window title.
-    QString current_title() const;
-
     /// @brief Re-renders the ActivityBar icons with the current theme's
     /// foreground color. Called by MainWindow on theme_changed so icons
     /// stay in sync after a light/dark switch (BUG-4 fix pattern).
@@ -109,10 +102,6 @@ public:
     bool is_content_visible() const;
 
 signals:
-    /// @brief Emitted when the active group changes (user clicks an Activity
-    /// Bar entry, or the group is restored from QSettings at startup).
-    void current_title_changed(const QString& title);
-
     /// @brief Emitted when the sidebar content visibility changes (via
     /// toggle_content()). MainWindow connects this to resize the dock and
     /// update the toggle button's chevron icon (§11.2 point 5).
@@ -129,13 +118,6 @@ private:
     // QStackedWidget shows one group's panels directly (no CollapsibleSection).
     ActivityBar* activity_bar_{nullptr};
     QStackedWidget* stacked_{nullptr};
-
-    // Phase 9 — calibration placeholder group box and any panel installed
-    // into it. Tracked by pointer so set_calibration_panel can replace the
-    // placeholder cleanly without recursive findChildren() searches that
-    // would delete QLabels inside an already-installed panel.
-    QGroupBox* calibration_group_{nullptr};
-    QWidget* calibration_installed_{nullptr};
 };
 
 } // namespace gui
