@@ -207,11 +207,9 @@ public:
             preproc_.set_param("preproc_downsample", v);
             if (prev != v) rebuild();
             return;
-        } else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
-        else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
-        else if (k == "roi_y") { roi_.y = to_i(v); need_rebuild = true; }
-        else if (k == "roi_w") { roi_.w = to_i(v); need_rebuild = true; }
-        else if (k == "roi_h") { roi_.h = to_i(v); need_rebuild = true; }
+        }
+        // Phase 2.6: roi_* keys intentionally not handled (legacy per-backend
+        // ROI deleted; unified ROI at the source).
         if (need_rebuild) {
             // Only rebuild (which reloads the ONNX model) when the effective
             // dimensions actually change. ROI position changes (x, y) don't
@@ -249,16 +247,18 @@ public:
         if (k == "im_iterations") return from_i(im_iterations_);
         if (k == "fov_deg") return from_d(fov_deg_);
         if (k == "model_path") return model_path_;
+        if (k == "model_loaded") {
+            // Pseudo-param (not registered) for the panel's one-shot error
+            // hint (§五-H1): only meaningful in E2VID mode; empty = N/A.
+            return (mode_ == gui_algo::EventToVideo::Mode::E2VID && algo_)
+                       ? from_b(algo_->e2vid_model_loaded()) : std::string{};
+        }
         if (k == "num_bins") return from_i(e2vid_num_bins_);
         if (k == "auto_hdr") return from_b(e2vid_auto_hdr_);
         if (k == "unsharp_amount") return from_d(unsharp_amount_);
         if (k == "unsharp_sigma") return from_d(unsharp_sigma_);
         if (k == "bilateral_sigma") return from_d(bilateral_sigma_);
-        if (k == "roi_enabled") return from_b(roi_.enabled);
-        if (k == "roi_x") return from_i(roi_.x);
-        if (k == "roi_y") return from_i(roi_.y);
-        if (k == "roi_w") return from_i(roi_.w);
-        if (k == "roi_h") return from_i(roi_.h);
+        // Phase 2.6: roi_* keys intentionally not handled.
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -305,6 +305,13 @@ public:
         r.status = "e2v: " + std::to_string(algo_->width()) + "x" +
                    std::to_string(algo_->height()) +
                    (roi_.enabled ? " (ROI)" : " (full)");
+        // §五-H1: a failed ONNX load silently falls back to the heuristic
+        // path — the status line must show which reconstruction is running
+        // so users don't mistake heuristic output for "E2VID quality".
+        if (algo_->mode() == gui_algo::EventToVideo::Mode::E2VID) {
+            r.status += algo_->e2vid_model_loaded() ? " model=loaded"
+                                                    : " model=heuristic";
+        }
         return r;
     }
     void reset() override {
@@ -322,17 +329,17 @@ public:
 };
 
 /// FlowStatistics backend — requires ground-truth flow samples (not available
-/// in real-time). Counts events and reports a status; no frame is produced.
-/// Supports ROI (design §5.6.6): when enabled, only ROI events are counted.
+/// in real-time). Counts events only (audit §三-9: the FlowStatistics member
+/// was never fed events, so it was removed); reports a status; no frame is
+/// produced. Supports ROI (design §5.6.6): when enabled, only ROI events are
+/// counted.
 class FlowStatisticsBackend final : public AlgoBackend {
-    gui_algo::FlowStatistics algo_;
     std::vector<Metavision::EventCD> passthrough_;
     RoiFilter roi_;
     std::vector<gui_algo::Event> roi_buf_;
     std::size_t total_events_{0};
 public:
-    FlowStatisticsBackend(int w, int h)
-        : algo_(gui_algo::FlowStatistics::Source::Synthetic, 5) {
+    FlowStatisticsBackend(int w, int h) {
         roi_.init(w, h);
     }
     void set_param(const std::string& k, const std::string& v) override {
@@ -356,16 +363,24 @@ public:
                    std::string(roi_.region.enabled ? " (ROI)" : "");
         return r;
     }
-    void reset() override { algo_.reset(); passthrough_.clear(); roi_buf_.clear(); total_events_ = 0; }
+    void reset() override { passthrough_.clear(); roi_buf_.clear(); total_events_ = 0; }
+    void set_sensor_dimensions(int w, int h) override {
+        // Event-count only — no sensor-sized algorithm state; just update
+        // the ROI geometry (audit §五-D1).
+        roi_.set_sensor_dimensions(w, h);
+    }
 };
 
 /// ISIAnalyzer backend — renders ISI histogram as frame.
-/// Complex algorithm (design §4.4.4): defaults to the center 128×128 ROI.
+/// Complex algorithm (design §4.4.4): the ISI histogram is inherently
+/// per-pixel in jAER (ISIHistogrammer keeps last-ts per channel) — the
+/// global mode was deleted (Phase 2.6 debug, user decision: it degenerates
+/// to a single static bin at high event rates).
 class ISIAnalyzerBackend final : public AlgoBackend {
     int sensor_w_{0}, sensor_h_{0};
     ProcessRegion roi_;
-    bool per_pixel_{false};
     float max_isi_ms_{100.0F};
+    float min_isi_ms_{0.0F};
     std::unique_ptr<gui_algo::ISIAnalyzer> algo_;
     std::vector<Metavision::EventCD> passthrough_;
     std::vector<gui_algo::Event> roi_events_;
@@ -381,32 +396,45 @@ public:
         const int ah = roi_.enabled ? roi_.rh : sensor_h_;
         preproc_.init(aw, ah);
         const int f = preproc_.factor();
-        algo_ = std::make_unique<gui_algo::ISIAnalyzer>(aw / f, ah / f, 32, max_isi_ms_, per_pixel_);
+        algo_ = std::make_unique<gui_algo::ISIAnalyzer>(aw / f, ah / f, 32, max_isi_ms_,
+                                                        min_isi_ms_);
     }
     void set_param(const std::string& k, const std::string& v) override {
         if (preproc_.set_param(k, v)) {
             if (k == "preproc_downsample") rebuild();
             return;
         }
+        // Only rebuild when the effective dimensions actually change
+        // (audit §五-D4): apply_global_roi fires 5 set_param calls, and a
+        // rebuild discards the accumulated histogram each time.
+        const bool prev_roi_enabled = roi_.enabled;
+        const int prev_roi_rw = roi_.rw;
+        const int prev_roi_rh = roi_.rh;
         bool need_rebuild = false;
-        if (k == "per_pixel") {
-            per_pixel_ = to_b(v);
-            need_rebuild = true;
-        } else if (k == "max_isi_ms") {
+        bool roi_changed = false;
+        if (k == "max_isi_ms") {
             max_isi_ms_ = static_cast<float>(to_d(v));
             if (algo_) algo_->set_max_isi_ms(max_isi_ms_);
-        } else if (k == "roi_enabled") { roi_.enabled = to_b(v); need_rebuild = true; }
-        else if (k == "roi_x") { roi_.x = to_i(v); need_rebuild = true; }
-        else if (k == "roi_y") { roi_.y = to_i(v); need_rebuild = true; }
-        else if (k == "roi_w") { roi_.w = to_i(v); need_rebuild = true; }
-        else if (k == "roi_h") { roi_.h = to_i(v); need_rebuild = true; }
+        } else if (k == "min_isi_ms") {
+            min_isi_ms_ = static_cast<float>(to_d(v));
+            if (algo_) algo_->set_min_isi_ms(min_isi_ms_);
+        }
+        // Phase 2.6: roi_* keys intentionally not handled.
         if (need_rebuild) { roi_.compute(sensor_w_, sensor_h_); rebuild(); }
+        else if (roi_changed) {
+            const int old_aw = prev_roi_enabled ? prev_roi_rw : sensor_w_;
+            const int old_ah = prev_roi_enabled ? prev_roi_rh : sensor_h_;
+            roi_.compute(sensor_w_, sensor_h_);
+            const int new_aw = roi_.enabled ? roi_.rw : sensor_w_;
+            const int new_ah = roi_.enabled ? roi_.rh : sensor_h_;
+            if (new_aw != old_aw || new_ah != old_ah) rebuild();
+        }
     }
     std::string get_param(const std::string& k) const override {
         auto pp = preproc_.get_param(k); if (!pp.empty()) return pp;
-        if (k == "roi_enabled") return from_b(roi_.enabled);
-        if (k == "per_pixel") return from_b(per_pixel_);
         if (k == "max_isi_ms") return from_d(max_isi_ms_);
+        if (k == "min_isi_ms") return from_d(min_isi_ms_);
+        // Phase 2.6: roi_* keys intentionally not handled.
         return {};
     }
     void push_events(const Metavision::EventCD* b, const Metavision::EventCD* e) override {
@@ -429,14 +457,13 @@ public:
         AlgoResult r;
         r.filtered_events = passthrough_;
         r.has_frame = true;
-        cv::Mat frame = algo_->render();
-        const int f = preproc_.factor();
-        if (f > 1 && !frame.empty()) {
-            const int aw = roi_.enabled ? roi_.rw : sensor_w_;
-            const int ah = roi_.enabled ? roi_.rh : sensor_h_;
-            cv::resize(frame, frame, cv::Size(aw, ah), 0, 0, cv::INTER_NEAREST);
-        }
-        r.frame = frame.clone();
+        // The ISI output is a fixed-size chart (512×256, isi_analyzer.h
+        // render()) that has no relation to the sensor/working resolution.
+        // Phase 2.6 debug D-4: do NOT resize it to the working resolution
+        // (the old f>1 branch crushed it to 128×128 or blew it up to
+        // 1280×720 with INTER_NEAREST — two resampling stages made the text
+        // unreadable). The AlgoWindow letterboxes it to the window size.
+        r.frame = algo_->render().clone();
         r.status = "isi: histogram" + std::string(roi_.enabled ? " (ROI)" : " (full)");
         return r;
     }

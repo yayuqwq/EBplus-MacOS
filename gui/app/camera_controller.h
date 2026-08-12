@@ -92,17 +92,10 @@ public:
     /// @brief Returns the underlying Metavision::Camera (nullptr if none).
     Metavision::Camera* camera_handle() { return camera_.get(); }
 
-    /// @brief Last CD event timestamp seen (μs), or -1 if none. Thread-safe.
-    Metavision::timestamp last_timestamp_us() const;
-
     const SensorInfo& sensor_info() const { return sensor_info_; }
     FramePipeline* frame_pipeline() { return &frame_pipeline_; }
     StatisticsController* statistics() { return &statistics_; }
     FilterChain* filter_chain() { return &filter_chain_; }
-
-    /// @brief Saves / loads camera configuration via the SDK's native format.
-    bool save_config(const std::string& path);
-    bool load_config(const std::string& path);
 
     /// @brief Phase 2 facility accessors. Each returns nullptr when no camera
     /// is connected or the connected sensor does not support that feature.
@@ -116,6 +109,38 @@ public:
     facility::TriggerIn*   trigger_in_facility();
     facility::TriggerOut*  trigger_out_facility();
 
+    /// @brief Unified ROI entry point (Phase 2.6): the single ROI concept.
+    /// Live camera: applies the hardware ROI (I_ROI) so the sensor itself
+    /// only outputs ROI events. File playback: forwards to FramePipeline's
+    /// software crop (same semantics). @p x/@p y = -1 means auto-center the
+    /// window on the sensor. @p roni selects ROI (keep-inside, default) vs
+    /// RONI (drop-inside) mode; std::nullopt keeps the current mode.
+    /// Returns false on failure (facility missing / invalid rect) — caller
+    /// should NOT treat the ROI as applied.
+    /// On success emits roi_state_changed with the computed rect (the single
+    /// driver for the overlay frame, zoom button and algorithm path,
+    /// Phase 2.6 debug D-5).
+    bool set_unified_roi(bool enabled, int x, int y, int w, int h,
+                         std::optional<bool> roni = std::nullopt);
+
+    /// @brief Reads the current unified ROI state (computed rect
+    /// [x0,x1) × [y0,y1]) for overlay rendering.
+    void unified_roi(bool& enabled, int& x0, int& y0, int& x1, int& y1) const;
+
+    /// @brief True when the unified ROI is in RONI (drop-inside) mode
+    /// (Phase 2.6 debug D-5). In RONI mode events keep ABSOLUTE sensor
+    /// coordinates (the source filters, nothing is translated) — consumers
+    /// that shift coordinates (OverlayStrategy) or resize backends
+    /// (AlgoBridge) must treat RONI as "no translation / no resize".
+    bool unified_roi_roni() const { return roi_roni_; }
+
+    /// @brief Enables/disables broadcasting of every CD batch via
+    /// cd_events_ready(). When false (default), the CD callback takes the
+    /// fast path with zero extra copies. Calibration tools flip this to true
+    /// on start and back to false on stop so the SDK thread only pays the
+    /// copy cost while a consumer is actively listening.
+    void set_cd_broadcast(bool enabled);
+
 signals:
     void connected(const SensorInfo& info);
     void disconnected();
@@ -123,6 +148,16 @@ signals:
     void stopped();
     void error(const QString& message);
     void runtime_warning(const QString& message);
+    /// @brief Emitted after every successful set_unified_roi (Phase 2.6
+    /// debug D-5): the single driver for the overlay frame, the Zoom-to-ROI
+    /// button, the algorithm path (AlgoBridge::set_unified_roi_state) and
+    /// GUI checkbox sync. Carries the COMPUTED rect [x0,x1) × [y0,y1).
+    void roi_state_changed(bool enabled, int x0, int y0, int x1, int y1);
+    /// @brief Emitted from the SDK CD callback (cross-thread, queued) when
+    /// cd_broadcast_ is true. Carries a shared_ptr copy of the batch so
+    /// listeners on the GUI thread can process it safely. Used by the
+    /// calibration wizard's 1 ms event accumulator.
+    void cd_events_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events);
 
 private:
     /// @brief Sets up callbacks + pipeline for a new camera. Calls
@@ -139,11 +174,19 @@ private:
     std::optional<Metavision::CallbackId> status_cb_id_;
     SensorInfo sensor_info_;
     bool is_file_{false};
-    std::atomic<Metavision::timestamp> last_ts_{-1};
+    /// Unified ROI state (live path; file path keeps its rect in
+    /// FileFrameGenerator, read via frame_pipeline_.file_roi()). roi_roni_
+    /// is tracked here for BOTH paths (single writer: set_unified_roi).
+    bool roi_enabled_{false};
+    bool roi_roni_{false};
+    int roi_x0_{0}, roi_y0_{0}, roi_x1_{0}, roi_y1_{0};
 
     FramePipeline frame_pipeline_;
     StatisticsController statistics_;
     FilterChain filter_chain_;
+    /// @brief When true, the CD callback emits cd_events_ready() with a copy
+    /// of every batch. Off by default so non-calibration usage pays nothing.
+    std::atomic<bool> cd_broadcast_{false};
 };
 
 } // namespace gui

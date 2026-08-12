@@ -44,8 +44,6 @@ struct IntrinsicResult {
     std::vector<cv::Mat> tvecs;    ///< Per-frame translation vectors
     std::size_t frames_used{0};
     std::string error;             ///< Empty when ok==true
-    cv::Mat undistort_map_x;       ///< Precomputed undistort LUT (x), design §4.5.1
-    cv::Mat undistort_map_y;       ///< Precomputed undistort LUT (y), design §4.5.1
 };
 
 /// @brief Intrinsic calibration accumulator.
@@ -59,73 +57,69 @@ public:
                      int cols, int rows,
                      float square_size_mm);
 
-    /// @brief Attempts to detect the calibration pattern in @p frame.
+    /// @brief Attempts to detect the calibration pattern in @p frame and, on
+    /// success, accumulates the observation. Convenience wrapper around
+    /// detect_only() + accept() for callers that want detect-and-keep in one
+    /// call (preserves the original Phase 9 contract).
     /// @param frame Grayscale or BGR accumulated event frame.
     /// @param annotate If true, @p result.image contains a drawn preview.
     /// @return DetectionResult with found state and corner points.
     DetectionResult add_frame(const cv::Mat& frame, bool annotate = true);
 
+    /// @brief Runs pattern detection only — does NOT accumulate. Lets the
+    /// caller reject a frame (duplicate pose, insufficient coverage, …)
+    /// before committing it via accept(). Records image_size_ on first call.
+    DetectionResult detect_only(const cv::Mat& frame, bool annotate = true);
+
+    /// @brief Commits an already-detected point set as a calibration
+    /// observation. @p points must come from a successful detect_only() on a
+    /// frame of the configured geometry.
+    void accept(const std::vector<cv::Point2f>& points);
+
+    /// @brief Returns true if @p points match (within @p threshold_px mean
+    /// Euclidean distance) any already-accepted observation. Used by the
+    /// Phase 4 wizard to reject duplicate-pose captures. Element-wise
+    /// comparison assumes findCirclesGrid returns points in a consistent
+    /// order for a given board pose.
+    bool is_duplicate_pose(const std::vector<cv::Point2f>& points,
+                           double threshold_px) const;
+
     /// @brief Runs cv::calibrateCamera on all collected observations.
-    /// On success, precomputes the undistort LUT (design §4.5.1).
     IntrinsicResult run();
 
     /// @brief Discards all collected observations.
     void reset();
 
     std::size_t frame_count() const { return image_points_.size(); }
-    cv::Size board_size() const { return board_size_; }
     cv::Size image_size() const { return image_size_; }
 
-    /// @brief Precomputes the HxW undistort LUT via cv::initUndistortRectifyMap.
-    /// Fills undistort_map_x_ / undistort_map_y_ for O(1) runtime remap.
-    /// @note These maps are the INVERSE mapping (per undistorted output pixel,
-    ///       the distorted input coordinate to sample), suitable for cv::remap
-    ///       on accumulated event frames. They are NOT suitable for per-event
-    ///       distorted→undistorted address remapping; use
-    ///       build_event_undistort_lut() / undistort_point() for that.
-    /// @param image_size Output image size for the LUT.
-    void precompute_undistort_lut(cv::Size image_size);
-
-    /// @brief Accessor for the precomputed x-map (empty until run/precompute).
-    const cv::Mat& undistort_map_x() const { return undistort_map_x_; }
-    /// @brief Accessor for the precomputed y-map (empty until run/precompute).
-    const cv::Mat& undistort_map_y() const { return undistort_map_y_; }
-
-    /// @brief Builds the forward (distorted→undistorted) per-event address LUT
-    ///        via cv::undistortPoints, mirroring SingleCameraCalibration.java
-    ///        L700-718. Indexed row-major as event_undistort_lut_[y*width+x].
-    ///        Empty until run()/precompute_undistort_lut() succeeds.
-    void build_event_undistort_lut(cv::Size image_size);
-
-    /// @brief Accessor for the forward per-event undistort LUT.
-    const std::vector<cv::Point2f>& event_undistort_lut() const {
-        return event_undistort_lut_;
-    }
-    cv::Size event_undistort_lut_size() const { return event_lut_size_; }
-
-    /// @brief Remaps a single distorted pixel address to the undistorted plane
-    ///        using the forward LUT built by build_event_undistort_lut().
-    /// @return true on success (LUT built and (x,y) in range); false otherwise.
-    bool undistort_point(int x, int y, float& ux, float& uy) const;
+    /// @brief The object-point grid for the currently configured geometry
+    /// (read-only). Exposed so the wizard/tests can verify the configured
+    /// board matches the displayed pattern.
+    std::vector<cv::Point3f> object_grid() const { return make_object_grid(); }
 
 private:
     CalibrationPattern pattern_{CalibrationPattern::Chessboard};
-    cv::Size board_size_{0, 0};    ///< (cols-1, rows-1) for chessboard, (cols, rows) for circles
+    cv::Size board_size_{0, 0};    ///< Inner-corner count for chessboard (== OpenCV patternSize), (cols, rows) for circles
     float square_size_mm_{1.0f};
     cv::Size image_size_{0, 0};
 
     std::vector<std::vector<cv::Point2f>> image_points_;
     std::vector<std::vector<cv::Point3f>> object_points_;
 
-    cv::Mat K_;                ///< Cached camera matrix (from last successful run)
-    cv::Mat dist_coeffs_;      ///< Cached distortion coefficients (from last run)
-    cv::Mat undistort_map_x_;  ///< Inverse undistort LUT (x) for cv::remap, design §4.5.1
-    cv::Mat undistort_map_y_;  ///< Inverse undistort LUT (y) for cv::remap, design §4.5.1
-    std::vector<cv::Point2f> event_undistort_lut_; ///< Forward distorted→undistorted per-event LUT.
-    cv::Size event_lut_size_{0, 0};                ///< Size of the forward LUT.
-
     std::vector<cv::Point3f> make_object_grid() const;
 };
+
+/// @brief Loads intrinsic calibration (K, distCoeffs, image_size) from a YAML
+///        file written by CalibrationWizard::on_intrinsic_save() or any
+///        OpenCV-compatible YAML with the same keys:
+///          image_width, image_height, camera_matrix, distortion_coefficients
+///        (rms optional). Used by the calibration wizard (round-trip) and by
+///        the Preprocessor undistort stage (consumes the wizard's output).
+/// @return true on success; on failure leaves outputs unchanged.
+bool load_intrinsics_yml(const std::string& path,
+                         cv::Mat& K, cv::Mat& dist_coeffs,
+                         cv::Size& image_size);
 
 } // namespace gui_algo
 

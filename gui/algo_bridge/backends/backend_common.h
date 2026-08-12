@@ -7,7 +7,9 @@
 #ifndef GUI_ALGO_BRIDGE_BACKENDS_BACKEND_COMMON_H
 #define GUI_ALGO_BRIDGE_BACKENDS_BACKEND_COMMON_H
 
+#include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -17,6 +19,7 @@
 
 #include <metavision/sdk/base/events/event_cd.h>
 
+#include "algo/calibration/intrinsic.h"
 #include "algo/common/event.h"
 #include "algo/cv/noise_filter.h"
 
@@ -50,7 +53,10 @@ inline const gui_algo::Event* as_events(const Metavision::EventCD* p) {
 
 /// @brief Processing region (ROI) for complex algorithms.
 struct ProcessRegion {
-    bool enabled{true};
+    // Phase 2.6: legacy per-backend ROI defaults to DISABLED — the unified
+    // ROI (hardware/software crop) is the single ROI concept. The remaining
+    // mechanism is deleted in step 2.
+    bool enabled{false};
     int x{-1};   ///< -1 = auto-center on sensor
     int y{-1};
     int w{128};  ///< 0 = full sensor width
@@ -88,7 +94,7 @@ inline bool apply_noise_filter_param(gui_algo::NoiseFilter& nf,
                               const std::string& k, const std::string& v) {
     if (k == "mode") {
         int m = to_i(v);
-        if (m >= 0 && m <= 7) nf.set_mode(static_cast<gui_algo::NoiseFilter::Mode>(m));
+        if (m >= 0 && m <= 8) nf.set_mode(static_cast<gui_algo::NoiseFilter::Mode>(m));
     }
     else if (k == "correlation_time_s") nf.set_correlation_time_s(to_d(v));
     else if (k == "min_neighbors") nf.set_min_neighbors(to_i(v));
@@ -107,14 +113,17 @@ inline bool apply_noise_filter_param(gui_algo::NoiseFilter& nf,
     else if (k == "line_freq_hz") nf.set_line_freq(to_i(v) == 60 ? gui_algo::NoiseFilter::LineFreq::Hz60 : gui_algo::NoiseFilter::LineFreq::Hz50);
     else if (k == "notch_q") nf.set_notch_q(to_d(v));
     else if (k == "harmonic_threshold") nf.set_harmonic_threshold(to_d(v));
-    else if (k == "rep_period_us") nf.set_period_us(to_i(v));
-    else if (k == "rep_tolerance_us") nf.set_tolerance_us(to_i(v));
+    // rep_period_us / rep_tolerance_us are intentionally NOT forwarded: the
+    // algo stores them but never uses them (audit §7.3); the registration
+    // entries were removed.
     else if (k == "rep_ratio_shorter") nf.set_ratio_shorter(to_i(v));
     else if (k == "rep_ratio_longer") nf.set_ratio_longer(to_i(v));
     else if (k == "rep_min_dt_to_store_us") nf.set_min_dt_to_store_us(to_i(v));
+    else if (k == "rep_averaging_samples") nf.set_rep_averaging_samples(to_i(v));
     else if (k == "sbp_center_radius_px") nf.set_center_radius_px(to_i(v));
     else if (k == "sbp_surround_radius_px") nf.set_surround_radius_px(to_i(v));
     else if (k == "sbp_dt_surround_us") nf.set_dt_surround_us(to_i(v));
+    else if (k == "knoise_dt_us") nf.set_knoise_dt_us(to_i(v));
     else if (k == "filter_hot_pixels") nf.set_filter_hot_pixels(to_b(v));
     else if (k == "adaptive_correlation_time") nf.set_adaptive_correlation_time(to_b(v));
     else return false;
@@ -141,20 +150,20 @@ inline std::string get_noise_filter_param(const gui_algo::NoiseFilter& nf,
     if (k == "line_freq_hz") return from_i(nf.line_freq_hz());
     if (k == "notch_q") return from_d(nf.notch_q());
     if (k == "harmonic_threshold") return from_d(nf.harmonic_threshold());
-    if (k == "rep_period_us") return from_i(nf.period_us());
-    if (k == "rep_tolerance_us") return from_i(nf.tolerance_us());
     if (k == "rep_ratio_shorter") return from_i(nf.ratio_shorter());
     if (k == "rep_ratio_longer") return from_i(nf.ratio_longer());
     if (k == "rep_min_dt_to_store_us") return from_i(nf.min_dt_to_store_us());
+    if (k == "rep_averaging_samples") return from_i(nf.rep_averaging_samples());
     if (k == "sbp_center_radius_px") return from_i(nf.center_radius_px());
     if (k == "sbp_surround_radius_px") return from_i(nf.surround_radius_px());
     if (k == "sbp_dt_surround_us") return from_i(nf.dt_surround_us());
+    if (k == "knoise_dt_us") return from_i(nf.knoise_dt_us());
     if (k == "filter_hot_pixels") return from_b(nf.filter_hot_pixels());
     if (k == "adaptive_correlation_time") return from_b(nf.adaptive_correlation_time());
     return {};
 }
 
-/// @brief Stackable preprocessing chain: noise filter + 1/4 downsample.
+/// @brief Stackable preprocessing chain: noise filter + 1/4 downsample + undistort.
 struct Preprocessor {
     bool filter_enabled_{false};
     bool downsample_enabled_{false};
@@ -165,9 +174,35 @@ struct Preprocessor {
     std::unordered_map<std::string, std::string> filter_params_;
     std::vector<gui_algo::Event> buf_;
 
+    // Undistort stage (applied AFTER filter + downsample). The LUT is built
+    // at (filter_w_/factor, filter_h_/factor) with K adjusted for the ROI
+    // origin and downsample factor, so it maps distorted event addresses to
+    // undistorted addresses in the same coordinate system the algorithm sees.
+    bool undistort_enabled_{false};
+    std::string undistort_path_;
+    cv::Mat undistort_K_;          ///< Loaded from YAML (sensor resolution, CV_64F 3x3)
+    cv::Mat undistort_dist_;       ///< Loaded from YAML (CV_64F 1xN)
+    cv::Size undistort_image_size_{0, 0};
+    std::vector<cv::Point2f> undistort_lut_;  ///< Forward LUT, row-major [y*eff_w + x]
+    int undistort_eff_w_{0}, undistort_eff_h_{0};
+    int last_roi_x_{-1}, last_roi_y_{-1}, last_factor_{-1};
+    /// Circuit breaker for repeated LUT rebuild failures (audit §五-F3
+    /// follow-up): while set, apply() does not retry rebuild_undistort_lut.
+    /// Cleared when any rebuild input changes (path/K via set_param,
+    /// downsample factor, ROI origin) so a fixed config gets ONE retry.
+    bool undistort_lut_failed_{false};
+    bool undistort_lut_valid_{false};
+
     void init(int w, int h) {
         filter_w_ = w; filter_h_ = h;
         rebuild_filter();
+        undistort_lut_valid_ = false;  // geometry changed → LUT needs rebuild
+    }
+    /// @brief Clears the noise filter's temporal state (timestamp surfaces).
+    /// Required when the event stream jumps backward in time (file seek/loop,
+    /// source restart) — otherwise stale future timestamps suppress events.
+    void reset_filter() {
+        if (filter_) filter_->reset();
     }
     void rebuild_filter() {
         if (filter_enabled_ && filter_w_ > 0 && filter_h_ > 0) {
@@ -180,6 +215,10 @@ struct Preprocessor {
             filter_.reset();
         }
     }
+    /// @brief Rebuilds the forward undistort LUT for the current ROI origin
+    ///        and downsample factor. Defined in backend_common.cpp (uses
+    ///        cv::undistortPoints from opencv2/calib3d.hpp).
+    void rebuild_undistort_lut(int roi_x, int roi_y, int factor);
     bool set_param(const std::string& k, const std::string& v) {
         if (k == "preproc_filter_enabled") {
             filter_enabled_ = to_b(v);
@@ -188,6 +227,35 @@ struct Preprocessor {
         }
         if (k == "preproc_downsample") {
             downsample_enabled_ = to_b(v);
+            undistort_lut_valid_ = false;  // factor may have changed
+            return true;
+        }
+        if (k == "preproc_undistort_enabled") {
+            undistort_enabled_ = to_b(v);
+            undistort_lut_failed_ = false;  // re-arm on toggle
+            return true;
+        }
+        if (k == "preproc_undistort_path") {
+            undistort_path_ = v;
+            cv::Mat K, dist;
+            cv::Size sz;
+            if (gui_algo::load_intrinsics_yml(v, K, dist, sz)) {
+                undistort_K_ = K;
+                undistort_dist_ = dist;
+                undistort_image_size_ = sz;
+            } else {
+                // Surface the failure instead of silently clearing K — without
+                // this the user believes undistort is active while it is a
+                // no-op (audit §五-F3).
+                std::fprintf(stderr,
+                             "Preprocessor: failed to load intrinsics from '%s'"
+                             " — undistort disabled\n", v.c_str());
+                undistort_K_.release();
+                undistort_dist_.release();
+                undistort_image_size_ = cv::Size(0, 0);
+            }
+            undistort_lut_valid_ = false;
+            undistort_lut_failed_ = false;  // new K gets a fresh attempt
             return true;
         }
         static const std::string pfp = "preproc_filter_";
@@ -196,7 +264,7 @@ struct Preprocessor {
             filter_params_[bare] = v;
             if (bare == "mode") {
                 int m = to_i(v);
-                if (m >= 0 && m <= 7) {
+                if (m >= 0 && m <= 8) {
                     filter_mode_ = static_cast<gui_algo::NoiseFilter::Mode>(m);
                     rebuild_filter();
                 }
@@ -210,6 +278,8 @@ struct Preprocessor {
     std::string get_param(const std::string& k) const {
         if (k == "preproc_filter_enabled") return from_b(filter_enabled_);
         if (k == "preproc_downsample") return from_b(downsample_enabled_);
+        if (k == "preproc_undistort_enabled") return from_b(undistort_enabled_);
+        if (k == "preproc_undistort_path") return undistort_path_;
         static const std::string pfp = "preproc_filter_";
         if (k.size() > pfp.size() && k.compare(0, pfp.size(), pfp) == 0) {
             const std::string bare = k.substr(pfp.size());
@@ -220,10 +290,14 @@ struct Preprocessor {
         return {};
     }
     int factor() const { return (downsample_enabled_ && halve_coords_) ? 2 : 1; }
-    bool active() const { return filter_enabled_ || downsample_enabled_; }
+    bool active() const {
+        return filter_enabled_ || downsample_enabled_ ||
+               (undistort_enabled_ && !undistort_K_.empty());
+    }
 
     std::pair<const gui_algo::Event*, std::size_t> apply(
-        const gui_algo::Event* src, std::size_t n) {
+        const gui_algo::Event* src, std::size_t n,
+        int roi_x = 0, int roi_y = 0) {
         if (!active() || n == 0) return {src, n};
         const gui_algo::Event* p = src;
         std::size_t m = n;
@@ -257,6 +331,66 @@ struct Preprocessor {
             }
             m = kept;
         }
+        // Undistort is the last stage (order: ROI → filter → downsample → undistort).
+        // The LUT is indexed by the post-downsample coordinate system the
+        // algorithm sees, so it must be rebuilt whenever the ROI origin or
+        // downsample factor changes. Out-of-bounds results drop the event
+        // (mirrors JAER SingleCameraCalibration.undistortEvent).
+        if (undistort_enabled_ && !undistort_K_.empty() && !undistort_dist_.empty()) {
+            const int f = factor();
+            // A geometry change re-arms the circuit breaker: the new inputs
+            // get exactly one rebuild attempt.
+            if (roi_x != last_roi_x_ || roi_y != last_roi_y_ || f != last_factor_) {
+                undistort_lut_failed_ = false;
+            }
+            if (!undistort_lut_failed_ &&
+                (!undistort_lut_valid_ ||
+                 roi_x != last_roi_x_ || roi_y != last_roi_y_ || f != last_factor_)) {
+                // cv::undistortPoints can throw on malformed K/dist; without a
+                // guard the exception escapes into the event pipeline and is
+                // swallowed by a catch(...) upstream, silently killing the
+                // stream (audit §五-F3). A failure latches
+                // undistort_lut_failed_ so a deterministically-bad K doesn't
+                // retry + throw + log on every event batch.
+                try {
+                    rebuild_undistort_lut(roi_x, roi_y, f);
+                } catch (const cv::Exception& e) {
+                    std::fprintf(stderr,
+                                 "Preprocessor: undistort LUT rebuild failed: %s\n",
+                                 e.what());
+                    undistort_lut_valid_ = false;
+                    undistort_lut_failed_ = true;
+                    // Anchor the geometry so the same inputs are not retried.
+                    last_roi_x_ = roi_x;
+                    last_roi_y_ = roi_y;
+                    last_factor_ = f;
+                }
+            }
+            if (undistort_lut_valid_ && undistort_eff_w_ > 0 && undistort_eff_h_ > 0) {
+                if (p != buf_.data()) {
+                    buf_.assign(p, p + m);
+                    p = buf_.data();
+                }
+                const int eff_w = undistort_eff_w_;
+                const int eff_h = undistort_eff_h_;
+                std::size_t kept = 0;
+                for (std::size_t i = 0; i < m; ++i) {
+                    const int x = buf_[i].x;
+                    const int y = buf_[i].y;
+                    if (x < 0 || y < 0 || x >= eff_w || y >= eff_h) continue;
+                    const cv::Point2f& mapped = undistort_lut_[
+                        static_cast<std::size_t>(y) * eff_w + x];
+                    const int nx = static_cast<int>(std::lround(mapped.x));
+                    const int ny = static_cast<int>(std::lround(mapped.y));
+                    if (nx < 0 || ny < 0 || nx >= eff_w || ny >= eff_h) continue;
+                    buf_[kept] = buf_[i];
+                    buf_[kept].x = static_cast<std::uint16_t>(nx);
+                    buf_[kept].y = static_cast<std::uint16_t>(ny);
+                    ++kept;
+                }
+                m = kept;
+            }
+        }
         return {p, m};
     }
 };
@@ -276,8 +410,17 @@ inline void crop_to_roi(const gui_algo::Event* src, std::size_t n,
         }
     }
     if (preproc && preproc->active() && !out.empty()) {
-        auto [p, m] = preproc->apply(out.data(), out.size());
-        out.assign(p, p + m);
+        // Pass the ROI origin so the undistort LUT can be built with K
+        // adjusted for the ROI offset (cx -= roi.x0, cy -= roi.y0).
+        auto [p, m] = preproc->apply(out.data(), out.size(), roi.x0, roi.y0);
+        // p may alias out itself when the chain leaves the events unmodified
+        // (e.g. undistort enabled but LUT invalid) — std::vector::assign from
+        // the vector's own range is UB (audit §五-F3).
+        if (p != out.data()) {
+            out.assign(p, p + m);
+        } else {
+            out.resize(m);
+        }
     }
 }
 
@@ -295,25 +438,21 @@ struct RoiFilter {
         preproc.init(w, h);
     }
 
+    /// @brief Re-initialises the ROI/preproc geometry after a sensor change
+    /// (audit §五-D1). Every backend holding a RoiFilter should call this
+    /// from its set_sensor_dimensions() override.
+    void set_sensor_dimensions(int w, int h) { init(w, h); }
+
     bool set_param(const std::string& k, const std::string& v) {
-        if (preproc.set_param(k, v)) return true;
-        if (k == "roi_enabled") { region.enabled = to_b(v); region.compute(sensor_w, sensor_h); return true; }
-        if (k == "roi_x") { region.x = to_i(v); region.compute(sensor_w, sensor_h); return true; }
-        if (k == "roi_y") { region.y = to_i(v); region.compute(sensor_w, sensor_h); return true; }
-        if (k == "roi_w") { region.w = to_i(v); region.compute(sensor_w, sensor_h); return true; }
-        if (k == "roi_h") { region.h = to_i(v); region.compute(sensor_w, sensor_h); return true; }
-        return false;
+        // Phase 2.6: the roi_* keys are intentionally NOT handled anymore —
+        // the legacy per-backend ROI was deleted (unified ROI at the source).
+        // Old config entries become unrecognized-param warnings instead of
+        // silently re-enabling per-backend cropping.
+        return preproc.set_param(k, v);
     }
 
     std::string get_param(const std::string& k) const {
-        auto pp = preproc.get_param(k);
-        if (!pp.empty()) return pp;
-        if (k == "roi_enabled") return from_b(region.enabled);
-        if (k == "roi_x") return from_i(region.x);
-        if (k == "roi_y") return from_i(region.y);
-        if (k == "roi_w") return from_i(region.w);
-        if (k == "roi_h") return from_i(region.h);
-        return {};
+        return preproc.get_param(k);
     }
 
     std::pair<const gui_algo::Event*, std::size_t> apply(

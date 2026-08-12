@@ -3,8 +3,12 @@
 #include "algorithms_panel.h"
 
 #include <QCheckBox>
+#include <QDir>
+#include <QFileDialog>
+#include <QFileInfo>
 #include <QGroupBox>
 #include <QLabel>
+#include <QPushButton>
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QComboBox>
@@ -13,6 +17,7 @@
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QMap>
+#include <QStandardPaths>
 
 #include "algo_bridge/algo_bridge.h"
 
@@ -56,6 +61,16 @@ void AlgorithmsPanel::build_ui() {
         return;
     }
 
+    // Flood-guard sync (audit §五-E2): when an instance auto-disables on a
+    // sustained event-rate spike, the bridge invokes this callback from the
+    // SDK data thread; the queued signal unchecks the sidebar checkbox on
+    // the GUI thread so the UI cannot claim the algo is still running.
+    bridge_->set_overload_callback([this](const std::string& name) {
+        emit algorithm_overloaded(QString::fromStdString(name));
+    });
+    connect(this, &AlgorithmsPanel::algorithm_overloaded, this,
+            &AlgorithmsPanel::on_algorithm_overloaded, Qt::QueuedConnection);
+
     // Group algorithms by category. Only self-developed algorithms are shown
     // here: OpenEB-wrapped filters have no real backend in AlgoBridge and are
     // controlled via the Preprocess menu / PreprocessingPanel instead.
@@ -69,7 +84,6 @@ void AlgorithmsPanel::build_ui() {
     const QMap<QString, QString> cat_titles = {
         {"cv",              tr("Computer Vision")},
         {"analytics",       tr("Analytics")},
-        {"calibration",     tr("Calibration")},
     };
 
     for (auto it = by_cat.constBegin(); it != by_cat.constEnd(); ++it) {
@@ -86,6 +100,11 @@ void AlgorithmsPanel::build_ui() {
             if (a->source != "self") continue;
 
             auto* cb = new QCheckBox(QString::fromStdString(a->display_name), gb);
+            // Surface registered caveats (e.g. trigger_synced: needs an
+            // external trigger source, output always empty — §5-G3).
+            if (!a->description.empty()) {
+                cb->setToolTip(QString::fromStdString(a->description));
+            }
             checkboxes_[a->name] = cb;
             form->addRow(cb);
 
@@ -130,13 +149,18 @@ void AlgorithmsPanel::build_ui() {
                     const int idx = match_enum_index(p.enum_values, p.default_value);
                     if (idx >= 0) cmb->setCurrentIndex(idx);
                     w = cmb;
-                    // The "mode" enum drives per-mode parameter visibility.
-                    // On change, apply the param and refresh which rows show.
-                    if (p.key == "mode") {
+                    // A "mode" (or "decay") enum drives per-mode parameter
+                    // visibility via mode_filter. On change, apply the param
+                    // and refresh which rows show. "decay" is TimeSurface's
+                    // mode-equivalent: it selects Linear (0) vs Exponential (1),
+                    // and decay_time_us / tau_us each carry a mode_filter that
+                    // hides the inactive one — editing a parameter the renderer
+                    // ignores was the root cause of "no effect in Exp mode".
+                    if (p.key == "mode" || p.key == "decay") {
                         algo_panel_state_[algo_name].mode_combo = cmb;
                         connect(cmb, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-                                [this, algo_name, cmb](int) {
-                                    apply_param(algo_name, "mode", cmb->currentText().toStdString());
+                                [this, algo_name, param_key, cmb](int) {
+                                    apply_param(algo_name, param_key, cmb->currentText().toStdString());
                                     refresh_mode_visibility(algo_name);
                                 });
                     } else {
@@ -168,8 +192,19 @@ void AlgorithmsPanel::build_ui() {
                             });
                 } else if (p.type == "float") {
                     auto* sp = new QDoubleSpinBox(params_host);
-                    sp->setRange(-1e9, 1e9);
+                    // Apply the registered min/max (audit §五-B1): clamping in
+                    // the GUI keeps the displayed value equal to the value
+                    // the algorithm actually runs with (previously the GUI
+                    // allowed ±1e9 and the algo clamped silently, so the two
+                    // diverged). Step is 1/100 of the registered range.
+                    bool oklo = false, okhi = false;
+                    const double lo = QString::fromStdString(p.min_value).toDouble(&oklo);
+                    const double hi = QString::fromStdString(p.max_value).toDouble(&okhi);
+                    const double rlo = oklo ? lo : -1e9;
+                    const double rhi = okhi ? hi : 1e9;
+                    sp->setRange(rlo, rhi);
                     sp->setDecimals(6);
+                    sp->setSingleStep((rhi - rlo) / 100.0);
                     sp->setValue(QString::fromStdString(p.default_value).toDouble());
                     w = sp;
                     connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
@@ -192,36 +227,30 @@ void AlgorithmsPanel::build_ui() {
             refresh_mode_visibility(algo_name);
             form->addRow(QString(), params_host);
 
-            connect(cb, &QCheckBox::toggled, this, [this, params_host, cb, a, algo_name](bool on) {
+            // Overlay algorithms no longer open an AlgoWindow (Phase 2.6
+            // debug D-1): the main display draws their overlay and the
+            // main-display Zoom-to-ROI mode replaces the old window zoom
+            // view. Their status line (detection counts / effective params)
+            // lives in this read-only label, visible while enabled.
+            QLabel* status_lbl = nullptr;
+            if (a->display_mode == AlgoDisplayMode::Overlay) {
+                status_lbl = new QLabel(gb);
+                status_lbl->setWordWrap(true);
+                status_lbl->setVisible(false);
+                form->addRow(QString(), status_lbl);
+                algo_status_labels_[algo_name] = status_lbl;
+            }
+
+            connect(cb, &QCheckBox::toggled, this, [this, params_host, status_lbl, cb, a, algo_name](bool on) {
                 params_host->setVisible(on);
+                if (status_lbl) status_lbl->setVisible(on);
                 if (on) {
                     // Algorithm mutex (design §5.6.6 — exclusive mode): only
-                    // one algorithm may be enabled at a time. Uncheck every
-                    // other checkbox (with signals blocked so we don't
-                    // re-enter this handler) and disable its live instance.
-                    // The AlgoWindow for the previously-enabled algorithm is
-                    // closed by MainWindow via the algorithm_toggled signal
-                    // emitted below for each disabled algo.
-                    for (auto& [other_name, other_cb] : checkboxes_) {
-                        if (other_name == algo_name) continue;
-                        if (!other_cb || !other_cb->isChecked()) continue;
-                        QSignalBlocker b(other_cb);
-                        other_cb->setChecked(false);
-                        // Hide the other algo's parameter editor. Because
-                        // QSignalBlocker suppresses the toggled signal, the
-                        // other algo's toggled handler (which would normally
-                        // hide its params_host) never runs. We must hide it
-                        // explicitly here (BUG-M2).
-                        auto st = algo_panel_state_.find(other_name);
-                        if (st != algo_panel_state_.end() && st->second.params_host) {
-                            st->second.params_host->setVisible(false);
-                        }
-                        auto it = live_instances_.find(other_name);
-                        if (it != live_instances_.end() && it->second) {
-                            it->second->set_enabled(false);
-                        }
-                        emit algorithm_toggled(QString::fromStdString(other_name), false);
-                    }
+                    // one algorithm may be enabled at a time. Covers panel
+                    // checkboxes AND checkbox-less instances (e.g.
+                    // sensor_self_test from the Devices button) — see
+                    // mutex_disable_others.
+                    mutex_disable_others(algo_name);
                     // Reuse the live instance if one already exists (e.g. the
                     // user edited a parameter before enabling). create() would
                     // discard those parameters by building a fresh instance.
@@ -229,19 +258,41 @@ void AlgorithmsPanel::build_ui() {
                     if (inst) {
                         inst->set_enabled(true);
                         live_instances_[algo_name] = inst;
-                        // create() already replayed the cached preproc_* and
-                        // roi_* params (BUG-R4, N3). Refresh the ROI cache from
-                        // the current widget values so the new instance is
-                        // guaranteed to match the sidebar state even if no
-                        // widget signal fired since app start.
-                        apply_global_roi();
+                        // create() already replayed the cached preproc_* params
+                        // (BUG-R4, N3) and the cached unified ROI state
+                        // (Phase 2.6 step 3), so the new instance matches the
+                        // sidebar state even if no widget signal fired since
+                        // app start.
+                        // Auto-set 1/4 downsample based on algorithm type
+                        // (§11.2-I): coordinate-halving backends (ISI,
+                        // TimeSurface, HoughLine, HoughCircle) default
+                        // ON per project memory; all others default OFF to
+                        // avoid 4× input loss (§五-F1). Only auto-set while
+                        // the user has not manually toggled the checkbox.
+                        // E2VID is EXCLUDED here (Phase 3): it gets the
+                        // forced save/restore automation in MainWindow
+                        // instead (unconditional, like the default ROI).
+                        if (!preproc_downsample_user_touched_ &&
+                            algo_name != "event_to_video") {
+                            const bool want = algo_halves_coords(algo_name);
+                            if (preproc_downsample_cb_->isChecked() != want) {
+                                QSignalBlocker b(preproc_downsample_cb_);
+                                preproc_downsample_cb_->setChecked(want);
+                                apply_global_preproc(
+                                    "preproc_downsample", want ? "true" : "false");
+                            }
+                        }
                         emit info_message(tr("Algorithm enabled: %1")
                                               .arg(QString::fromStdString(a->display_name)));
-                        // Request MainWindow to open the AlgoWindow so Standalone
-                        // algorithms have a display and Overlay algorithms get
-                        // their ROI zoom view. Without this the sidebar-enabled
-                        // algorithm produces no visible output.
-                        emit open_algo_window_requested(algo_name);
+                        // Request MainWindow to open the AlgoWindow so
+                        // Standalone algorithms have a display and Passive
+                        // algorithms get their status window. Overlay
+                        // algorithms no longer open one (Phase 2.6 debug
+                        // D-1): the main display draws their overlay and the
+                        // Zoom-to-ROI mode covers the old window zoom view.
+                        if (a->display_mode != AlgoDisplayMode::Overlay) {
+                            emit open_algo_window_requested(algo_name);
+                        }
                         emit algorithm_toggled(QString::fromStdString(a->name), true);
                     } else {
                         // find_or_create should never fail for registered
@@ -279,61 +330,64 @@ void AlgorithmsPanel::build_ui() {
 }
 
 void AlgorithmsPanel::build_roi_selector(QVBoxLayout* parent_layout) {
-    auto* gb = new QGroupBox(tr("Algorithm ROI"), this);
+    auto* gb = new QGroupBox(tr("ROI (Unified)"), this);
     auto* form = new QFormLayout(gb);
     form->setContentsMargins(6, 6, 6, 6);
 
-    roi_enabled_cb_ = new QCheckBox(tr("Enabled (center 128×128 default)"), gb);
-    roi_enabled_cb_->setChecked(true);
+    // Phase 2.6 debug D-6: reduced to a single enable checkbox + a settings
+    // button opening the modal UnifiedRoiDialog (rect/mode/drag live there).
+    // Same unified state as the Hardware page's ROI controls; the checkbox
+    // is synced via CameraController::roi_state_changed (set_roi_enabled).
+    roi_enabled_cb_ = new QCheckBox(tr("Enable ROI"), gb);
+    roi_enabled_cb_->setToolTip(
+        tr("Single unified ROI: hardware ROI on a live camera, software crop "
+           "on file playback. Heavy algorithms (E2VID/ISI/TimeSurface/Hough) "
+           "enable it automatically at the center 256×144 while enabled."));
+    roi_enabled_cb_->setChecked(false);
     form->addRow(roi_enabled_cb_);
 
-    roi_x_sp_ = new QSpinBox(gb);
-    roi_x_sp_->setRange(-1, 100000);
-    roi_x_sp_->setValue(-1);
-    roi_x_sp_->setSpecialValueText(tr("auto-center"));
-    form->addRow(tr("X"), roi_x_sp_);
-
-    roi_y_sp_ = new QSpinBox(gb);
-    roi_y_sp_->setRange(-1, 100000);
-    roi_y_sp_->setValue(-1);
-    roi_y_sp_->setSpecialValueText(tr("auto-center"));
-    form->addRow(tr("Y"), roi_y_sp_);
-
-    roi_w_sp_ = new QSpinBox(gb);
-    roi_w_sp_->setRange(0, 100000);
-    roi_w_sp_->setValue(128);
-    roi_w_sp_->setSpecialValueText(tr("full"));
-    form->addRow(tr("W"), roi_w_sp_);
-
-    roi_h_sp_ = new QSpinBox(gb);
-    roi_h_sp_->setRange(0, 100000);
-    roi_h_sp_->setValue(128);
-    roi_h_sp_->setSpecialValueText(tr("full"));
-    form->addRow(tr("H"), roi_h_sp_);
+    roi_settings_btn_ = new QPushButton(tr("ROI Settings..."), gb);
+    form->addRow(QString(), roi_settings_btn_);
 
     parent_layout->addWidget(gb);
 
-    // Wire up: any change applies the ROI to all live instances.
-    auto apply_now = [this]() { apply_global_roi(); };
-    connect(roi_enabled_cb_, &QCheckBox::toggled, this, apply_now);
-    connect(roi_x_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
-    connect(roi_y_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
-    connect(roi_w_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
-    connect(roi_h_sp_, QOverload<int>::of(&QSpinBox::valueChanged), this, apply_now);
+    connect(roi_enabled_cb_, &QCheckBox::toggled, this, [this](bool on) {
+        // Applied by MainWindow via CameraController::set_unified_roi.
+        emit roi_enable_toggled(on);
+    });
+    connect(roi_settings_btn_, &QPushButton::clicked, this,
+            [this]() { emit roi_settings_requested(); });
 }
 
-void AlgorithmsPanel::apply_global_roi() {
-    if (!bridge_) return;
-    const std::string enabled = roi_enabled_cb_->isChecked() ? "true" : "false";
-    const std::string x = std::to_string(roi_x_sp_->value());
-    const std::string y = std::to_string(roi_y_sp_->value());
-    const std::string w = std::to_string(roi_w_sp_->value());
-    const std::string h = std::to_string(roi_h_sp_->value());
-    // Delegate to the bridge, which iterates every live self-developed
-    // instance (skipping OpenEB wrappers and calibration algos) AND caches
-    // the values so future instances created via create() inherit the
-    // current ROI (N3).
-    bridge_->apply_global_roi(enabled, x, y, w, h);
+void AlgorithmsPanel::set_roi_enabled(bool enabled) {
+    QSignalBlocker b(roi_enabled_cb_);
+    roi_enabled_cb_->setChecked(enabled);
+}
+
+bool AlgorithmsPanel::algo_defaults_to_roi(const std::string& algo_name) {
+    // Phase 2.6 debug D-7 default list: compute-heavy algorithms that would
+    // stall at full sensor auto-enable the unified ROI at the default center
+    // 256×144 (and restore the prior state on disable). XYT deliberately
+    // excluded (user decision — it never used ROI).
+    return algo_name == "event_to_video" ||
+           algo_name == "isi_analyzer" ||
+           algo_name == "time_surface" ||
+           algo_name == "hough_line" ||
+           algo_name == "hough_circle";
+}
+
+void AlgorithmsPanel::set_algo_status(const std::string& name, const QString& text) {
+    auto it = algo_status_labels_.find(name);
+    if (it != algo_status_labels_.end() && it->second) {
+        it->second->setText(text);
+    }
+}
+
+void AlgorithmsPanel::set_preproc_downsample(bool on) {
+    if (preproc_downsample_cb_->isChecked() == on) return;
+    QSignalBlocker b(preproc_downsample_cb_);
+    preproc_downsample_cb_->setChecked(on);
+    apply_global_preproc("preproc_downsample", on ? "true" : "false");
 }
 
 void AlgorithmsPanel::apply_global_preproc(const std::string& key,
@@ -343,10 +397,14 @@ void AlgorithmsPanel::apply_global_preproc(const std::string& key,
     // Preprocessor / RoiFilter member recognises the key. Preprocessing is
     // stackable and NOT mutually exclusive with the main algorithm.
     if (bridge_) bridge_->apply_global_preproc(key, value);
+    // Also forward to the display-path preprocessing (Phase 2.5): the main
+    // display applies the same noise filter to the rendered stream.
+    emit preproc_display_param_changed(QString::fromStdString(key),
+                                       QString::fromStdString(value));
 }
 
 void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
-    auto* gb = new QGroupBox(tr("Preprocessing (ROI > filter > downsample)"), this);
+    auto* gb = new QGroupBox(tr("Preprocessing (ROI > filter > downsample > undistort)"), this);
     auto* form = new QFormLayout(gb);
     form->setContentsMargins(6, 6, 6, 6);
 
@@ -355,13 +413,43 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     preproc_filter_cb_->setChecked(false);
     form->addRow(preproc_filter_cb_);
 
-    // 1/4 downsample (default ON to preserve v1.0.0 behaviour where
-    // event_to_video had downsample=true).
+    // 1/4 downsample (default OFF — audit §五-F1): for most backends this
+    // only THINS events (coordinates unchanged, 3/4 of the input silently
+    // discarded); only the E2VID/ISI/TimeSurface/Hough backends actually
+    // halve coordinates. The checkbox is auto-set on algorithm enable
+    // (§11.2-I): ON for coordinate-halving backends (project memory),
+    // OFF for all others. Once the user manually toggles, auto-setting
+    // stops.
     preproc_downsample_cb_ = new QCheckBox(tr("1/4 Downsample"), gb);
-    preproc_downsample_cb_->setChecked(true);
+    preproc_downsample_cb_->setChecked(false);
+    preproc_downsample_cb_->setToolTip(tr(
+        "对大多数算法仅抽稀事件（坐标不变）；仅 E2VID/ISI/TimeSurface/Hough 系做坐标减半"));
     form->addRow(preproc_downsample_cb_);
 
-    // Filter mode (8 modes, default STCF=1).
+    // Undistort (default off). Applied AFTER filter + downsample. Loads the
+    // YAML written by Tools → Intrinsic Wizard and builds a forward event LUT
+    // (cv::undistortPoints with K adjusted for ROI origin + downsample factor).
+    // Default path is identical to the wizard's default export path.
+    preproc_undistort_cb_ = new QCheckBox(tr("Undistort (apply calibration)"), gb);
+    preproc_undistort_cb_->setChecked(false);
+    form->addRow(preproc_undistort_cb_);
+
+    preproc_undistort_path_ = new QLineEdit(gb);
+    const QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    const QString base = docs.isEmpty() ? QDir::homePath() : docs;
+    preproc_undistort_path_->setText(base + QStringLiteral("/EBplus/calibration/intrinsic.yml"));
+    preproc_undistort_path_->setToolTip(tr(
+        "Path to the YAML written by Tools → Intrinsic Wizard. "
+        "Default path is identical to the wizard's export default."));
+    preproc_undistort_browse_ = new QPushButton(tr("Browse..."), gb);
+    auto* undistort_row = new QWidget(gb);
+    auto* undistort_layout = new QHBoxLayout(undistort_row);
+    undistort_layout->setContentsMargins(0, 0, 0, 0);
+    undistort_layout->addWidget(preproc_undistort_path_, 1);
+    undistort_layout->addWidget(preproc_undistort_browse_, 0);
+    form->addRow(tr("Calibration file"), undistort_row);
+
+    // Filter mode (9 modes, default STCF=1).
     preproc_filter_mode_combo_ = new QComboBox(gb);
     preproc_filter_mode_combo_->addItem("0=BAF");
     preproc_filter_mode_combo_->addItem("1=STCF");
@@ -371,10 +459,11 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     preproc_filter_mode_combo_->addItem("5=Harmonic");
     preproc_filter_mode_combo_->addItem("6=Repetitious");
     preproc_filter_mode_combo_->addItem("7=SpatialBP");
+    preproc_filter_mode_combo_->addItem("8=KNoise");
     preproc_filter_mode_combo_->setCurrentIndex(1);  // STCF
     form->addRow(tr("Filter mode"), preproc_filter_mode_combo_);
 
-    // Mode-specific parameter rows (BUG-3 fix). All 8 modes' params are
+    // Mode-specific parameter rows (BUG-3 fix). All 9 modes' params are
     // pre-created and shown/hidden based on the selected filter mode.
     // Cross-mode params (mode=-1) are always visible when the filter is on.
     preproc_params_form_ = new QFormLayout();
@@ -383,6 +472,12 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
 
     // Parameter definitions: {key, display, type, def, lo, hi, mode}
     // type: "i"=int, "f"=float, "b"=bool
+    // SYNC (audit §五-F2): this table mirrors the preproc_params() registry in
+    // gui/algo_bridge/algo_bridge.cpp — the bridge registry is the single
+    // source of truth; any addition/removal/default change must be mirrored
+    // here. rep_period_us/rep_tolerance_us are intentionally absent (algo
+    // stores but never uses them); rep_averaging_samples was registered in
+    // Phase 6 (the algo gained the setter, jAER setAveragingSamples parity).
     struct PDef {
         const char* key;
         const char* disp;
@@ -404,7 +499,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         // Refractory (mode 2)
         {"preproc_filter_refractory_us", "Refractory (us)", 'i', "1000", "100", "100000", 2},
         // DWF (mode 3)
-        {"preproc_filter_dwf_window_length", "DWF win len", 'i', "2", "1", "100", 3},
+        {"preproc_filter_dwf_window_length", "DWF win len", 'i', "2", "1", "1024", 3},
         {"preproc_filter_dwf_dist_threshold", "DWF dist", 'i', "2", "1", "1024", 3},
         {"preproc_filter_dwf_min_correlated", "DWF min corr", 'i', "2", "1", "8", 3},
         {"preproc_filter_dwf_double_mode", "DWF double", 'b', "false", "", "", 3},
@@ -418,16 +513,18 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         {"preproc_filter_line_freq_hz", "Harm Hz", 'e', "50", "50", "60", 5},
         {"preproc_filter_notch_q", "Harm Q", 'f', "5.0", "0.1", "100.0", 5},
         {"preproc_filter_harmonic_threshold", "Harm thresh", 'f', "0.1", "0.0", "1.0", 5},
-        // Repetitious (mode 6)
-        {"preproc_filter_rep_period_us", "Rep period (us)", 'i', "5000", "1000", "1000000", 6},
-        {"preproc_filter_rep_tolerance_us", "Rep tol (us)", 'i', "1000", "100", "10000", 6},
-        {"preproc_filter_rep_ratio_shorter", "Rep ratio short", 'i', "10", "1", "100", 6},
-        {"preproc_filter_rep_ratio_longer", "Rep ratio long", 'i', "10", "1", "100", 6},
+        // Repetitious (mode 6). rep_period_us/rep_tolerance_us are omitted:
+        // the algo stores them but never uses them (audit §7.3).
+        {"preproc_filter_rep_ratio_shorter", "Rep ratio short", 'i', "2", "1", "100", 6},
+        {"preproc_filter_rep_ratio_longer", "Rep ratio long", 'i', "2", "1", "100", 6},
         {"preproc_filter_rep_min_dt_to_store_us", "Rep min dt (us)", 'i', "1000", "0", "1000000", 6},
+        {"preproc_filter_rep_averaging_samples", "Rep avg samples", 'i', "3", "1", "100", 6},
         // SpatialBP (mode 7)
         {"preproc_filter_sbp_center_radius_px", "SBP center", 'i', "2", "1", "10", 7},
         {"preproc_filter_sbp_surround_radius_px", "SBP surround", 'i', "10", "5", "30", 7},
         {"preproc_filter_sbp_dt_surround_us", "SBP dt (us)", 'i', "10000", "100", "1000000", 7},
+        // KNoise (mode 8) — dv-processing KNoiseFilter port
+        {"preproc_filter_knoise_dt_us", "KNoise dt (us)", 'i', "3000", "100", "100000", 8},
         // Cross-mode flags
         {"preproc_filter_filter_hot_pixels", "Filter hot px", 'b', "false", "", "", -1},
         {"preproc_filter_adaptive_correlation_time", "Adaptive corr", 'b', "false", "", "", -1},
@@ -469,8 +566,12 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
                     });
         } else { // 'f'
             auto* sp = new QDoubleSpinBox(gb);
-            sp->setRange(-1e9, 1e9);
+            // Apply the registered min/max (audit §五-B1); step = range/100.
+            const double lo = std::string(p.lo).empty() ? -1e9 : std::stod(p.lo);
+            const double hi = std::string(p.hi).empty() ? 1e9 : std::stod(p.hi);
+            sp->setRange(lo, hi);
             sp->setDecimals(6);
+            sp->setSingleStep((hi - lo) / 100.0);
             sp->setValue(std::stod(p.def));
             w = sp;
             connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
@@ -494,6 +595,25 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
     });
     connect(preproc_downsample_cb_, &QCheckBox::toggled, this, [this](bool on) {
         apply_global_preproc("preproc_downsample", on ? "true" : "false");
+        // Mark as user-touched so the auto-toggle on algorithm enable
+        // (§11.2-I) stops overriding the user's explicit choice.
+        preproc_downsample_user_touched_ = true;
+    });
+    connect(preproc_undistort_cb_, &QCheckBox::toggled, this, [this](bool on) {
+        apply_global_preproc("preproc_undistort_enabled", on ? "true" : "false");
+    });
+    connect(preproc_undistort_path_, &QLineEdit::textChanged, this, [this](const QString& text) {
+        apply_global_preproc("preproc_undistort_path", text.toStdString());
+    });
+    connect(preproc_undistort_browse_, &QPushButton::clicked, this, [this]() {
+        const QString start = preproc_undistort_path_->text();
+        const QString path = QFileDialog::getOpenFileName(
+            this, tr("Select calibration YAML"),
+            QFileInfo(start).absolutePath(),
+            tr("YAML (*.yml *.yaml);;All Files (*)"));
+        if (!path.isEmpty()) {
+            preproc_undistort_path_->setText(path);
+        }
     });
     connect(preproc_filter_mode_combo_,
             QOverload<int>::of(&QComboBox::currentIndexChanged), this,
@@ -555,7 +675,33 @@ void AlgorithmsPanel::apply_param(const std::string& algo_name,
                 }
             }
         }
+        // §五-H1: a failed ONNX load silently falls back to the heuristic
+        // path — warn once per panel session so the user does not mistake
+        // the heuristic output for "E2VID quality".
+        if (algo_name == "event_to_video" &&
+            it->second->get_param("model_loaded") == "false" &&
+            !e2vid_model_error_shown_) {
+            e2vid_model_error_shown_ = true;
+            emit error_message(tr("E2VID model failed to load — using the "
+                                  "heuristic fallback reconstruction."));
+        }
     }
+}
+
+void AlgorithmsPanel::on_algorithm_overloaded(const QString& name) {
+    // Flood guard tripped (audit §五-E2): the instance already disabled
+    // itself. Clear the overload flag (so MainWindow's per-frame statusBar
+    // warning stops), uncheck the sidebar checkbox, and notify once.
+    const std::string n = name.toStdString();
+    if (bridge_) {
+        if (auto inst = bridge_->find_live(n)) {
+            inst->clear_overload();
+        }
+    }
+    set_algo_enabled(n, false);
+    emit algorithm_toggled(name, false);
+    emit error_message(tr("Algorithm auto-disabled (event rate too high): %1. "
+                          "Re-enable it to retry.").arg(name));
 }
 
 void AlgorithmsPanel::refresh_mode_visibility(const std::string& algo_name) {
@@ -585,34 +731,21 @@ void AlgorithmsPanel::refresh_mode_visibility(const std::string& algo_name) {
 
     // Auto-set mode-appropriate ROI and output_fps only during initial build
     // (design §4.4.2): all three event_to_video modes default to a 128×128
-    // center ROI with 1/4 downsample enabled (effective reconstruction at
-    // 64×64). E2VID runs NN inference at this resolution; BardowVariational
-    // and InteractingMaps also downsample for the same throughput benefit
-    // (the output is upsampled back to the ROI size for display). 24 fps is
-    // a comfortable target across all modes.
-    // Only event_to_video has a "mode" enum, so this code only runs for it.
+    // center ROI. The shared 1/4 downsample defaults to OFF here; it is
+    // auto-enabled on algorithm enable via algo_halves_coords() (§11.2-I),
+    // NOT in this first_init_ path. 24 fps is a comfortable target across
+    // all modes. Only event_to_video has a "mode" enum, so this code only
+    // runs for it.
     // BUG-14 fix: skip ROI/fps reset on user-driven mode switches so
     // user-customised values are preserved.
     if (!first_init_) return;
 
-    const int target_w  = 128;
-    const int target_h  = 128;
+    // Phase 2.6: the old first_init_ block used to apply a center-128 ROI to
+    // EVERY future algorithm instance. With the unified ROI defaulting to
+    // OFF (user decision), e2v's mode init no longer applies any ROI — the
+    // default-ROI-per-algorithm auto-enable is reintroduced in step 3
+    // through the unified path.
     const int target_fps = 24;
-
-    // ROI — global controls.
-    {
-        QSignalBlocker bx(roi_x_sp_);
-        QSignalBlocker by(roi_y_sp_);
-        QSignalBlocker bw(roi_w_sp_);
-        QSignalBlocker bh(roi_h_sp_);
-        QSignalBlocker be(roi_enabled_cb_);
-        roi_x_sp_->setValue(-1);   // auto-center
-        roi_y_sp_->setValue(-1);   // auto-center
-        roi_w_sp_->setValue(target_w);
-        roi_h_sp_->setValue(target_h);
-        roi_enabled_cb_->setChecked(true);
-        apply_global_roi();
-    }
 
     // output_fps — find the per-algo param row by key.
     for (auto& row : state.rows) {
@@ -627,7 +760,13 @@ void AlgorithmsPanel::refresh_mode_visibility(const std::string& algo_name) {
 
 void AlgorithmsPanel::set_algo_enabled(const std::string& name, bool on) {
     auto it = checkboxes_.find(name);
-    if (it == checkboxes_.end() || !it->second) return;
+    if (it == checkboxes_.end() || !it->second) {
+        // Checkbox-less entries (e.g. sensor_self_test from the Devices
+        // panel button): no checkbox to sync, but the algorithm mutex still
+        // applies — enabling it must disable every other algorithm.
+        if (on) mutex_disable_others(name);
+        return;
+    }
     // Block signals so this programmatic change does not re-enter the toggled
     // handler (which would create/enable instances and emit algorithm_toggled,
     // causing sync loops with the Algorithm menu / AlgoWindow).
@@ -646,25 +785,116 @@ void AlgorithmsPanel::set_algo_enabled(const std::string& name, bool on) {
     // on_open_algo_window), uncheck every other algo so only one is live at
     // a time. The toggled-handler path enforces mutex itself; this covers
     // the programmatic path.
-    if (on) {
-        for (auto& [other_name, other_cb] : checkboxes_) {
-            if (other_name == name) continue;
-            if (!other_cb || !other_cb->isChecked()) continue;
-            QSignalBlocker ob(other_cb);
-            other_cb->setChecked(false);
-            // Hide the other algo's parameter editor (BUG-M2: QSignalBlocker
-            // suppresses the toggled handler that would normally hide it).
-            auto ost = algo_panel_state_.find(other_name);
-            if (ost != algo_panel_state_.end() && ost->second.params_host) {
-                ost->second.params_host->setVisible(false);
-            }
-            auto oi = live_instances_.find(other_name);
-            if (oi != live_instances_.end() && oi->second) {
-                oi->second->set_enabled(false);
-            }
-            emit algorithm_toggled(QString::fromStdString(other_name), false);
+    if (on) mutex_disable_others(name);
+}
+
+void AlgorithmsPanel::mutex_disable_others(const std::string& winner) {
+    // Algorithm mutex (design §5.6.6 — exclusive mode): only one algorithm
+    // may be enabled at a time. Covers two kinds of participants:
+    //   (a) panel algorithms (checkboxes) — uncheck + hide params + disable;
+    //   (b) checkbox-less instances created outside the panel (e.g.
+    //       sensor_self_test from the Devices button) — disable + emit
+    //       algorithm_toggled so MainWindow closes their windows.
+    for (auto& [other_name, other_cb] : checkboxes_) {
+        if (other_name == winner) continue;
+        if (!other_cb || !other_cb->isChecked()) continue;
+        QSignalBlocker ob(other_cb);
+        other_cb->setChecked(false);
+        // Hide the other algo's parameter editor (BUG-M2: QSignalBlocker
+        // suppresses the toggled handler that would normally hide it).
+        auto ost = algo_panel_state_.find(other_name);
+        if (ost != algo_panel_state_.end() && ost->second.params_host) {
+            ost->second.params_host->setVisible(false);
         }
+        auto oi = live_instances_.find(other_name);
+        if (oi != live_instances_.end() && oi->second) {
+            oi->second->set_enabled(false);
+        }
+        emit algorithm_toggled(QString::fromStdString(other_name), false);
     }
+    if (!bridge_) return;
+    for (const auto& inst : bridge_->list_live()) {
+        if (!inst || !inst->is_enabled()) continue;
+        const auto& other = inst->info().name;
+        if (other == winner) continue;
+        if (checkboxes_.find(other) != checkboxes_.end()) continue;  // handled above
+        inst->set_enabled(false);
+        emit algorithm_toggled(QString::fromStdString(other), false);
+    }
+}
+
+void AlgorithmsPanel::refresh_param_values() {
+    if (!bridge_) return;
+    for (auto& [algo_name, state] : algo_panel_state_) {
+        auto inst = bridge_->find_live(algo_name);
+        for (auto& row : state.rows) {
+            // Live instance values win (registered keys always produce a
+            // value, possibly a meaningful empty string); fall back to the
+            // N1 cache for non-live algorithms. nullopt = not configured —
+            // keep the widget's current value instead of blanking it.
+            std::string val;
+            bool have_value = false;
+            if (inst) {
+                val = inst->get_param(row.key);
+                have_value = true;
+            } else if (auto cv = bridge_->get_cached_algo_param(algo_name, row.key)) {
+                val = std::move(*cv);
+                have_value = true;
+            }
+            if (!have_value) continue;
+            if (!row.field) continue;
+            const QSignalBlocker blk(row.field);
+            if (auto* cmb = qobject_cast<QComboBox*>(row.field)) {
+                if (val.empty()) continue;
+                // Enum/bool combos: item text may be "idx=Label" — match the
+                // full text first, then the token before '='.
+                int idx = -1;
+                for (int i = 0; i < cmb->count(); ++i) {
+                    const QString t = cmb->itemText(i);
+                    if (t.toStdString() == val ||
+                        t.section('=', 0, 0).toStdString() == val) {
+                        idx = i;
+                        break;
+                    }
+                }
+                // Bool combos ("false"/"true") also accept legacy 0/1 from
+                // hand-edited or older config files.
+                if (idx < 0 && cmb->count() == 2 &&
+                    cmb->itemText(0) == "false" && cmb->itemText(1) == "true") {
+                    if (val == "0") idx = 0;
+                    else if (val == "1") idx = 1;
+                }
+                if (idx >= 0) cmb->setCurrentIndex(idx);
+            } else if (auto* sp = qobject_cast<QSpinBox*>(row.field)) {
+                if (val.empty()) continue;
+                sp->setValue(QString::fromStdString(val).toInt());
+            } else if (auto* dsp = qobject_cast<QDoubleSpinBox*>(row.field)) {
+                if (val.empty()) continue;
+                dsp->setValue(QString::fromStdString(val).toDouble());
+            } else if (auto* le = qobject_cast<QLineEdit*>(row.field)) {
+                // An empty string IS a meaningful value for text params
+                // (e.g. clearing model_path) — sync it too, otherwise the
+                // panel keeps displaying the pre-load path while the algo
+                // runs with none.
+                le->setText(QString::fromStdString(val));
+            }
+        }
+        // Row visibility follows the (possibly updated) mode combo.
+        if (state.mode_combo) refresh_mode_visibility(algo_name);
+    }
+}
+
+bool AlgorithmsPanel::algo_halves_coords(const std::string& algo_name) {
+    // These backends set preproc_.halve_coords_ = true in their constructor,
+    // meaning 1/4 downsample halves event coordinates (correct behavior:
+    // the algorithm runs at half resolution). For all other backends,
+    // downsample only thins events (3/4 discarded, coordinates unchanged) —
+    // a silent 4× input loss (§五-F1).
+    return algo_name == "event_to_video" ||
+           algo_name == "isi_analyzer" ||
+           algo_name == "time_surface" ||
+           algo_name == "hough_line" ||
+           algo_name == "hough_circle";
 }
 
 } // namespace gui

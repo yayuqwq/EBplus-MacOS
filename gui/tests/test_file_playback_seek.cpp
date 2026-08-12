@@ -37,7 +37,9 @@ TEST(PausedSeekImmediateRender, FramesAndDisplayUpdateSynchronously) {
     gui::EventDisplayWidget display;
 
     ASSERT_TRUE(pipeline.start_file(4, 4, 30, 100));
-    ASSERT_FALSE(pipeline.file_is_playing());
+    // FramePipeline no longer exposes FileFrameGenerator's internal playing
+    // state. The synchronous signal order below is the supported paused-seek
+    // presentation contract.
 
     const std::vector<Metavision::EventCD> events = {
         Metavision::EventCD(0, 0, 1, 10),
@@ -78,7 +80,6 @@ TEST(PausedSeekImmediateRender, FramesAndDisplayUpdateSynchronously) {
     ASSERT_FALSE(capture.frame.isNull());
     const QImage first_frame = capture.frame.copy();
     EXPECT_EQ(display.current_frame(), first_frame);
-    EXPECT_FALSE(pipeline.file_is_playing());
 
     capture = SeekCapture{};
     pipeline.seek_file(200);
@@ -92,5 +93,4 @@ TEST(PausedSeekImmediateRender, FramesAndDisplayUpdateSynchronously) {
     ASSERT_FALSE(capture.frame.isNull());
     EXPECT_NE(capture.frame, first_frame);
     EXPECT_EQ(display.current_frame(), capture.frame);
-    EXPECT_FALSE(pipeline.file_is_playing());
 }

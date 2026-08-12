@@ -27,9 +27,11 @@
 #define GUI_MAIN_WINDOW_H
 
 #include <QHash>
+#include <QCheckBox>
 #include <QMainWindow>
 #include <QPointer>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <string>
@@ -66,6 +68,7 @@ namespace gui {
 class PlaybackControls;
 class ExportDialog;
 class CalibrationWizard;
+class FocusDialog;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -90,9 +93,16 @@ private slots:
     void on_save_biases();
     void on_load_biases();
     void on_toggle_roi_drag(bool on);
+    /// Shared handler for both pages' "Enable ROI" checkboxes (Phase 2.6
+    /// debug D-6): applies the stored rect (default center 256×144 when
+    /// unset) and opens the settings dialog when turned on.
+    void on_roi_enable_toggled(bool on);
+    /// Opens the modal unified-ROI settings dialog (Phase 2.6 debug D-6).
+    void open_roi_settings_dialog();
 
     // Phase 3 — recording / playback.
     void on_record_start();
+    void do_record_start(const QString& path, bool save_biases);
     void on_record_stop();
     void on_record_elapsed(std::chrono::seconds s);
 
@@ -102,6 +112,7 @@ private slots:
 
     // Phase 9 — calibration.
     void on_intrinsic_wizard();
+    void on_focus();
 
     // Phase 10 — multi-window / layout / standalone algorithm views.
     void on_open_xyt_view();
@@ -161,6 +172,32 @@ private:
                                 Metavision::timestamp ts);
 
     EventDisplayWidget* display_{nullptr};
+    /// Main-display ROI view-mode toggle (Phase 2.6 step 4), in a bar below
+    /// the main display: checked = (a) adaptive zoom (frame cropped to the
+    /// unified ROI and scaled to the window); unchecked = (b) full canvas
+    /// with only-ROI content (default). Enabled only while the unified ROI
+    /// is active.
+    QCheckBox* roi_zoom_cb_{nullptr};
+    /// Dialog-initiated ROI draw in flight (Phase 2.6 debug D-6 follow-up):
+    /// while roi_draw_pending_ is true, the next roi_dragged re-opens the
+    /// ROI settings dialog with the drawn rect (roi_pending_rect_) instead
+    /// of applying it directly.
+    bool roi_draw_pending_{false};
+    struct PendingRect { int x, y, w, h; };
+    std::optional<PendingRect> roi_pending_rect_;
+    /// Saved unified-ROI state for the default-ROI automation (Phase 2.6
+    /// debug D-7): heavy algorithms force the center 256×144 ROI on enable
+    /// and restore this prior state on disable.
+    struct RoiAutomationSave {
+        bool enabled;
+        int x0, y0, x1, y1;
+        bool roni;
+    };
+    std::optional<RoiAutomationSave> roi_automation_save_;
+    /// Saved shared-downsample state for the E2VID automation (Phase 3):
+    /// E2VID forces the 1/4 downsample ON while enabled; this prior state
+    /// is restored on disable.
+    std::optional<bool> e2v_downsample_save_;
     SettingsPanel* settings_{nullptr};
     QDockWidget* settings_dock_{nullptr};  ///< Right-dock wrapper, for hide/show.
     PlaybackControls* playback_controls_{nullptr};
@@ -189,12 +226,6 @@ private:
     void add_recent_file(const QString& path);
     void on_open_recent_file(const QString& path);
 
-    // Calibration menu actions.
-    QMenu* m_calibration_{nullptr};
-
-    // Tools menu.
-    QMenu* m_tools_{nullptr};
-
     CameraController camera_;
     AlgoBridge algo_bridge_;
 
@@ -206,12 +237,14 @@ private:
     ExporterController exporter_;
     ConfigManager config_;
     ExportDialog* export_dialog_{nullptr};
+    class RecordDialog* record_dialog_{nullptr};
 
     // Phase 5.
     FileConverter file_converter_;
 
     // Phase 9 — owned lazily; built when the wizard is first opened.
     CalibrationWizard* calibration_wizard_{nullptr};
+    FocusDialog*       focus_dialog_{nullptr};
 
     // Phase 10 — layout manager is owned from construction.
     std::unique_ptr<LayoutManager> layout_manager_;
@@ -233,6 +266,14 @@ private:
     std::atomic<Metavision::timestamp> algo_last_xyt_post_us_{0};
     FrameAnnotator annotator_;
     Metavision::timestamp prev_frame_ts_{0};
+    /// Wall-clock time of the previous displayed frame; drives the
+    /// file-mode "Display FPS" metric (event timestamps are meaningless
+    /// there — audit §六-P6).
+    std::chrono::steady_clock::time_point prev_frame_wall_{};
+
+    /// True while closeEvent() is tearing down; AlgoWindow `closing`
+    /// handlers skip modal report dialogs in that case (audit §六-M3).
+    bool closing_app_{false};
 
     /// Performance profiler: measures end-to-end latency (event arrival →
     /// frame display), total events/frames, and drop count. Fed from the
@@ -246,14 +287,6 @@ private:
     /// button. Used to restore the width when content is shown again
     /// (§11.2 point 5). 0 means no saved width (first toggle or never set).
     int saved_sidebar_width_{0};
-
-    /// Draws the ROI rectangle of any enabled self-developed algorithm
-    /// (design §5.6.6: all self-developed algos support ROI) on the main
-    /// display frame so the user can see which region is being processed.
-    /// Called from process_algo_results() with the already-snapshotted
-    /// instances vector to avoid a redundant list_live() call (N7).
-    void draw_roi_overlays(QImage& frame,
-                           const std::vector<std::shared_ptr<AlgoInstance>>& instances);
 
     /// Application theme controller (background color + light/dark mode).
     /// Owned by MainWindow; the SettingsPanel sidebar exposes its UI.

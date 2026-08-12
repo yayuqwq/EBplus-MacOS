@@ -19,11 +19,8 @@ set(GUI_LIB_SOURCES
     algo_bridge/backends/analytics_extra_backends.cpp
     algo_bridge/backends/display_backends.cpp
     algo_bridge/backends/filter_backends.cpp
-    algo_bridge/backends/openeb_filter_backends.cpp
-    algo_bridge/backends/openeb_frame_backends.cpp
-    algo_bridge/backends/openeb_preproc_backends.cpp
-    algo_bridge/backends/openeb_util_backends.cpp
     algo_bridge/backends/backend_factory.cpp
+    algo_bridge/backends/backend_common.cpp
     algo_bridge/filter_chain.cpp
     config/config_manager.cpp
     display/event_display_widget.cpp
@@ -37,6 +34,9 @@ set(GUI_LIB_SOURCES
     panels/display_panel.cpp
     panels/esp_panel.cpp
     panels/file_tools_panel.cpp
+    panels/file_op_dialog.cpp
+    panels/file_info_dialog.cpp
+    recorder/record_dialog.cpp
     panels/information_panel.cpp
     panels/preprocessing_panel.cpp
     panels/roi_panel.cpp
@@ -48,10 +48,14 @@ set(GUI_LIB_SOURCES
     recorder/recorder_controller.cpp
 )
 
-# Phase 9 — calibration wizard (built when sources are present).
+# Phase 9 / Phase 4 — calibration wizard + tools (built when sources are present).
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/calibration/calibration_wizard.cpp")
     list(APPEND GUI_LIB_SOURCES
         calibration/calibration_wizard.cpp
+        calibration/circle_grid_display.cpp
+        calibration/calibration_event_tap.cpp
+        calibration/calibration_worker.cpp
+        calibration/focus_dialog.cpp
     )
 endif()
 
@@ -63,13 +67,10 @@ list(APPEND GUI_LIB_SOURCES
 )
 
 # Phase 11 — jAER-inspired display / widgets (design §1.6).
-# Header-only utility multiline_text.h needs no source entry.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/display/space_time_display.cpp")
     list(APPEND GUI_LIB_SOURCES
-        widgets/target_labeler.cpp
-        widgets/pixel_probe.cpp
-        widgets/mouse_adaptor.cpp
         widgets/algo_window.cpp
+        widgets/unified_roi_dialog.cpp
         display/frame_annotator.cpp
         display/space_time_display.cpp
     )

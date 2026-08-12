@@ -22,17 +22,38 @@ FileFrameGenerator::~FileFrameGenerator() {
 void FileFrameGenerator::add_events(const Metavision::EventCD* begin,
                                     const Metavision::EventCD* end) {
     if (begin == nullptr || end == nullptr || begin >= end) return;
-    std::lock_guard<std::mutex> lock(mutex_);
-    events_.insert(events_.end(), begin, end);
-    // Duration = last event timestamp. Updated atomically so on_timer()
-    // (GUI thread) can read it without locking.
-    const Metavision::timestamp last_t = (end - 1)->t;
-    Metavision::timestamp cur = duration_us_.load(std::memory_order_relaxed);
-    while (last_t > cur) {
-        if (duration_us_.compare_exchange_weak(cur, last_t,
-                                               std::memory_order_relaxed)) {
-            break;
+    bool just_truncated = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // OOM guard (audit §六-C2): never let the buffer grow past
+        // kMaxBufferedEvents. A batch that would cross the cap is only
+        // appended up to the cap; the rest is dropped and reported once.
+        const std::size_t room = kMaxBufferedEvents - events_.size();
+        const std::size_t n = static_cast<std::size_t>(end - begin);
+        if (room > 0) {
+            const Metavision::EventCD* append_end =
+                begin + std::min(n, room);
+            events_.insert(events_.end(), begin, append_end);
+            // Duration = last buffered event timestamp. Updated atomically
+            // so on_timer() (GUI thread) can read it without locking.
+            const Metavision::timestamp last_t = (append_end - 1)->t;
+            Metavision::timestamp cur =
+                duration_us_.load(std::memory_order_relaxed);
+            while (last_t > cur) {
+                if (duration_us_.compare_exchange_weak(
+                        cur, last_t, std::memory_order_relaxed)) {
+                    break;
+                }
+            }
         }
+        if (n > room && !truncated_) {
+            truncated_ = true;
+            just_truncated = true;
+        }
+    }
+    // Emit outside the lock; Qt queues this to GUI-thread listeners.
+    if (just_truncated) {
+        emit buffer_truncated();
     }
 }
 
@@ -42,6 +63,27 @@ void FileFrameGenerator::set_geometry(long width, long height) {
     width_ = width;
     height_ = height;
     frame_.create(static_cast<int>(height_), static_cast<int>(width_), CV_8UC3);
+    display_preproc_.init(static_cast<int>(width), static_cast<int>(height));
+    // Recompute the software ROI rect against the new sensor size.
+    set_display_roi(roi_enabled_, roi_x_, roi_y_, roi_w_, roi_h_, roi_roni_);
+}
+
+void FileFrameGenerator::set_display_roi(bool enabled, int x, int y, int w, int h,
+                                         bool roni) {
+    roi_enabled_ = enabled;
+    roi_roni_ = roni;
+    roi_x_ = x; roi_y_ = y; roi_w_ = w; roi_h_ = h;
+    // Compute the rect (auto-center on -1, clamp to sensor), mirroring
+    // ProcessRegion::compute and CameraController::set_unified_roi.
+    const int sw = width_ > 0 ? static_cast<int>(width_) : 1280;
+    const int sh = height_ > 0 ? static_cast<int>(height_) : 720;
+    const int rw = (w <= 0) ? sw : std::min(w, sw);
+    const int rh = (h <= 0) ? sh : std::min(h, sh);
+    const int rx = (x < 0) ? (sw - rw) / 2 : std::min(std::max(0, x), sw - rw);
+    const int ry = (y < 0) ? (sh - rh) / 2 : std::min(std::max(0, y), sh - rh);
+    roi_x0_ = rx; roi_y0_ = ry;
+    roi_x1_ = std::min(rx + rw, sw);
+    roi_y1_ = std::min(ry + rh, sh);
 }
 
 void FileFrameGenerator::set_fps(std::uint16_t fps) {
@@ -74,10 +116,16 @@ void FileFrameGenerator::set_duration_us(Metavision::timestamp us) {
 void FileFrameGenerator::play() {
     if (playing_) return;
     if (width_ <= 0 || height_ <= 0) return;
-    // If at or past EOF, restart from the beginning.
+    // If at or past EOF, restart from the beginning. Only meaningful once
+    // loading is complete — a cursor parked at the buffer top while the
+    // file is still streaming is NOT EOF (audit §六-P2).
     const Metavision::timestamp dur = duration_us_.load(std::memory_order_relaxed);
-    if (dur > 0 && cursor_us_ >= dur) {
+    if (dur > 0 && cursor_us_ >= dur &&
+        loading_complete_.load(std::memory_order_acquire)) {
         cursor_us_ = 0;
+        // Same contract as seek()/looped(): stateful algorithms must reset
+        // before events from the beginning of the file arrive (audit §六-P4).
+        emit seeked(0);
     }
     playing_ = true;
     timer_.start(1000 / static_cast<int>(fps_));
@@ -91,7 +139,15 @@ void FileFrameGenerator::pause() {
 
 void FileFrameGenerator::seek(Metavision::timestamp t_us) {
     if (t_us < 0) t_us = 0;
+    // Clamp to the known duration so a Step past EOF can't park the cursor
+    // beyond the last event (the next Play would then restart from 0 as if
+    // EOF had been reached — audit §六-P5).
+    const Metavision::timestamp dur = duration_us_.load(std::memory_order_relaxed);
+    if (dur > 0 && t_us > dur) t_us = dur;
     cursor_us_ = t_us;
+    // Display filter temporal state must not span a backward time jump
+    // (Phase 2.5) — stale timestamp surfaces would suppress events.
+    display_preproc_.reset_filter();
     // Notify listeners so stateful algorithms can reset their temporal state
     // before the new (possibly earlier) events arrive. Without this, a
     // backward seek leaves algorithm timestamps ahead of the new events,
@@ -116,11 +172,6 @@ Metavision::timestamp FileFrameGenerator::duration_us() const {
     return duration_us_.load(std::memory_order_relaxed);
 }
 
-bool FileFrameGenerator::has_events() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return !events_.empty();
-}
-
 std::size_t FileFrameGenerator::event_count() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return events_.size();
@@ -132,17 +183,63 @@ void FileFrameGenerator::clear() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
         events_.clear();
+        truncated_ = false;
     }
     duration_us_.store(0, std::memory_order_relaxed);
+    // A new file is about to stream in: suspend EOF handling until the
+    // loader signals completion (audit §六-P2).
+    loading_complete_.store(false, std::memory_order_release);
     cursor_us_ = 0;
+}
+
+bool FileFrameGenerator::is_truncated() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return truncated_;
 }
 
 void FileFrameGenerator::on_timer() {
     if (width_ <= 0 || height_ <= 0) return;
 
+    const Metavision::timestamp dur = duration_us_.load(std::memory_order_relaxed);
+
+    // EOF / buffer-wait check (audit §六-P2). duration_us_ is only the max
+    // timestamp buffered SO FAR, so a cursor at/past it means one of two
+    // things:
+    //   - loading complete  → genuine EOF: stop (emit eof_reached) or,
+    //     in loop mode, wrap to 0 (emit looped).
+    //   - still loading     → the cursor merely caught up with the read
+    //     progress: wait silently (no advance, no EOF, NO WRAP) until more
+    //     events are buffered or loading completes. playing_ stays true.
+    //
+    // The wait applies to loop mode too (§12.2-A revisited): wrapping while
+    // loading replays the buffered prefix over and over — with a tiny
+    // accumulation window the cursor outruns the loader within the first
+    // milliseconds and the first window's frame is re-emitted repeatedly
+    // (user report: "开头反复闪烁同一个累积帧"). The edcfbf3 concern (loop
+    // never wraps if loading_complete_ is never set) is handled by the
+    // loader's reliable completion signal (camera_controller.cpp:268);
+    // a genuinely wedged loader stalls playback instead of flashing —
+    // the lesser evil.
+    if (dur > 0 && cursor_us_ >= dur) {
+        if (!loading_complete_.load(std::memory_order_acquire)) {
+            return;
+        }
+        if (loop_) {
+            cursor_us_ = 0;
+            // Display filter temporal state must not span the loop wrap
+            // (Phase 2.5) — event time jumps back to the start of the file.
+            display_preproc_.reset_filter();
+            emit looped();
+        } else {
+            timer_.stop();
+            playing_ = false;
+            emit eof_reached();
+            return;
+        }
+    }
+
     const Metavision::timestamp start = cursor_us_;
     const Metavision::timestamp end = start + accumulation_us_;
-    const Metavision::timestamp dur = duration_us_.load(std::memory_order_relaxed);
 
     // Render events in [start, end) to frame_.
     render_frame(start, end);
@@ -159,18 +256,6 @@ void FileFrameGenerator::on_timer() {
 
     cursor_us_ = end;
     emit position_changed(cursor_us_, dur);
-
-    // EOF check: cursor has passed the last event.
-    if (dur > 0 && cursor_us_ >= dur) {
-        if (loop_) {
-            cursor_us_ = 0;
-            emit looped();
-        } else {
-            timer_.stop();
-            playing_ = false;
-            emit eof_reached();
-        }
-    }
 }
 
 void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
@@ -214,6 +299,25 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
         }
     }
 
+    // Software ROI (Phase 2.6): drop events outside the rect so the rendered
+    // frame AND the algorithm feed (events_window_ready) both see the same
+    // ROI-limited stream — identical semantics to a live source with the
+    // hardware ROI enabled. RONI mode (Phase 2.6 debug D-5) inverts the
+    // predicate: keep events OUTSIDE the rect (hardware drops inside).
+    if (roi_enabled_) {
+        auto& evs = *window_events;
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < evs.size(); ++i) {
+            const auto& ev = evs[i];
+            const bool inside = ev.x >= roi_x0_ && ev.x < roi_x1_ &&
+                                ev.y >= roi_y0_ && ev.y < roi_y1_;
+            if (inside != roi_roni_) {
+                evs[kept++] = ev;
+            }
+        }
+        evs.resize(kept);
+    }
+
     // Apply FilterChain to the window events for BOTH display rendering and
     // algorithm feeding. This ensures flip/rotate/etc. take effect immediately
     // during file playback (events are buffered raw and filtered per-frame),
@@ -235,7 +339,22 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
                                filtered);
         *window_events = std::move(filtered);
     }
-    for (const auto& ev : *window_events) {
+    // Display-path preprocessing (Phase 2.5): apply the Preprocessing panel's
+    // noise filter to the RENDERED pixels only. The events emitted to
+    // algorithm instances below are intentionally NOT noise-filtered here —
+    // each algorithm owns its Preprocessor stage with the same config.
+    const std::vector<Metavision::EventCD>* draw_events = window_events.get();
+    std::vector<Metavision::EventCD> display_filtered;
+    if (display_preproc_.active() && !window_events->empty()) {
+        auto [p, m] = display_preproc_.apply(
+            reinterpret_cast<const gui_algo::Event*>(window_events->data()),
+            window_events->size());
+        display_filtered.assign(
+            reinterpret_cast<const Metavision::EventCD*>(p),
+            reinterpret_cast<const Metavision::EventCD*>(p) + m);
+        draw_events = &display_filtered;
+    }
+    for (const auto& ev : *draw_events) {
         if (ev.x < 0 || ev.x >= w || ev.y < 0 || ev.y >= h) continue;
         frame_.ptr<cv::Vec3b>(static_cast<int>(ev.y))[ev.x] = ev.p ? on : off;
     }

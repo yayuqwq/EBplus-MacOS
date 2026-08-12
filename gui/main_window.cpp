@@ -14,6 +14,7 @@
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QMouseEvent>
 #include <QPushButton>
 #include <QSet>
@@ -24,6 +25,7 @@
 #include <QVBoxLayout>
 #include <QWindow>
 
+#include <atomic>
 #include <cmath>
 #include <vector>
 
@@ -42,10 +44,13 @@
 #include "panels/trigger_panel.h"
 #include "recorder/playback_controls.h"
 #include "exporter/export_dialog.h"
+#include "recorder/record_dialog.h"
 #include "calibration/calibration_wizard.h"
+#include "calibration/focus_dialog.h"
 #include "app/icon_provider.h"
 #include "display/display_strategy.h"
 #include "widgets/activity_bar.h"
+#include "widgets/unified_roi_dialog.h"
 
 namespace gui {
 
@@ -68,7 +73,35 @@ MainWindow::MainWindow(QWidget* parent)
     resize(1280, 720);
 
     display_ = new EventDisplayWidget(this);
-    setCentralWidget(display_);
+    // Central area = main display + a bottom bar holding the ROI view-mode
+    // toggle (Phase 2.6 step 4). Mode (b) full-canvas is the default; mode
+    // (a) adaptive zoom crops the displayed frame to the unified ROI rect
+    // and lets the widget scale it up.
+    auto* central = new QWidget(this);
+    auto* central_vbox = new QVBoxLayout(central);
+    central_vbox->setContentsMargins(0, 0, 0, 0);
+    central_vbox->setSpacing(0);
+    central_vbox->addWidget(display_, 1);
+    auto* roi_bar = new QHBoxLayout();
+    roi_bar->setContentsMargins(6, 2, 6, 2);
+    roi_bar->addStretch(1);
+    roi_zoom_cb_ = new QCheckBox(tr("Zoom to ROI"), central);
+    roi_zoom_cb_->setToolTip(
+        tr("Adaptive zoom: show only the unified-ROI region, scaled to the "
+           "window. Unchecked: full sensor canvas (ROI content only)."));
+    roi_zoom_cb_->setEnabled(false);  // enabled only while the unified ROI is active
+    roi_bar->addWidget(roi_zoom_cb_);
+    central_vbox->addLayout(roi_bar);
+    setCentralWidget(central);
+    connect(roi_zoom_cb_, &QCheckBox::toggled, this, [this](bool on) {
+        // When zooming, the whole view IS the ROI — hide the yellow overlay
+        // frame (its sensor coordinates no longer map onto the cropped
+        // texture). Restore it when returning to the full-canvas mode.
+        bool en = false;
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        camera_.unified_roi(en, x0, y0, x1, y1);
+        display_->set_roi_overlay(x0, y0, x1 - x0, y1 - y0, en && !on);
+    });
 
     // Theme controller must be attached before the menu is built (so the
     // Theme menu actions reflect the persisted choice) and before the
@@ -77,6 +110,17 @@ MainWindow::MainWindow(QWidget* parent)
     theme_.set_target(this);
 
     settings_ = new SettingsPanel(&algo_bridge_, &file_converter_, this);
+    // Let file operations (convert/cut) skip the blocking OSC duration query
+    // when operating on the currently-open, fully buffered file.
+    file_converter_.set_duration_provider(
+        [this](const QString& src) -> Metavision::timestamp {
+            return (src == playback_.current_file()) ? playback_.duration_us() : 0;
+        });
+    // Let the file-operation dialogs prefill the source path with the
+    // currently open file (same pattern as ExportDialog::set_source).
+    if (auto* ft = settings_->file_tools_panel()) {
+        ft->set_source_provider([this]() { return playback_.current_file(); });
+    }
     settings_dock_ = new QDockWidget(tr("Settings"), this);
     settings_dock_->setObjectName("SettingsDock");
     settings_dock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
@@ -114,6 +158,13 @@ MainWindow::MainWindow(QWidget* parent)
 
     // Phase 4: export dialog (lazy-shown via menu).
     export_dialog_ = new ExportDialog(&exporter_, this);
+    // Let the exporter skip the blocking OSC duration query when the user
+    // exports the file that is currently open (already fully buffered —
+    // the playback controller knows its duration).
+    export_dialog_->set_duration_provider(
+        [this](const QString& src) -> Metavision::timestamp {
+            return (src == playback_.current_file()) ? playback_.duration_us() : 0;
+        });
 
     playback_.set_camera(&camera_);
 
@@ -145,6 +196,16 @@ MainWindow::MainWindow(QWidget* parent)
                    P::TopLeft, P::TopRight, P::BottomLeft, P::BottomRight}) {
         auto* grip = new ResizeGrip(p, this);
         resize_grips_.push_back(grip);
+    }
+    // Position the grips immediately: resizeEvent() is the only other place
+    // that repositions them, and if the WM delivers no resize event after
+    // show() the grips would keep their default geometry (0,0,100,30) —
+    // raised above the title bar's File menu (audit §六-M1).
+    {
+        const QRect r = rect();
+        for (auto* grip : resize_grips_) {
+            if (grip) grip->reposition(r);
+        }
     }
 
     // Capture the factory layout (all docks in their default positions) so
@@ -194,6 +255,11 @@ MainWindow::~MainWindow() = default;
 void MainWindow::closeEvent(QCloseEvent* event) {
     if (layout_manager_) layout_manager_->save_default();
 
+    // Mark shutdown in progress: the AlgoWindow `closing` handlers below
+    // consult this to skip modal report dialogs that would block the close
+    // sequence (audit §六-M3).
+    closing_app_ = true;
+
     // ---- Phase 1: stop all data sources BEFORE deleting child widgets. ----
     // The CD callback and frame pipeline run on the camera's data thread.
     // If we delete child widgets (AlgoWindow displays, xyt_display_, etc.)
@@ -210,6 +276,10 @@ void MainWindow::closeEvent(QCloseEvent* event) {
     if (calibration_wizard_) {
         delete calibration_wizard_;
         // calibration_wizard_ is nulled by the destroyed signal handler.
+    }
+    if (focus_dialog_) {
+        delete focus_dialog_;
+        // focus_dialog_ is nulled by the destroyed signal handler.
     }
     // Standalone algorithm windows — use close() (not delete) so that
     // closeEvent fires, the `closing` signal is emitted, and the cleanup
@@ -371,7 +441,34 @@ void MainWindow::build_menus() {
             tr("JSON (*.json);;All Files (*)"));
         if (path.isEmpty()) return;
         QString err;
-        if (config_.load_algo_params_from_file(&algo_bridge_, path, err)) {
+        std::map<std::string, std::string> legacy_roi;
+        if (config_.load_algo_params_from_file(&algo_bridge_, path, err, &legacy_roi)) {
+            auto* ap = settings_->algorithms_panel();
+            // Phase 2.6: legacy per-algorithm roi_* entries were collected
+            // instead of forwarded — map the first algorithm's ROI onto the
+            // unified ROI. Goes through the single state source, so the
+            // checkboxes/overlay/zoom/algorithm path all sync via
+            // roi_state_changed (debug D-6).
+            if (!legacy_roi.empty()) {
+                auto parse = [](const std::map<std::string, std::string>& m,
+                                const char* k, int def) {
+                    auto it = m.find(k);
+                    if (it == m.end()) return def;
+                    try { return std::stoi(it->second); } catch (...) { return def; }
+                };
+                const bool on = parse(legacy_roi, "roi_enabled", 0) != 0;
+                const int rx = parse(legacy_roi, "roi_x", -1);
+                const int ry = parse(legacy_roi, "roi_y", -1);
+                const int rw = parse(legacy_roi, "roi_w", 128);
+                const int rh = parse(legacy_roi, "roi_h", 128);
+                camera_.set_unified_roi(on, rx, ry, rw, rh);
+            }
+            // apply_algo_state wrote instances/caches directly — re-sync the
+            // panel controls so the displayed values match the loaded ones
+            // (audit §5.9-疑点4).
+            if (ap) {
+                ap->refresh_param_values();
+            }
             statusBar()->showMessage(tr("Algorithm params loaded from %1").arg(path), 3000);
         } else if (!err.isEmpty()) {
             QMessageBox::warning(this, tr("Load failed"), err);
@@ -427,9 +524,12 @@ void MainWindow::build_menus() {
     // management functions irrelevant to the current dock-based GUI.
     // Algorithm-specific windows are opened from the sidebar's Algorithms
     // section, not duplicated here.
-    m_tools_ = mb->addMenu(tr("&Tools"));
+    auto* m_tools = mb->addMenu(tr("&Tools"));
     // Calibration (Phase 9) — launches the wizard lazily.
-    m_tools_->addAction(tr("&Intrinsic Wizard..."), this, &MainWindow::on_intrinsic_wizard);
+    m_tools->addAction(tr("&Intrinsic Wizard..."), this, &MainWindow::on_intrinsic_wizard);
+    // Sharpness meter removed (Phase 5 step 2) — replaced by the Siemens-star
+    // Focus Assistant.
+    m_tools->addAction(tr("&Focus Assistant..."), this, &MainWindow::on_focus);
 
     // Help
     auto* m_help = mb->addMenu(tr("&Help"));
@@ -680,8 +780,7 @@ void MainWindow::wire_signals() {
         a_load_cfg_->setEnabled(live);
         a_save_biases_->setEnabled(live);
         a_load_biases_->setEnabled(live);
-        // ROI Drag Mode + Presets moved to the sidebar ROI panel (§14.5).
-        settings_->roi_panel()->set_roi_drag_enabled(live);
+        // Presets moved to the sidebar ROI panel (§14.5).
         settings_->roi_panel()->set_presets_enabled(live);
         // Recording + Export moved to the sidebar File Tools panel (§14.5).
         settings_->file_tools_panel()->set_record_enabled(live);
@@ -710,7 +809,7 @@ void MainWindow::wire_signals() {
         // This also covers the case where a new raw file starts at t=0 but
         // current_t_ is still at the previous file's end time → no new
         // events would update current_t_ (e.t > current_t_ is false) → the
-        // algorithm freezes on stale output. See doc/gui_optimization.md §8.
+        // algorithm freezes on stale output. See devlog/gui_optimization.md §8.
         //
         // Also update sensor dimensions on existing instances: when a new
         // file/camera connects with different dimensions, the ROI must be
@@ -769,6 +868,7 @@ void MainWindow::wire_signals() {
         // members are destroyed.
         remove_algo_callback();
         prev_frame_ts_ = 0;
+        prev_frame_wall_ = {};
         perf_meter_.reset();
         last_rate_eps_ = 0.0;
         settings_->information_panel()->clear();
@@ -782,15 +882,14 @@ void MainWindow::wire_signals() {
         a_load_cfg_->setEnabled(false);
         a_save_biases_->setEnabled(false);
         a_load_biases_->setEnabled(false);
-        // ROI Drag Mode + Presets moved to the sidebar ROI panel (§14.5).
-        settings_->roi_panel()->set_roi_drag_enabled(false);
-        settings_->roi_panel()->set_roi_drag_checked(false);
+        // Presets moved to the sidebar ROI panel (§14.5).
         settings_->roi_panel()->set_presets_enabled(false);
         // Recording + Export moved to the sidebar File Tools panel (§14.5).
         settings_->file_tools_panel()->set_record_enabled(false);
         settings_->file_tools_panel()->set_stop_enabled(false);
         settings_->file_tools_panel()->set_export_enabled(false);
-        display_->set_roi_drag_mode(false);
+        roi_draw_pending_ = false;
+        on_toggle_roi_drag(false);
         display_->clear();
         if (auto* pb = findChild<QDockWidget*>("PlaybackDock")) {
             pb->setVisible(false);
@@ -802,6 +901,10 @@ void MainWindow::wire_signals() {
         stop_rec_blink();
     });
     connect(&camera_, &CameraController::stopped, this, [this]() {
+        // File source: the SDK camera stopping after buffering all events is
+        // NOT playback stopping — the FileFrameGenerator keeps playing from
+        // its buffer (same exemption as PlaybackController, audit §六-P3).
+        if (camera_.is_file_source()) return;
         // Auto-stop the recorder when the camera stops (user stop, file EOF,
         // runtime error). Without this, the recorder keeps running with a
         // dead camera — the flush timer ticks but get_latest_raw_data()
@@ -832,10 +935,40 @@ void MainWindow::wire_signals() {
     connect(camera_.frame_pipeline(), &FramePipeline::frame_ready, this,
             [this](QImage frame, Metavision::timestamp ts) {
                 process_algo_results(frame);
+                // Phase 2.6 step 4 mode (a): adaptive zoom — crop the
+                // (already overlay-annotated) frame to the unified ROI rect;
+                // EventDisplayWidget scales it to the window. Mode (b) is
+                // the pass-through default.
+                if (roi_zoom_cb_->isChecked()) {
+                    bool zen = false;
+                    int zx0 = 0, zy0 = 0, zx1 = 0, zy1 = 0;
+                    camera_.unified_roi(zen, zx0, zy0, zx1, zy1);
+                    if (zen && zx1 > zx0 && zy1 > zy0) {
+                        QRect zr(zx0, zy0, zx1 - zx0, zy1 - zy0);
+                        zr &= frame.rect();
+                        if (!zr.isEmpty() && zr != frame.rect()) {
+                            frame = frame.copy(zr);
+                        }
+                    }
+                }
                 display_->set_frame(frame);
                 settings_->statistics_panel()->set_timestamp(ts);
                 status_ts_->setText(QStringLiteral("t: %1 s").arg(ts / 1.0e6, 0, 'f', 3));
-                if (prev_frame_ts_ > 0 && ts > prev_frame_ts_) {
+                if (camera_.is_file_source()) {
+                    // File mode: ts is the FILE's timestamp, so ts-delta FPS
+                    // is distorted by the playback rate (slow motion shows
+                    // absurd values like 10000 fps). Use the wall-clock
+                    // interval between displayed frames instead (audit §六-P6).
+                    const auto now = std::chrono::steady_clock::now();
+                    if (prev_frame_wall_.time_since_epoch().count() > 0) {
+                        const double dt =
+                            std::chrono::duration<double>(now - prev_frame_wall_).count();
+                        if (dt > 0.0) {
+                            settings_->statistics_panel()->set_fps(1.0 / dt);
+                        }
+                    }
+                    prev_frame_wall_ = now;
+                } else if (prev_frame_ts_ > 0 && ts > prev_frame_ts_) {
                     const double fps = 1.0e6 / static_cast<double>(ts - prev_frame_ts_);
                     settings_->statistics_panel()->set_fps(fps);
                 }
@@ -953,14 +1086,28 @@ void MainWindow::wire_signals() {
                 });
     }
 
-    // ROI panel <-> display widget (Phase 2)
+    // ROI panel <-> display widget / unified state (Phase 2.6 debug D-6)
     auto* roi = settings_->roi_panel();
-    connect(display_, &EventDisplayWidget::roi_dragged,
-            roi, &RoiPanel::set_roi_from_drag);
-    connect(roi, &RoiPanel::roi_applied, display_, &EventDisplayWidget::set_roi_overlay);
+    // Drag-drawn rect goes straight to the unified state source — EXCEPT
+    // during a dialog-initiated draw (Phase 2.6 debug D-6 follow-up): then
+    // the dialog re-opens with the drawn rect for confirmation instead.
+    connect(display_, &EventDisplayWidget::roi_dragged, this,
+            [this](int x, int y, int w, int h) {
+                if (roi_draw_pending_) {
+                    roi_draw_pending_ = false;
+                    on_toggle_roi_drag(false);
+                    roi_pending_rect_ = {x, y, w, h};
+                    open_roi_settings_dialog();
+                    return;
+                }
+                camera_.set_unified_roi(true, x, y, w, h);
+            });
+    connect(roi, &RoiPanel::roi_enable_toggled, this,
+            &MainWindow::on_roi_enable_toggled);
+    connect(roi, &RoiPanel::roi_settings_requested, this,
+            &MainWindow::open_roi_settings_dialog);
 
-    // ROI Drag Mode + Presets moved from Camera menu to ROI panel (§14.5).
-    connect(roi, &RoiPanel::roi_drag_toggled, this, &MainWindow::on_toggle_roi_drag);
+    // Presets moved from Camera menu to ROI panel (§14.5).
     connect(roi, &RoiPanel::preset_apply_requested, this, &MainWindow::on_apply_preset);
 
     // Recording + Export moved from File menu/toolbar to File Tools panel (§14.5).
@@ -984,7 +1131,14 @@ void MainWindow::wire_signals() {
                 settings_->file_tools_panel()->set_record_enabled(
                     camera_.is_connected() && !camera_.is_file_source());
                 settings_->file_tools_panel()->set_stop_enabled(false);
-                statusBar()->showMessage(tr("Recording saved: %1").arg(path), 5000);
+                if (recorder_.is_processed_recording() || recorder_.events_written() > 0) {
+                    statusBar()->showMessage(
+                        tr("Recording saved: %1 (%2 events)")
+                            .arg(path)
+                            .arg(recorder_.events_written()), 5000);
+                } else {
+                    statusBar()->showMessage(tr("Recording saved: %1").arg(path), 5000);
+                }
             });
     connect(&recorder_, &RecorderController::elapsed, this, &MainWindow::on_record_elapsed);
     connect(&recorder_, &RecorderController::error, this, [this](const QString& msg) {
@@ -1034,18 +1188,107 @@ void MainWindow::wire_signals() {
     if (auto* ap = settings_->algorithms_panel()) {
         connect(ap, &AlgorithmsPanel::info_message, this,
                 [forward](const QString& m) { forward(m, false); });
+        // Display-path preprocessing (Phase 2.5): every Preprocessing panel
+        // change is also forwarded to FramePipeline so the main display's
+        // rendered stream gets the same noise filter (algorithm feeds are
+        // unchanged — each instance owns its Preprocessor stage).
+        connect(ap, &AlgorithmsPanel::preproc_display_param_changed, this,
+                [this](const QString& key, const QString& value) {
+                    if (auto* fp = camera_.frame_pipeline()) {
+                        fp->set_display_preproc_param(key.toStdString(), value.toStdString());
+                    }
+                });
+        // Unified ROI (Phase 2.6 debug D-6): the Algorithms page and the
+        // Hardware page each expose an "Enable ROI" checkbox + a "ROI
+        // Settings..." button, all driving the single state source. All
+        // downstream effects (overlay frame, zoom toggle, algorithm path,
+        // checkbox sync) are driven by CameraController::roi_state_changed.
+        connect(ap, &AlgorithmsPanel::roi_enable_toggled, this,
+                &MainWindow::on_roi_enable_toggled);
+        connect(ap, &AlgorithmsPanel::roi_settings_requested, this,
+                &MainWindow::open_roi_settings_dialog);
+        connect(&camera_, &CameraController::roi_state_changed, this,
+                [this, ap](bool en, int x0, int y0, int x1, int y1) {
+                    // Sync both pages' checkboxes (QSignalBlocker inside —
+                    // no re-emission loops).
+                    ap->set_roi_enabled(en);
+                    settings_->roi_panel()->set_roi_enabled(en);
+                    // The zoom toggle is only meaningful while the ROI is
+                    // active; while zoomed the overlay frame is hidden (the
+                    // whole view is the ROI).
+                    roi_zoom_cb_->setEnabled(en);
+                    const bool zoomed = en && roi_zoom_cb_->isChecked();
+                    display_->set_roi_overlay(x0, y0, x1 - x0, y1 - y0,
+                                              en && !zoomed);
+                    // Same window drives the algorithm path: every live
+                    // instance is resized to the ROI and fed ROI-relative
+                    // events — except in RONI mode, where the source drops
+                    // inside-rect events at absolute coordinates and the
+                    // instances stay pass-through (debug D-5).
+                    algo_bridge_.set_unified_roi_state(en, x0, y0, x1, y1,
+                                                       camera_.unified_roi_roni());
+                });
         connect(ap, &AlgorithmsPanel::algorithm_toggled, this,
-                [this](const QString& name, bool on) {
+                [this, ap](const QString& name, bool on) {
                     statusBar()->showMessage(
                         tr("%1: %2").arg(name).arg(on ? tr("enabled") : tr("disabled")), 3000);
                     const auto key = name.toStdString();
-                    if (!on) {
+                    if (on) {
+                        // Phase 2.6 debug D-7: heavy algorithms (e2v / ISI /
+                        // TimeSurface / HoughLine / HoughCircle)
+                        // UNCONDITIONALLY auto-enable the unified ROI at the
+                        // default center 256×144 — they stall at full sensor.
+                        // The prior ROI state is saved and restored on
+                        // disable (algorithm mutex = single slot suffices).
+                        if (AlgorithmsPanel::algo_defaults_to_roi(key)) {
+                            bool en = false;
+                            int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+                            camera_.unified_roi(en, x0, y0, x1, y1);
+                            roi_automation_save_ = {en, x0, y0, x1, y1,
+                                                    camera_.unified_roi_roni()};
+                            camera_.set_unified_roi(true, -1, -1, 256, 144);
+                        }
+                        // Phase 3 (user decision, reproduction-driven Phase
+                        // scope): E2VID forces the shared 1/4 downsample ON
+                        // while enabled — same save/restore pattern as the
+                        // default ROI.
+                        if (key == "event_to_video") {
+                            e2v_downsample_save_ = ap->preproc_downsample_enabled();
+                            ap->set_preproc_downsample(true);
+                        }
+                    } else {
                         // Close the AlgoWindow if open (its closing handler will
                         // disable the instance and uncheck the sidebar checkbox —
                         // both are idempotent given the blocker in set_algo_enabled).
                         auto it = algo_windows_.find(key);
                         if (it != algo_windows_.end() && it.value()) it.value()->close();
                         if (key == "xyt_visualizer" && xyt_display_) xyt_display_->close();
+                        // Phase 2.6 debug D-7: restore the ROI state saved
+                        // when the algorithm was enabled (only if the
+                        // automation actually applied one). An empty saved
+                        // rect (never configured) restores as the default
+                        // 256×144 rect in the disabled state.
+                        if (AlgorithmsPanel::algo_defaults_to_roi(key) &&
+                            roi_automation_save_.has_value()) {
+                            const auto s = *roi_automation_save_;
+                            const int w = s.x1 - s.x0;
+                            const int h = s.y1 - s.y0;
+                            if (w > 0 && h > 0) {
+                                camera_.set_unified_roi(s.enabled, s.x0, s.y0,
+                                                        w, h, s.roni);
+                            } else {
+                                camera_.set_unified_roi(s.enabled, -1, -1,
+                                                        256, 144, s.roni);
+                            }
+                            roi_automation_save_.reset();
+                        }
+                        // Phase 3: restore the downsample state saved when
+                        // E2VID was enabled.
+                        if (key == "event_to_video" &&
+                            e2v_downsample_save_.has_value()) {
+                            ap->set_preproc_downsample(*e2v_downsample_save_);
+                            e2v_downsample_save_.reset();
+                        }
                     }
                 });
         // When an algorithm is enabled from the sidebar, open its AlgoWindow
@@ -1093,6 +1336,9 @@ void MainWindow::on_file_opened_for_playback(const QString& path) {
     // Route through the playback controller so it can capture duration and
     // start the position probe timer.
     if (!playback_.open_file(path)) {
+        // The failure was already reported via CameraController::error /
+        // PlaybackController::error (message box / status bar) — showing a
+        // second dialog here would duplicate it (audit §六-C3).
         return;
     }
     add_recent_file(path);
@@ -1226,37 +1472,112 @@ void MainWindow::on_toggle_roi_drag(bool on) {
                                 : tr("ROI drag mode off."), 3000);
 }
 
+void MainWindow::on_roi_enable_toggled(bool on) {
+    // Phase 2.6 debug D-6: shared handler for both pages' "Enable ROI"
+    // checkboxes. Applies the CURRENT stored rect (kept by
+    // CameraController/FileFrameGenerator while disabled); falls back to the
+    // default center 256×144 when nothing was ever configured.
+    bool en = false;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    camera_.unified_roi(en, x0, y0, x1, y1);
+    int x = x0, y = y0, w = x1 - x0, h = y1 - y0;
+    if (w <= 0 || h <= 0) {
+        x = -1;
+        y = -1;
+        w = 256;
+        h = 144;
+    }
+    camera_.set_unified_roi(on, x, y, w, h);
+    // Turning ROI on opens the settings dialog so the rect can be adjusted
+    // right away (user decision).
+    if (on) {
+        open_roi_settings_dialog();
+    }
+}
+
+void MainWindow::open_roi_settings_dialog() {
+    bool en = false;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    camera_.unified_roi(en, x0, y0, x1, y1);
+    const auto& si = camera_.sensor_info();
+    UnifiedRoiDialog dlg(this);
+    // The enable state is owned by the sidebar checkboxes — the dialog only
+    // edits rect/mode (user decision); OK keeps the current enable state.
+    dlg.set_state(x0, y0, x1, y1, camera_.unified_roi_roni(),
+                  si.width > 0 ? si.width : 1280,
+                  si.height > 0 ? si.height : 720);
+    // A completed dialog-initiated draw pre-fills the rect (see the
+    // roi_dragged handler).
+    if (roi_pending_rect_.has_value()) {
+        const auto r = *roi_pending_rect_;
+        dlg.set_rect(r.x, r.y, r.w, r.h);
+    }
+    const int rc = dlg.exec();
+    if (rc == UnifiedRoiDialog::kDrawRequest) {
+        // The modal exec has ENDED (a hidden-but-modal dialog still blocks
+        // mouse input to the main display — the first version of this flow
+        // made dragging impossible). The main display is interactive now:
+        // enable drag mode and wait for roi_dragged, which re-opens this
+        // dialog with the drawn rect.
+        roi_draw_pending_ = true;
+        on_toggle_roi_drag(true);
+        return;
+    }
+    roi_pending_rect_.reset();
+    if (rc == QDialog::Accepted) {
+        camera_.set_unified_roi(en, dlg.x(), dlg.y(),
+                                dlg.w(), dlg.h(), dlg.roni());
+    }
+}
+
 void MainWindow::on_record_start() {
     if (recorder_.is_recording()) return;
-    const QString path = QFileDialog::getSaveFileName(
-        this, tr("Record to file"), QString(),
-        tr("RAW files (*.raw);;All files (*)"));
-    if (path.isEmpty()) return;
-    // Ensure the .raw extension is present so downstream tools and the SDK
-    // can identify the file format. QFileDialog's static overload does not
-    // auto-append a suffix from the filter.
-    QString raw_path = path;
-    if (!raw_path.endsWith(".raw", Qt::CaseInsensitive))
-        raw_path += ".raw";
+    if (!record_dialog_) {
+        record_dialog_ = new RecordDialog(this);
+        record_dialog_->setAttribute(Qt::WA_DeleteOnClose);
+        connect(record_dialog_, &QObject::destroyed, this, [this]() {
+            record_dialog_ = nullptr;
+        });
+        connect(record_dialog_, &RecordDialog::start_recording, this,
+                [this](const QString& path, bool save_biases) {
+                    do_record_start(path, save_biases);
+                });
+    }
+    record_dialog_->show();
+    record_dialog_->raise();
+    record_dialog_->activateWindow();
+}
+
+void MainWindow::do_record_start(const QString& path, bool save_biases) {
     // Save the current bias configuration alongside the RAW recording so
     // the file is reproducible — the event stream depends on the bias
     // settings at record time (matching Metavision Viewer behavior).
     // This is best-effort: cameras without a bias facility are silently
     // skipped.
-    auto* biases = camera_.biases_facility();
-    if (biases) {
-        QFileInfo fi(raw_path);
-        QString bias_path = fi.absolutePath() + "/" + fi.completeBaseName() + ".bias";
-        try {
-            biases->save_to_file(std::filesystem::path(bias_path.toStdString()));
-            statusBar()->showMessage(
-                tr("Biases saved to %1").arg(bias_path), 5000);
-        } catch (const std::exception& e) {
-            statusBar()->showMessage(
-                tr("Warning: could not save biases: %1").arg(QString::fromUtf8(e.what())), 5000);
+    if (save_biases) {
+        auto* biases = camera_.biases_facility();
+        if (biases) {
+            QFileInfo fi(path);
+            QString bias_path = fi.absolutePath() + "/" + fi.completeBaseName() + ".bias";
+            try {
+                biases->save_to_file(std::filesystem::path(bias_path.toStdString()));
+                statusBar()->showMessage(
+                    tr("Biases saved to %1").arg(bias_path), 5000);
+            } catch (const std::exception& e) {
+                statusBar()->showMessage(
+                    tr("Warning: could not save biases: %1").arg(QString::fromUtf8(e.what())), 5000);
+            }
         }
     }
-    recorder_.start(&camera_, raw_path);
+    // Processed-stream recording (Phase 2.5 step 5): when any display-path
+    // preprocessing stage is active, record the PROCESSED event stream
+    // (what the display sees); otherwise keep the SDK raw log.
+    auto* fp = camera_.frame_pipeline();
+    if (fp && fp->display_preproc_active()) {
+        recorder_.start_processed(&camera_, path, fp);
+    } else {
+        recorder_.start(&camera_, path);
+    }
 }
 
 void MainWindow::on_record_stop() {
@@ -1268,11 +1589,17 @@ void MainWindow::on_record_elapsed(std::chrono::seconds s) {
     const auto mins = std::chrono::duration_cast<std::chrono::minutes>(s).count() % 60;
     const auto secs = s.count() % 60;
     const QString base = tr("REC");
-    status_rec_->setText(QStringLiteral("%1 %2:%3:%4")
-                             .arg(base)
-                             .arg(hrs, 2, 10, QLatin1Char('0'))
-                             .arg(mins, 2, 10, QLatin1Char('0'))
-                             .arg(secs, 2, 10, QLatin1Char('0')));
+    QString text = QStringLiteral("%1 %2:%3:%4")
+                       .arg(base)
+                       .arg(hrs, 2, 10, QLatin1Char('0'))
+                       .arg(mins, 2, 10, QLatin1Char('0'))
+                       .arg(secs, 2, 10, QLatin1Char('0'));
+    // Processed-mode telemetry: the live written-event count makes an
+    // empty/failed recording immediately visible (user report).
+    if (recorder_.is_processed_recording()) {
+        text += QStringLiteral(" · %1 ev").arg(recorder_.events_written());
+    }
+    status_rec_->setText(text);
 }
 
 void MainWindow::on_export_dialog() {
@@ -1363,7 +1690,22 @@ void MainWindow::install_algo_callback() {
                             inst->push_events(pb, pe);
                         }
                     }
-                } catch (...) {}
+                } catch (const std::exception& e) {
+                    // Audit §五-H3: never let an algorithm exception die
+                    // silently — log throttled so a throwing algorithm is
+                    // visible instead of looking like "no detections".
+                    static std::atomic<int> live_push_errs{0};
+                    const int c = ++live_push_errs;
+                    if (c == 1 || c % 1000 == 0) {
+                        qWarning("push_events to algorithms failed (x%d): %s", c, e.what());
+                    }
+                } catch (...) {
+                    static std::atomic<int> live_push_errs_unknown{0};
+                    const int c = ++live_push_errs_unknown;
+                    if (c == 1 || c % 1000 == 0) {
+                        qWarning("push_events to algorithms failed with unknown exception (x%d)", c);
+                    }
+                }
                 // Feed the performance profiler for live-camera latency measurement.
                 // Uses the RAW event count/timestamp so the rate reflects camera
                 // output, not the post-filter count.
@@ -1380,7 +1722,10 @@ void MainWindow::install_algo_callback() {
                     const Metavision::timestamp cur_ts = (pe - 1)->t;
                     const Metavision::timestamp last =
                         algo_last_xyt_post_us_.load(std::memory_order_relaxed);
-                    if (cur_ts - last >= 16000) {  // 16ms ≈ 60 FPS
+                    // 8ms post cadence (halved from 16ms): batches posted
+                    // between posts are DROPPED, so this constant is also the
+                    // t-axis gap between point-cloud sheets in live mode.
+                    if (cur_ts - last >= 8000) {
                         algo_last_xyt_post_us_.store(cur_ts, std::memory_order_relaxed);
                         const std::size_t count = static_cast<std::size_t>(pe - pb);
                         auto copy = std::make_shared<std::vector<Metavision::EventCD>>();
@@ -1400,8 +1745,13 @@ void MainWindow::install_algo_callback() {
                                 if (xyt_algo_) {
                                     const auto tw = xyt_algo_->get_param("time_window_us");
                                     if (!tw.empty()) {
-                                        xyt_display_->set_time_window_ms(
-                                            static_cast<float>(std::stoi(tw)) / 1000.0f);
+                                        // Malformed param (hand-edited JSON)
+                                        // must not throw out of the slot —
+                                        // keep the current window (audit §六-U5).
+                                        try {
+                                            xyt_display_->set_time_window_ms(
+                                                static_cast<float>(std::stoi(tw)) / 1000.0f);
+                                        } catch (const std::exception&) {}
                                     }
                                 }
                                 xyt_display_->push_events(copy->data(),
@@ -1461,7 +1811,7 @@ void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::
     //   status-bar/position display.
     //
     // This scaling is NOT a bug — it is an intentional adaptation for
-    // rate-controlled file playback. See doc/gui_optimization.md §8.
+    // rate-controlled file playback. See devlog/gui_optimization.md §8.
     // ======================================================================
 
     // Compute playback rate from FramePipeline's current parameters.
@@ -1508,7 +1858,21 @@ void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::
                 }
             }
         }
-    } catch (...) {}
+    } catch (const std::exception& e) {
+        // Audit §五-H3: same throttled logging as the live-camera path —
+        // a throwing algorithm must be visible, not silently stale.
+        static std::atomic<int> file_push_errs{0};
+        const int c = ++file_push_errs;
+        if (c == 1 || c % 1000 == 0) {
+            qWarning("push_events to algorithms failed (x%d): %s", c, e.what());
+        }
+    } catch (...) {
+        static std::atomic<int> file_push_errs_unknown{0};
+        const int c = ++file_push_errs_unknown;
+        if (c == 1 || c % 1000 == 0) {
+            qWarning("push_events to algorithms failed with unknown exception (x%d)", c);
+        }
+    }
 
     // Feed the performance profiler (file playback path). For file mode the
     // latency measured here → frame_ready is near-zero (both on GUI thread),
@@ -1534,8 +1898,12 @@ void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::
         if (xyt_algo_) {
             const auto tw = xyt_algo_->get_param("time_window_us");
             if (!tw.empty()) {
-                xyt_display_->set_time_window_ms(
-                    static_cast<float>(std::stoi(tw)) / 1000.0f);
+                // Malformed param (hand-edited JSON) must not throw out of
+                // the slot — keep the current window (audit §六-U5).
+                try {
+                    xyt_display_->set_time_window_ms(
+                        static_cast<float>(std::stoi(tw)) / 1000.0f);
+                } catch (const std::exception&) {}
             }
         }
         xyt_display_->push_events(copy->data(), copy->data() + copy->size());
@@ -1569,10 +1937,16 @@ void MainWindow::process_algo_results(QImage& frame) {
             statusBar()->showMessage(
                 tr("%1 auto-disabled: event rate too high (re-enable to retry)").arg(nm), 5000);
             // Reflect the disabled state in the AlgoWindow status label.
+            const QString overload_text =
+                tr("AUTO-DISABLED: event flooding detected. Re-enable from the sidebar.");
             auto wit = algo_windows_.find(inst->info().name);
             if (wit != algo_windows_.end() && wit.value()) {
-                wit.value()->set_status_text(
-                    tr("AUTO-DISABLED: event flooding detected. Re-enable from the sidebar."));
+                wit.value()->set_status_text(overload_text);
+            }
+            // Overlay algorithms have no AlgoWindow anymore (Phase 2.6 debug
+            // D-1) — the status label lives in the sidebar.
+            if (auto* ap = settings_->algorithms_panel()) {
+                ap->set_algo_status(inst->info().name, overload_text);
             }
             continue;
         }
@@ -1583,62 +1957,30 @@ void MainWindow::process_algo_results(QImage& frame) {
         } catch (...) {
             continue;
         }
-        inst->apply_strategy(frame, r, ctx);
-    }
-
-    // Draw the ROI rectangle of any enabled self-developed algorithm so the
-    // user can see which region is being processed (design §5.6.6: all
-    // self-developed algos support ROI, defaulting to center 128×128).
-    draw_roi_overlays(frame, instances);
-}
-
-void MainWindow::draw_roi_overlays(
-    QImage& frame,
-    const std::vector<std::shared_ptr<AlgoInstance>>& instances) {
-    // All self-developed algorithms support ROI (design §5.6.6). Iterate the
-    // live instances and draw a rectangle for each enabled one with
-    // roi_enabled=true. The overlay coordinates are at sensor scale.
-    int sensor_w = 1280, sensor_h = 720;
-    if (camera_.is_connected()) {
-        const auto& info = camera_.sensor_info();
-        sensor_w = info.width;
-        sensor_h = info.height;
-    }
-    auto parse = [](const std::string& s, int def) -> int {
-        try { return s.empty() ? def : std::stoi(s); }
-        catch (...) { return def; }
-    };
-    std::vector<QRect> boxes;
-    std::vector<std::pair<QString, QPoint>> labels;  // (text, pos)
-    for (auto& inst : instances) {
-        if (!inst->is_enabled()) continue;
-        // Only self-developed algorithms carry the roi_* params (design §5.6.6).
-        const AlgoInfo& info = inst->info();
-        if (info.source != "self") continue;
-        const std::string en = inst->get_param("roi_enabled");
-        if (en != "true" && en != "1") continue;
-        const int rx = parse(inst->get_param("roi_x"), -1);
-        const int ry = parse(inst->get_param("roi_y"), -1);
-        const int rw = parse(inst->get_param("roi_w"), 128);
-        const int rh = parse(inst->get_param("roi_h"), 128);
-        // Compute bounds (mirrors ProcessRegion::compute).
-        const int aw = (rw <= 0) ? sensor_w : std::min(rw, sensor_w);
-        const int ah = (rh <= 0) ? sensor_h : std::min(rh, sensor_h);
-        const int ax = (rx < 0) ? (sensor_w - aw) / 2
-                                 : std::min(std::max(0, rx), sensor_w - aw);
-        const int ay = (ry < 0) ? (sensor_h - ah) / 2
-                                 : std::min(std::max(0, ry), sensor_h - ah);
-        boxes.emplace_back(ax, ay, aw, ah);
-        labels.emplace_back(QString::fromStdString(info.name) + " ROI " +
-                            QString::number(aw) + "x" + QString::number(ah),
-                            QPoint(ax + 4, ay + 14));
-    }
-    if (!boxes.empty()) {
-        annotator_.draw_bboxes(frame, boxes, QColor(255, 255, 0));
-        for (const auto& [text, pos] : labels) {
-            annotator_.draw_text(frame, text, pos, QColor(255, 255, 0));
+        // apply_strategy runs mat_to_qimage / frame.copy etc. — a
+        // cv::Exception escaping this Qt slot would terminate the app
+        // (audit §五-H2). Skip this algorithm's output for one frame instead.
+        try {
+            inst->apply_strategy(frame, r, ctx);
+        } catch (...) {
+            continue;
+        }
+        // Overlay algorithms no longer have an AlgoWindow (Phase 2.6 debug
+        // D-1) — surface their status line (detection counts / effective
+        // params) in the sidebar instead.
+        if (inst->info().display_mode == AlgoDisplayMode::Overlay &&
+            !r.status.empty()) {
+            if (auto* ap = settings_->algorithms_panel()) {
+                ap->set_algo_status(inst->info().name,
+                                    QString::fromStdString(r.status));
+            }
         }
     }
+
+    // Phase 2.6: draw_roi_overlays (per-algorithm yellow ROI frames) was
+    // deleted with the legacy per-backend ROI. The unified ROI's frame is
+    // drawn via EventDisplayWidget::set_roi_overlay, driven by
+    // unified_roi_changed / RoiPanel::roi_applied.
 }
 
 void MainWindow::on_intrinsic_wizard() {
@@ -1652,6 +1994,20 @@ void MainWindow::on_intrinsic_wizard() {
     calibration_wizard_->set_camera(&camera_);
     calibration_wizard_->set_display(display_);
     calibration_wizard_->show_intrinsic();
+}
+
+void MainWindow::on_focus() {
+    if (!focus_dialog_) {
+        focus_dialog_ = new FocusDialog(this);
+        focus_dialog_->setAttribute(Qt::WA_DeleteOnClose);
+        connect(focus_dialog_, &QObject::destroyed, this, [this]() {
+            focus_dialog_ = nullptr;
+        });
+    }
+    focus_dialog_->set_display(display_);
+    focus_dialog_->show();
+    focus_dialog_->raise();
+    focus_dialog_->activateWindow();
 }
 
 void MainWindow::on_save_layout() {
@@ -1731,7 +2087,7 @@ void MainWindow::on_about() {
            "Bias / ROI / ESP / Trigger panels, recording & playback, HDF5 / AVI "
            "export, JSON config with presets, OpenEB filter-chain preprocessing, "
            "file conversion tools, calibration wizard, "
-           "30 self-developed CV/analytics algorithms with overlay/replace/"
+           "26 self-developed CV/analytics algorithms with overlay/replace/"
            "standalone display modes, XYT 3D point cloud, and more.</p>"));
 }
 
@@ -1779,10 +2135,17 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
     // user cannot easily inspect the algorithm's result inside the small ROI
     // on the main (sensor-scale) display.
     const auto* info = algo_bridge_.find(algo_name);
+    if (!info && w->instance()) {
+        // Unregistered workflow (sensor_self_test from the Devices button):
+        // use the window's built-in AlgoInfo so the display widget is still
+        // installed (the registry lookup only works for real algorithms).
+        info = &w->info();
+    }
     if (info && info->display_mode == AlgoDisplayMode::Standalone) {
+        // Note: background_mask is registered as Replace, not Standalone —
+        // listing it here was a dead branch (audit §五-G5).
         if (algo_name == "time_surface" || algo_name == "event_to_video" ||
-            algo_name == "isi_analyzer" || algo_name == "background_mask" ||
-            algo_name == "sensor_self_test") {
+            algo_name == "isi_analyzer" || algo_name == "sensor_self_test") {
             auto* disp = new EventDisplayWidget(nullptr);
             w->set_display_widget(disp);
         }
@@ -1840,8 +2203,28 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
             inst->set_param("__final_report", "1");
             auto r = inst->pull_result();
             inst->set_enabled(false);
-            QMessageBox::information(this, tr("Sensor Self-Test Report"),
-                QString::fromStdString(r.status));
+            // During application shutdown the modal report would block the
+            // close sequence — skip it (the window is going away anyway).
+            if (!closing_app_) {
+                // Scrollable, fixed-size report dialog: with many suspected
+                // bad pixels the coordinate list is long, and a plain
+                // QMessageBox would grow to an unusable height.
+                QDialog dlg(this);
+                dlg.setWindowTitle(tr("Sensor Self-Test Report"));
+                dlg.resize(560, 460);
+                auto* lay = new QVBoxLayout(&dlg);
+                auto* text = new QPlainTextEdit(QString::fromStdString(r.status), &dlg);
+                text->setReadOnly(true);
+                QFont mono(QStringLiteral("Monospace"));
+                mono.setStyleHint(QFont::TypeWriter);
+                mono.setPointSize(9);
+                text->setFont(mono);
+                lay->addWidget(text);
+                auto* bb = new QDialogButtonBox(QDialogButtonBox::Close, &dlg);
+                connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+                lay->addWidget(bb);
+                dlg.exec();
+            }
         } else {
             if (inst) inst->set_enabled(false);
         }
@@ -1883,8 +2266,12 @@ void MainWindow::on_open_xyt_view() {
         if (xyt_algo_) {
             const auto tw_us = xyt_algo_->get_param("time_window_us");
             if (!tw_us.empty()) {
-                xyt_display_->set_time_window_ms(
-                    static_cast<float>(std::stoi(tw_us)) / 1000.0f);
+                // Malformed param (hand-edited JSON) must not throw out of
+                // the slot — keep the display's default window (audit §六-U5).
+                try {
+                    xyt_display_->set_time_window_ms(
+                        static_cast<float>(std::stoi(tw_us)) / 1000.0f);
+                } catch (const std::exception&) {}
             }
         }
         // Sync the sidebar checkbox (blocked, no re-entry).

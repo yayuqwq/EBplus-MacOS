@@ -20,11 +20,9 @@
 #include "algo/cv/orientation_cluster.h"
 #include "algo/cv/cluster_lif.h"
 #include "algo/cv/background_mask_filter.h"
-#include "algo/cv/perspective_undistort.h"
 #include "algo/cv/trigger_synced_filter.h"
 #include "algo/cv/bandpass_filter.h"
 #include "algo/cv/optical_gyro.h"
-#include "algo/cv/ultra_slow_motion.h"
 #include "algo/cv/xyt_visualizer.h"
 #include "algo/cv/time_surface.h"
 #include "algo/analytics/active_marker.h"
@@ -49,11 +47,9 @@ using gui_algo::HoughCircleTracker;
 using gui_algo::OrientationCluster;
 using gui_algo::ClusterLIF;
 using gui_algo::BackgroundMaskFilter;
-using gui_algo::PerspectiveUndistort;
 using gui_algo::TriggerSyncedFilter;
 using gui_algo::BandpassFilter;
 using gui_algo::OpticalGyro;
-using gui_algo::UltraSlowMotion;
 using gui_algo::XYTVisualizer;
 using gui_algo::TimeSurface;
 using gui_algo::ActiveMarker;
@@ -151,8 +147,8 @@ TEST(HoughLineTrackerTest, Params) {
     EXPECT_EQ(t.threshold(), 100);
     t.set_num_theta_bins(45);
     EXPECT_EQ(t.num_theta_bins(), 45);
-    t.set_accumulator_decay_us(50000);
-    EXPECT_EQ(t.accumulator_decay_us(), 50000);
+    t.set_hough_decay_factor(0.5F);
+    EXPECT_FLOAT_EQ(t.hough_decay_factor(), 0.5F);
 }
 TEST(HoughLineTrackerTest, ProcessEmpty) {
     HoughLineTracker t(32, 32);
@@ -170,14 +166,10 @@ TEST(HoughCircleTrackerTest, Construction) {
 }
 TEST(HoughCircleTrackerTest, Params) {
     HoughCircleTracker t(32, 32);
-    t.set_min_radius_px(10);
-    EXPECT_EQ(t.min_radius_px(), 10);
     t.set_max_radius_px(100);
     EXPECT_EQ(t.max_radius_px(), 100);
     t.set_threshold(50);
     EXPECT_EQ(t.threshold(), 50);
-    t.set_accumulator_decay_us(50000);
-    EXPECT_EQ(t.accumulator_decay_us(), 50000);
 }
 TEST(HoughCircleTrackerTest, ProcessEmpty) {
     HoughCircleTracker t(32, 32);
@@ -185,6 +177,76 @@ TEST(HoughCircleTrackerTest, ProcessEmpty) {
     auto pkt = make_packet(empty);
     auto result = t.process(pkt);
     EXPECT_TRUE(result.empty());
+}
+
+TEST(HoughCircleTrackerTest, SmallDtPacketsDoNotAmplifyAccumulator) {
+    // Regression: the jAER decay formula 1/(0.0001*decay*dt) is > 1 for
+    // dt < 10 ms. jAER never hits that branch (render-cycle packets), but
+    // the GUI feeds SDK batches (~1-5 ms) — the accumulator was amplified
+    // every packet until all cells saturated to the same value, and the
+    // scan-order tie-break then reported a phantom circle at the bottom-
+    // right interior cell, persisted by maxCoordinate. The factor is now
+    // jAER-exact for dt >= T and exp((dt-T)/T) below T.
+    HoughCircleTracker t(64, 48);
+    t.set_max_radius_px(8);
+    // Many small-dt packets, one event each at the center.
+    for (int i = 0; i < 500; ++i) {
+        std::vector<Event> ev;
+        ev.emplace_back(32, 24, 1, 1000 + i * 1000);  // 1 ms apart
+        auto pkt = make_packet(ev);
+        t.accumulate_only(pkt);
+    }
+    const auto& accum = t.accum();
+    const float mx = *std::max_element(accum.begin(), accum.end());
+    ASSERT_TRUE(std::isfinite(mx));
+    // No phantom detection at the bottom-right interior cell (62,46) —
+    // the saturated-tiebreak artifact. (A legitimate detection near the
+    // center is fine.)
+    for (const auto& c : t.find_peaks()) {
+        EXPECT_FALSE(std::abs(c.center.x - 62.0F) <= 1.0F &&
+                     std::abs(c.center.y - 46.0F) <= 1.0F)
+            << "phantom bottom-right circle detected";
+    }
+}
+
+TEST(HoughCircleTrackerTest, DecayAppliesAtSmallPacketCadence) {
+    // The earlier clamp-to-1 fix stalled decay below T (factor == 1 for
+    // dt < 10 ms): votes never expired and every persistent structure
+    // became a false-positive circle. The exp continuation must really
+    // shrink the accumulator at small packet cadence.
+    HoughCircleTracker t(64, 48);
+    t.set_max_radius_px(8);
+    std::vector<Event> ev;
+    ev.emplace_back(32, 24, 1, 1000);
+    auto pkt = make_packet(ev);
+    t.accumulate_only(pkt);
+    const float v0 = *std::max_element(t.accum().begin(), t.accum().end());
+    ASSERT_GT(v0, 0.0f);
+    for (int i = 0; i < 20; ++i) {  // +1 ms per empty packet
+        std::vector<Event> empty;
+        auto ep = make_packet(empty);
+        t.accumulate_only(ep, 1000 + (i + 1) * 1000);
+    }
+    const float v1 = *std::max_element(t.accum().begin(), t.accum().end());
+    EXPECT_LT(v1, v0 * 0.5f);
+}
+
+TEST(HoughCircleTrackerTest, DecayMatchesJaeRAtRenderCadence) {
+    // jAER parity must be exact in jAER's operating range (dt >= T):
+    // decay=1, dt=30 ms → factor 1/(0.0001*1*30000) = 1/3.
+    HoughCircleTracker t(64, 48);
+    t.set_max_radius_px(8);
+    std::vector<Event> ev;
+    ev.emplace_back(32, 24, 1, 1000);
+    auto pkt = make_packet(ev);
+    t.accumulate_only(pkt);
+    const float v0 = *std::max_element(t.accum().begin(), t.accum().end());
+    ASSERT_GT(v0, 0.0f);
+    std::vector<Event> empty;
+    auto ep = make_packet(empty);
+    t.accumulate_only(ep, 31000);  // dt = 30000 us
+    const float v1 = *std::max_element(t.accum().begin(), t.accum().end());
+    EXPECT_NEAR(v1 / v0, 1.0f / 3.0f, 0.01f);
 }
 
 // --- 4.3.17 OrientationCluster ---
@@ -241,20 +303,6 @@ TEST(BackgroundMaskFilterTest, ProcessEmpty) {
     auto pkt = make_packet(empty);
     const auto& mask = f.process(pkt);
     EXPECT_FALSE(mask.empty());
-}
-
-// --- 4.3.20 PerspectiveUndistort ---
-TEST(PerspectiveUndistortTest, Construction) {
-    PerspectiveUndistort u;
-    EXPECT_TRUE(u.use_lut());
-    EXPECT_TRUE(u.undistort());
-}
-TEST(PerspectiveUndistortTest, Params) {
-    PerspectiveUndistort u;
-    u.set_undistort(false);
-    EXPECT_FALSE(u.undistort());
-    u.set_rectify(true);
-    EXPECT_TRUE(u.rectify());
 }
 
 // --- 4.3.21 TriggerSyncedFilter (jAER FilterSyncedEvents port) ---
@@ -334,33 +382,6 @@ TEST(OpticalGyroTest, Params) {
 // Phase 9: algo/cv/ §4.3.24–4.3.27
 // =========================================================================
 
-// --- 4.3.24 UltraSlowMotion ---
-TEST(UltraSlowMotionTest, Construction) {
-    UltraSlowMotion m;
-    EXPECT_FLOAT_EQ(m.dilation_factor(), 10.0f);
-    EXPECT_EQ(m.min_accumulation_us(), 5);
-}
-TEST(UltraSlowMotionTest, Params) {
-    UltraSlowMotion m;
-    m.set_dilation_factor(100.0f);
-    EXPECT_FLOAT_EQ(m.dilation_factor(), 100.0f);
-    m.set_min_accumulation_us(10);
-    EXPECT_EQ(m.min_accumulation_us(), 10);
-}
-TEST(UltraSlowMotionTest, EquivalentFps) {
-    UltraSlowMotion m;
-    // Default min_accumulation_us=5 -> 1e6/5 = 200000 fps
-    EXPECT_DOUBLE_EQ(m.equivalent_fps(), 200000.0);
-}
-TEST(UltraSlowMotionTest, Process) {
-    UltraSlowMotion m(10.0f, 5);
-    auto ev = make_events(32, 32, 10);
-    auto out = m.process(ev.data(), ev.size());
-    EXPECT_EQ(out.size(), ev.size());
-    // Timestamps should be dilated.
-    EXPECT_GT(out.back().t, ev.front().t);
-}
-
 // --- 4.3.25 XYTVisualizer ---
 TEST(XYTVisualizerTest, Construction) {
     XYTVisualizer v;
@@ -401,6 +422,69 @@ TEST(TimeSurfaceTest, ProcessAndRender) {
     EXPECT_FALSE(img.empty());
     EXPECT_EQ(img.rows, 32);
     EXPECT_EQ(img.cols, 32);
+}
+TEST(TimeSurfaceTest, ExponentialDecay) {
+    // dv Accumulator EXPONENTIAL (accumulator.hpp:119-154): per-event
+    // decay + contribute. Defaults: eventContribution=0.15, neutral=0,
+    // [min,max]=[0,1]. A pixel hit once at t=0, rendered tau later:
+    //   display = 0.15 * exp(-1) ≈ 0.0552 → gray ≈ 14.
+    TimeSurface ts(32, 32, TimeSurface::Channels::Merged, 100000,
+                   TimeSurface::Palette::Gray, 30,
+                   TimeSurface::Decay::Exponential, 100000);
+    EXPECT_EQ(ts.decay(), TimeSurface::Decay::Exponential);
+    EXPECT_EQ(ts.tau_us(), 100000);
+    std::vector<Event> ev;
+    ev.emplace_back(5, 5, 1, 0);         // reference pixel at t=0
+    ev.emplace_back(10, 10, 1, 100000);  // advances current_t_ by exactly tau
+    ts.process(ev.data(), ev.size());
+    cv::Mat img = ts.render();
+    const cv::Vec3b old_px = img.at<cv::Vec3b>(5, 5);
+    const cv::Vec3b new_px = img.at<cv::Vec3b>(10, 10);
+    // pot=0.15; display = 0.15 * exp(-tau/tau) = 0.15*exp(-1) ≈ 14.1
+    const double expect_old = 255.0 * 0.15 * std::exp(-1.0);
+    EXPECT_NEAR(old_px[0], expect_old, 2.0);
+    EXPECT_EQ(old_px[0], old_px[1]);  // Gray palette: all channels equal
+    EXPECT_EQ(old_px[1], old_px[2]);
+    // pot=0.15; dt=0 → display = 0.15 → gray ≈ 38
+    const double expect_new = 255.0 * 0.15;
+    EXPECT_NEAR(new_px[0], expect_new, 2.0);
+    EXPECT_EQ(img.at<cv::Vec3b>(0, 0)[0], 0);  // never-hit pixel stays black
+    // tau_us setter round-trip.
+    ts.set_tau_us(50000);
+    EXPECT_EQ(ts.tau_us(), 50000);
+}
+
+TEST(TimeSurfaceTest, ExponentialAccumulation) {
+    // dv Accumulator: multiple events at the same pixel accumulate
+    // (contribute), saturating to max_potential (1.0). With
+    // eventContribution=0.15 and tau=1s, 10 events 100us apart accumulate
+    // well past 1.0 → clamped to 1.0 → gray 255 (dt≈0 at render).
+    TimeSurface ts(32, 32, TimeSurface::Channels::Merged, 100000,
+                   TimeSurface::Palette::Gray, 30,
+                   TimeSurface::Decay::Exponential, 1000000);
+    std::vector<Event> ev;
+    for (int i = 0; i < 10; ++i)
+        ev.emplace_back(5, 5, 1, i * 100);  // 100us apart, << tau=1s
+    ev.emplace_back(10, 10, 1, 1000);       // single event, advances current_t_
+    ts.process(ev.data(), ev.size());
+    cv::Mat img = ts.render();
+    // 10 events saturate to 1.0; dt=100us → exp(-0.0001)≈1.0 → gray 255.
+    EXPECT_EQ(img.at<cv::Vec3b>(5, 5)[0], 255);
+    // Single-event pixel: pot=0.15, dt=0 → gray ≈ 38.
+    EXPECT_NEAR(img.at<cv::Vec3b>(10, 10)[0], 255.0 * 0.15, 2.0);
+}
+TEST(TimeSurfaceTest, LinearDecayUnchangedByDefault) {
+    // Default decay stays Linear: hard cut to 0 at the window tail.
+    TimeSurface ts(32, 32, TimeSurface::Channels::Merged, 100000,
+                   TimeSurface::Palette::Gray);
+    EXPECT_EQ(ts.decay(), TimeSurface::Decay::Linear);
+    std::vector<Event> ev;
+    ev.emplace_back(5, 5, 1, 0);
+    ev.emplace_back(10, 10, 1, 100000);  // dt == decay_time_us -> cut to 0
+    ts.process(ev.data(), ev.size());
+    cv::Mat img = ts.render();
+    EXPECT_EQ(img.at<cv::Vec3b>(5, 5)[0], 0);
+    EXPECT_EQ(img.at<cv::Vec3b>(10, 10)[0], 255);
 }
 
 // =========================================================================
@@ -683,8 +767,8 @@ TEST(ISIAnalyzerTest, Params) {
     ISIAnalyzer a(32, 32);
     a.set_bin_count(64);
     EXPECT_EQ(a.bin_count(), 64);
-    a.set_per_pixel(true);
-    EXPECT_TRUE(a.per_pixel());
+    a.set_min_isi_ms(5.0f);
+    EXPECT_FLOAT_EQ(a.min_isi_ms(), 5.0f);
 }
 TEST(ISIAnalyzerTest, Process) {
     ISIAnalyzer a(32, 32);
@@ -696,7 +780,7 @@ TEST(ISIAnalyzerTest, Process) {
 // range in µs (previous bug divided by 1000, causing all samples to be
 // dropped and counts() to be all-zero).
 TEST(ISIAnalyzerTest, SetterPreservesRange) {
-    ISIAnalyzer a(32, 32, 32, 100.0f, false);  // max_isi = 100 ms = 100000 us
+    ISIAnalyzer a(32, 32, 32, 100.0f);  // max_isi = 100 ms = 100000 us
     a.set_bin_count(64);
     // Feed two events 50000 us apart (< 100000 us, must land in a bin).
     gui_algo::Event ev[2] = {{16, 16, 1, 0}, {16, 16, 1, 50000}};
