@@ -17,7 +17,10 @@
 #include <QHBoxLayout>
 #include <QLineEdit>
 #include <QMap>
+#include <QSignalBlocker>
 #include <QStandardPaths>
+
+#include <optional>
 
 #include "algo_bridge/algo_bridge.h"
 
@@ -100,6 +103,8 @@ void AlgorithmsPanel::build_ui() {
             if (a->source != "self") continue;
 
             auto* cb = new QCheckBox(QString::fromStdString(a->display_name), gb);
+            cb->setObjectName(QStringLiteral("algorithm_%1")
+                                  .arg(QString::fromStdString(a->name)));
             // Surface registered caveats (e.g. trigger_synced: needs an
             // external trigger source, output always empty — §5-G3).
             if (!a->description.empty()) {
@@ -110,6 +115,8 @@ void AlgorithmsPanel::build_ui() {
 
             // Parameter editor (shown only when enabled).
             auto* params_host = new QWidget(gb);
+            params_host->setObjectName(QStringLiteral("algorithm_params_%1")
+                                           .arg(QString::fromStdString(a->name)));
             auto* pform = new QFormLayout(params_host);
             pform->setContentsMargins(20, 0, 0, 0);
             params_host->setVisible(false);
@@ -256,7 +263,6 @@ void AlgorithmsPanel::build_ui() {
                     // discard those parameters by building a fresh instance.
                     auto inst = bridge_->find_or_create(algo_name);
                     if (inst) {
-                        inst->set_enabled(true);
                         live_instances_[algo_name] = inst;
                         // create() already replayed the cached preproc_* params
                         // (BUG-R4, N3) and the cached unified ROI state
@@ -311,10 +317,7 @@ void AlgorithmsPanel::build_ui() {
                         // emitted, so there is no AlgoWindow to close.
                     }
                 } else {
-                    auto it = live_instances_.find(algo_name);
-                    if (it != live_instances_.end() && it->second) {
-                        it->second->set_enabled(false);
-                    }
+                    if (bridge_) bridge_->set_algo_enabled(algo_name, false);
                     emit algorithm_toggled(QString::fromStdString(a->name), false);
                 }
             });
@@ -694,9 +697,8 @@ void AlgorithmsPanel::on_algorithm_overloaded(const QString& name) {
     // warning stops), uncheck the sidebar checkbox, and notify once.
     const std::string n = name.toStdString();
     if (bridge_) {
-        if (auto inst = bridge_->find_live(n)) {
-            inst->clear_overload();
-        }
+        if (auto inst = bridge_->find_live(n)) inst->clear_overload();
+        bridge_->set_algo_enabled(n, false);
     }
     set_algo_enabled(n, false);
     emit algorithm_toggled(name, false);
@@ -780,12 +782,17 @@ void AlgorithmsPanel::set_algo_enabled(const std::string& name, bool on) {
     if (st != algo_panel_state_.end() && st->second.params_host) {
         st->second.params_host->setVisible(on);
     }
+    auto status = algo_status_labels_.find(name);
+    if (status != algo_status_labels_.end() && status->second) {
+        status->second->setVisible(on);
+    }
 
     // Algorithm mutex: when turning an algo on programmatically (e.g. from
     // on_open_algo_window), uncheck every other algo so only one is live at
     // a time. The toggled-handler path enforces mutex itself; this covers
     // the programmatic path.
     if (on) mutex_disable_others(name);
+    else if (bridge_) bridge_->set_algo_enabled(name, false);
 }
 
 void AlgorithmsPanel::mutex_disable_others(const std::string& winner) {
@@ -806,9 +813,13 @@ void AlgorithmsPanel::mutex_disable_others(const std::string& winner) {
         if (ost != algo_panel_state_.end() && ost->second.params_host) {
             ost->second.params_host->setVisible(false);
         }
-        auto oi = live_instances_.find(other_name);
-        if (oi != live_instances_.end() && oi->second) {
-            oi->second->set_enabled(false);
+        if (!bridge_ || !bridge_->set_algo_enabled(other_name, false)) {
+            auto oi = live_instances_.find(other_name);
+            if (oi != live_instances_.end() && oi->second) oi->second->set_enabled(false);
+        }
+        auto status = algo_status_labels_.find(other_name);
+        if (status != algo_status_labels_.end() && status->second) {
+            status->second->setVisible(false);
         }
         emit algorithm_toggled(QString::fromStdString(other_name), false);
     }
@@ -818,8 +829,17 @@ void AlgorithmsPanel::mutex_disable_others(const std::string& winner) {
         const auto& other = inst->info().name;
         if (other == winner) continue;
         if (checkboxes_.find(other) != checkboxes_.end()) continue;  // handled above
-        inst->set_enabled(false);
+        if (!bridge_->set_algo_enabled(other, false)) inst->set_enabled(false);
         emit algorithm_toggled(QString::fromStdString(other), false);
+    }
+
+    // Keep lazy requested states under the same exclusive-mode rule as live
+    // instances. A sensor_self_test winner is not registered, so explicitly
+    // clear every self-developed algorithm in that case.
+    if (bridge_ && !bridge_->set_algo_enabled(winner, true)) {
+        for (const auto& info : bridge_->list_algos()) {
+            if (info.source == "self") bridge_->set_algo_enabled(info.name, false);
+        }
     }
 }
 
@@ -882,6 +902,89 @@ void AlgorithmsPanel::refresh_param_values() {
         // Row visibility follows the (possibly updated) mode combo.
         if (state.mode_combo) refresh_mode_visibility(algo_name);
     }
+}
+
+void AlgorithmsPanel::refresh_config_state() {
+    if (!bridge_) return;
+    refresh_param_values();
+    for (const auto& [name, cb] : checkboxes_) {
+        if (!cb) continue;
+        const bool enabled = bridge_->algo_enabled(name).value_or(false);
+        const QSignalBlocker blocker(cb);
+        cb->setChecked(enabled);
+
+        auto state = algo_panel_state_.find(name);
+        if (state != algo_panel_state_.end() && state->second.params_host) {
+            state->second.params_host->setVisible(enabled);
+        }
+        auto status = algo_status_labels_.find(name);
+        if (status != algo_status_labels_.end() && status->second) {
+            status->second->setVisible(enabled);
+        }
+    }
+}
+
+bool AlgorithmsPanel::is_algo_enabled(const std::string& name) const {
+    const auto it = checkboxes_.find(name);
+    return it != checkboxes_.end() && it->second && it->second->isChecked();
+}
+
+std::map<std::string, std::string> AlgorithmsPanel::refresh_global_preproc_values() {
+    if (!bridge_) return {};
+    const auto all_values = bridge_->global_preproc_params();
+    std::map<std::string, std::string> values;
+    const auto copy_catalog_value = [&all_values, &values](const std::string& key) {
+        const auto it = all_values.find(key);
+        if (it != all_values.end()) values.emplace(it->first, it->second);
+    };
+    copy_catalog_value("preproc_filter_enabled");
+    copy_catalog_value("preproc_downsample");
+    copy_catalog_value("preproc_filter_mode");
+    for (const auto& row : preproc_rows_) copy_catalog_value(row.key);
+    const auto get = [&values](const char* key) -> std::optional<std::string> {
+        const auto it = values.find(key);
+        return it == values.end() ? std::nullopt : std::optional<std::string>(it->second);
+    };
+    const auto set_bool = [](QCheckBox* checkbox, const std::optional<std::string>& value) {
+        if (!checkbox || !value) return;
+        const QSignalBlocker blocker(checkbox);
+        checkbox->setChecked(*value == "true" || *value == "1");
+    };
+    set_bool(preproc_filter_cb_, get("preproc_filter_enabled"));
+    set_bool(preproc_downsample_cb_, get("preproc_downsample"));
+    if (get("preproc_downsample")) {
+        // A loaded value is an explicit configuration choice, not the panel
+        // default that may later be auto-selected for a newly enabled algo.
+        preproc_downsample_user_touched_ = true;
+    }
+
+    if (const auto mode = get("preproc_filter_mode"); mode && preproc_filter_mode_combo_) {
+        bool parsed = false;
+        const int index = QString::fromStdString(*mode).toInt(&parsed);
+        if (parsed && index >= 0 && index < preproc_filter_mode_combo_->count()) {
+            const QSignalBlocker blocker(preproc_filter_mode_combo_);
+            preproc_filter_mode_combo_->setCurrentIndex(index);
+        }
+    }
+    for (auto& row : preproc_rows_) {
+        const auto value = values.find(row.key);
+        if (value == values.end() || !row.field) continue;
+        const QSignalBlocker blocker(row.field);
+        if (auto* combo = qobject_cast<QComboBox*>(row.field)) {
+            for (int index = 0; index < combo->count(); ++index) {
+                if (combo->itemText(index).toStdString() == value->second) {
+                    combo->setCurrentIndex(index);
+                    break;
+                }
+            }
+        } else if (auto* spin = qobject_cast<QSpinBox*>(row.field)) {
+            spin->setValue(QString::fromStdString(value->second).toInt());
+        } else if (auto* spin = qobject_cast<QDoubleSpinBox*>(row.field)) {
+            spin->setValue(QString::fromStdString(value->second).toDouble());
+        }
+    }
+    refresh_preproc_params();
+    return values;
 }
 
 bool AlgorithmsPanel::algo_halves_coords(const std::string& algo_name) {

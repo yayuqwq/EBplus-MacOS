@@ -12,6 +12,7 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QString>
 
 #include <filesystem>
@@ -91,8 +92,15 @@ TEST(ConfigManagerAlgoState, CaptureCoversAllRegisteredAlgos) {
     const auto registered = bridge.list_algos();
     EXPECT_EQ(static_cast<std::size_t>(algos.size()), registered.size());
     for (const auto& info : registered) {
-        EXPECT_TRUE(algos.contains(QString::fromStdString(info.name)))
+        const auto key = QString::fromStdString(info.name);
+        EXPECT_TRUE(algos.contains(key))
             << "missing entry for " << info.name;
+        const auto entry = algos.value(key).toObject();
+        EXPECT_EQ(entry.value("category").toString(),
+                  QString::fromStdString(info.category));
+        EXPECT_TRUE(entry.contains("params"));
+        if (info.source == "self") EXPECT_TRUE(entry.contains("enabled"));
+        else EXPECT_FALSE(entry.contains("enabled"));
     }
 }
 
@@ -159,7 +167,10 @@ TEST(ConfigManagerAlgoState, LoadNonexistentFileFails) {
 
 TEST(ConfigManagerAlgoState, RejectsWrongFormat) {
     AlgoBridge bridge;
-    bridge.find_or_create("hot_pixel_filter");
+    auto inst = bridge.find_or_create("hot_pixel_filter");
+    ASSERT_NE(inst, nullptr);
+    inst->set_param("fpn_target_rate_hz", "321");
+    ASSERT_TRUE(bridge.set_algo_enabled("hot_pixel_filter", true));
     ConfigManager cm;
     QString err;
     QJsonObject bad;
@@ -167,6 +178,245 @@ TEST(ConfigManagerAlgoState, RejectsWrongFormat) {
     bad["algorithms"] = QJsonObject{};
     EXPECT_FALSE(cm.apply_algo_state(&bridge, bad, err));
     EXPECT_FALSE(err.isEmpty());
+    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "321");
+    EXPECT_TRUE(bridge.algo_enabled("hot_pixel_filter").value_or(false));
+}
+
+TEST(ConfigManagerAlgoState, MissingVersionIsAcceptedAsLegacyV1) {
+    AlgoBridge bridge;
+    ConfigManager cm;
+    QJsonObject obj;
+    obj["format"] = QStringLiteral("GUI-for-openEB-algo-params");
+    QJsonObject entry;
+    entry["category"] = QStringLiteral("renamed-category-is-advisory");
+    entry["enabled"] = true;
+    entry["params"] = QJsonObject{{"fpn_target_rate_hz", QStringLiteral("777")}};
+    obj["algorithms"] = QJsonObject{{"hot_pixel_filter", entry}};
+
+    QString err;
+    bool accepted = false;
+    EXPECT_TRUE(cm.apply_algo_state(&bridge, obj, err, nullptr, &accepted));
+    EXPECT_TRUE(accepted);
+    EXPECT_EQ(bridge.find_live("hot_pixel_filter"), nullptr);
+    EXPECT_TRUE(bridge.desired_algo_enabled("hot_pixel_filter").value_or(false));
+
+    auto inst = bridge.find_or_create("hot_pixel_filter");
+    ASSERT_NE(inst, nullptr);
+    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "777");
+    EXPECT_TRUE(inst->is_enabled());
+}
+
+TEST(ConfigManagerAlgoState, RejectsUnsupportedOrMalformedVersionWithoutMutation) {
+    ConfigManager cm;
+    for (const QJsonValue& version : {QJsonValue(2), QJsonValue(QStringLiteral("1")),
+                                      QJsonValue(1.5)}) {
+        AlgoBridge bridge;
+        auto inst = bridge.find_or_create("hot_pixel_filter");
+        ASSERT_NE(inst, nullptr);
+        inst->set_param("fpn_target_rate_hz", "321");
+        ASSERT_TRUE(bridge.set_algo_enabled("hot_pixel_filter", true));
+
+        QJsonObject entry;
+        entry["enabled"] = false;
+        entry["params"] = QJsonObject{{"fpn_target_rate_hz", QStringLiteral("999")}};
+        QJsonObject obj{{"format", QStringLiteral("GUI-for-openEB-algo-params")},
+                        {"version", version},
+                        {"algorithms", QJsonObject{{"hot_pixel_filter", entry}}}};
+        QString err;
+        bool accepted = true;
+        EXPECT_FALSE(cm.apply_algo_state(&bridge, obj, err, nullptr, &accepted));
+        EXPECT_FALSE(accepted);
+        EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "321");
+        EXPECT_TRUE(bridge.algo_enabled("hot_pixel_filter").value_or(false));
+    }
+}
+
+TEST(ConfigManagerAlgoState, UnknownAlgorithmAppliesKnownEntriesWithWarning) {
+    AlgoBridge bridge;
+    ConfigManager cm;
+    QJsonObject known;
+    known["enabled"] = true;
+    known["params"] = QJsonObject{{"fpn_target_rate_hz", QStringLiteral("444")}};
+    QJsonObject obsolete;
+    obsolete["params"] = QJsonObject{};
+    QJsonObject obj{{"format", QStringLiteral("GUI-for-openEB-algo-params")},
+                    {"version", 1},
+                    {"algorithms", QJsonObject{{"obsolete_algorithm", obsolete},
+                                                {"hot_pixel_filter", known}}}};
+    QString err;
+    bool accepted = false;
+    EXPECT_FALSE(cm.apply_algo_state(&bridge, obj, err, nullptr, &accepted));
+    EXPECT_TRUE(accepted);
+    EXPECT_TRUE(err.contains("obsolete_algorithm"));
+    EXPECT_EQ(bridge.find_live("hot_pixel_filter"), nullptr);
+    auto inst = bridge.find_or_create("hot_pixel_filter");
+    ASSERT_NE(inst, nullptr);
+    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "444");
+    EXPECT_TRUE(inst->is_enabled());
+}
+
+TEST(ConfigManagerAlgoState, RejectsMalformedUnknownEntryWithoutMutation) {
+    AlgoBridge bridge;
+    auto inst = bridge.find_or_create("hot_pixel_filter");
+    ASSERT_NE(inst, nullptr);
+    inst->set_param("fpn_target_rate_hz", "321");
+    ASSERT_TRUE(bridge.set_algo_enabled("hot_pixel_filter", true));
+    ConfigManager cm;
+
+    QJsonObject known{{"enabled", false},
+                      {"params", QJsonObject{{"fpn_target_rate_hz", "999"}}}};
+    QJsonObject malformed_unknown{{"params", QJsonObject{{"obsolete_parameter", 1}}}};
+    QJsonObject obj{{"format", QStringLiteral("GUI-for-openEB-algo-params")},
+                    {"version", 1},
+                    {"algorithms", QJsonObject{{"hot_pixel_filter", known},
+                                                {"obsolete_algorithm", malformed_unknown}}}};
+    QString err;
+    bool accepted = true;
+    EXPECT_FALSE(cm.apply_algo_state(&bridge, obj, err, nullptr, &accepted));
+    EXPECT_FALSE(accepted);
+    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "321");
+    EXPECT_TRUE(bridge.algo_enabled("hot_pixel_filter").value_or(false));
+}
+
+TEST(ConfigManagerAlgoState, RejectsMultipleSelfEnabledWithoutMutation) {
+    AlgoBridge bridge;
+    auto inst = bridge.find_or_create("hot_pixel_filter");
+    ASSERT_NE(inst, nullptr);
+    inst->set_param("fpn_target_rate_hz", "321");
+    ASSERT_TRUE(bridge.set_algo_enabled("hot_pixel_filter", true));
+    ConfigManager cm;
+    QJsonObject first{{"enabled", true}, {"params", QJsonObject{{"fpn_target_rate_hz", "999"}}}};
+    QJsonObject second{{"enabled", true}, {"params", QJsonObject{}}};
+    QJsonObject obj{{"format", QStringLiteral("GUI-for-openEB-algo-params")},
+                    {"version", 1},
+                    {"algorithms", QJsonObject{{"hot_pixel_filter", first},
+                                                {"background_mask", second}}}};
+    QString err;
+    EXPECT_FALSE(cm.apply_algo_state(&bridge, obj, err));
+    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "321");
+    EXPECT_TRUE(bridge.algo_enabled("hot_pixel_filter").value_or(false));
+}
+
+TEST(ConfigManagerAlgoState, UnknownParameterIsNotCapturedAgain) {
+    AlgoBridge bridge;
+    ConfigManager cm;
+    QJsonObject entry;
+    entry["params"] = QJsonObject{{"fpn_target_rate_hz", "555"},
+                                    {"obsolete_parameter", "old"}};
+    QJsonObject obj{{"format", QStringLiteral("GUI-for-openEB-algo-params")},
+                    {"version", 1},
+                    {"algorithms", QJsonObject{{"hot_pixel_filter", entry}}}};
+    QString err;
+    ASSERT_TRUE(cm.apply_algo_state(&bridge, obj, err));
+    const auto captured = cm.capture_algo_state(&bridge)
+                              .value("algorithms").toObject()
+                              .value("hot_pixel_filter").toObject()
+                              .value("params").toObject();
+    EXPECT_EQ(captured.value("fpn_target_rate_hz").toString(), "555");
+    EXPECT_FALSE(captured.contains("obsolete_parameter"));
+}
+
+TEST(ConfigManagerAlgoState, CanonicalParamWinsOverRenamedLegacyKey) {
+    AlgoBridge bridge;
+    ConfigManager cm;
+    QJsonObject entry;
+    entry["params"] = QJsonObject{{"learning_rate", "0.2"},
+                                    {"learning_window_s", "7.0"}};
+    QJsonObject obj{{"format", QStringLiteral("GUI-for-openEB-algo-params")},
+                    {"version", 1},
+                    {"algorithms", QJsonObject{{"background_mask", entry}}}};
+    QString err;
+    ASSERT_TRUE(cm.apply_algo_state(&bridge, obj, err));
+    auto inst = bridge.find_or_create("background_mask");
+    ASSERT_NE(inst, nullptr);
+    EXPECT_EQ(inst->get_param("learning_window_s"), "7.0");
+}
+
+TEST(ConfigManagerAlgoState, RejectsMalformedKnownContentWithoutMutation) {
+    AlgoBridge bridge;
+    auto inst = bridge.find_or_create("hot_pixel_filter");
+    ASSERT_NE(inst, nullptr);
+    inst->set_param("fpn_target_rate_hz", "321");
+    ASSERT_TRUE(bridge.set_algo_enabled("hot_pixel_filter", true));
+    ConfigManager cm;
+    const QJsonObject entry{{"enabled", QStringLiteral("true")},
+                            {"params", QJsonObject{{"fpn_target_rate_hz", 999}}}};
+    const QJsonObject obj{{"format", QStringLiteral("GUI-for-openEB-algo-params")},
+                          {"version", 1},
+                          {"algorithms", QJsonObject{{"hot_pixel_filter", entry}}}};
+    QString err;
+    bool accepted = true;
+    EXPECT_FALSE(cm.apply_algo_state(&bridge, obj, err, nullptr, &accepted));
+    EXPECT_FALSE(accepted);
+    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "321");
+    EXPECT_TRUE(bridge.algo_enabled("hot_pixel_filter").value_or(false));
+}
+
+TEST(ConfigManagerAlgoState, CategoryIsAdvisoryForKnownAlgorithmParameters) {
+    AlgoBridge bridge;
+    ConfigManager cm;
+    QJsonObject entry{{"category", QStringLiteral("obsolete-category")},
+                      {"params", QJsonObject{{"fpn_target_rate_hz", "456"}}}};
+    QJsonObject obj{{"format", QStringLiteral("GUI-for-openEB-algo-params")},
+                    {"version", 1},
+                    {"algorithms", QJsonObject{{"hot_pixel_filter", entry}}}};
+    QString err;
+    ASSERT_TRUE(cm.apply_algo_state(&bridge, obj, err));
+
+    auto inst = bridge.find_or_create("hot_pixel_filter");
+    ASSERT_NE(inst, nullptr);
+    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "456");
+}
+
+TEST(ConfigManagerAlgoState, SharedPreprocRoundTripsThroughLazyCatalog) {
+    AlgoBridge source;
+    ConfigManager cm;
+    QJsonObject hot{{"params", QJsonObject{{"preproc_filter_enabled", "true"},
+                                            {"preproc_filter_mode", "3"}}}};
+    QJsonObject background{{"params", QJsonObject{{"preproc_filter_enabled", "true"},
+                                                   {"preproc_filter_mode", "3"}}}};
+    QJsonObject input{{"format", QStringLiteral("GUI-for-openEB-algo-params")},
+                      {"version", 1},
+                      {"algorithms", QJsonObject{{"hot_pixel_filter", hot},
+                                                  {"background_mask", background}}}};
+    QString err;
+    ASSERT_TRUE(cm.apply_algo_state(&source, input, err));
+    EXPECT_EQ(source.get_global_preproc_param("preproc_filter_enabled"),
+              std::optional<std::string>("true"));
+    EXPECT_EQ(source.get_global_preproc_param("preproc_filter_mode"),
+              std::optional<std::string>("3"));
+
+    const auto captured = cm.capture_algo_state(&source);
+    const auto params = captured.value("algorithms").toObject()
+                            .value("hot_pixel_filter").toObject()
+                            .value("params").toObject();
+    EXPECT_EQ(params.value("preproc_filter_enabled").toString(), "true");
+    EXPECT_EQ(params.value("preproc_filter_mode").toString(), "3");
+
+    AlgoBridge restored;
+    ASSERT_TRUE(cm.apply_algo_state(&restored, captured, err));
+    auto inst = restored.find_or_create("background_mask");
+    ASSERT_NE(inst, nullptr);
+    EXPECT_EQ(inst->get_param("preproc_filter_enabled"), "true");
+    EXPECT_EQ(inst->get_param("preproc_filter_mode"), "3");
+}
+
+TEST(ConfigManagerAlgoState, RejectsConflictingSharedPreprocWithoutMutation) {
+    AlgoBridge bridge;
+    bridge.apply_global_preproc("preproc_filter_enabled", "false");
+    ConfigManager cm;
+    QJsonObject hot{{"params", QJsonObject{{"preproc_filter_enabled", "true"}}}};
+    QJsonObject background{{"params", QJsonObject{{"preproc_filter_enabled", "false"}}}};
+    QJsonObject input{{"format", QStringLiteral("GUI-for-openEB-algo-params")},
+                      {"version", 1},
+                      {"algorithms", QJsonObject{{"hot_pixel_filter", hot},
+                                                  {"background_mask", background}}}};
+    QString err;
+    bool accepted = true;
+    EXPECT_FALSE(cm.apply_algo_state(&bridge, input, err, nullptr, &accepted));
+    EXPECT_FALSE(accepted);
+    EXPECT_EQ(bridge.get_global_preproc_param("preproc_filter_enabled"),
+              std::optional<std::string>("false"));
 }
 
 TEST(ConfigManagerAlgoState, ApplyStateCachesParamsForNonLiveAlgos) {
@@ -194,10 +444,49 @@ TEST(ConfigManagerAlgoState, ApplyStateCachesParamsForNonLiveAlgos) {
     auto inst = bridge.find_or_create("hot_pixel_filter");
     ASSERT_NE(inst, nullptr);
     EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "999");
+    EXPECT_TRUE(inst->is_enabled());
 
     // Applying again on the now-live instance should also work.
     EXPECT_TRUE(cm.apply_algo_state(&bridge, obj, err));
     EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "999");
+}
+
+TEST(ConfigManagerAlgoState, SparseLegacyEntryPreservesDesiredEnabledState) {
+    AlgoBridge bridge;
+    ASSERT_TRUE(bridge.set_algo_enabled("hot_pixel_filter", true));
+    ConfigManager cm;
+    QJsonObject obj{{"format", QStringLiteral("GUI-for-openEB-algo-params")},
+                    {"algorithms", QJsonObject{{"hot_pixel_filter", QJsonObject{}}}}};
+    QString err;
+    ASSERT_TRUE(cm.apply_algo_state(&bridge, obj, err));
+    EXPECT_TRUE(bridge.desired_algo_enabled("hot_pixel_filter").value_or(false));
+}
+
+TEST(ConfigManagerAlgoState, LazyDesiredStateSurvivesCaptureAndFreshApply) {
+    AlgoBridge source;
+    ConfigManager cm;
+    QJsonObject entry{{"enabled", true},
+                      {"params", QJsonObject{{"fpn_target_rate_hz", "888"}}}};
+    QJsonObject input{{"format", QStringLiteral("GUI-for-openEB-algo-params")},
+                      {"version", 1},
+                      {"algorithms", QJsonObject{{"hot_pixel_filter", entry}}}};
+    QString err;
+    ASSERT_TRUE(cm.apply_algo_state(&source, input, err));
+    ASSERT_EQ(source.find_live("hot_pixel_filter"), nullptr);
+    const auto captured = cm.capture_algo_state(&source);
+    const auto captured_entry = captured.value("algorithms").toObject()
+                                    .value("hot_pixel_filter").toObject();
+    EXPECT_TRUE(captured_entry.value("enabled").toBool());
+    EXPECT_EQ(captured_entry.value("params").toObject()
+                  .value("fpn_target_rate_hz").toString(), "888");
+
+    AlgoBridge restored;
+    ASSERT_TRUE(cm.apply_algo_state(&restored, captured, err));
+    ASSERT_EQ(restored.find_live("hot_pixel_filter"), nullptr);
+    auto inst = restored.find_or_create("hot_pixel_filter");
+    ASSERT_NE(inst, nullptr);
+    EXPECT_TRUE(inst->is_enabled());
+    EXPECT_EQ(inst->get_param("fpn_target_rate_hz"), "888");
 }
 
 // §11.2-G: a saved config that still uses the pre-rename key "learning_rate"

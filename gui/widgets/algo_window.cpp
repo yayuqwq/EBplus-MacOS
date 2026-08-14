@@ -37,7 +37,7 @@ AlgoWindow::AlgoWindow(AlgoBridge* bridge, const std::string& algo_name,
         setWindowTitle(QString::fromStdString(info_.display_name));
         instance_ = bridge_->find_live(algo_name_);
         if (!instance_) instance_ = bridge_->find_or_create(algo_name_);
-        if (instance_) instance_->set_enabled(true);
+        if (instance_) bridge_->set_algo_enabled(algo_name_, true);
     } else if (algo_name_ == "sensor_self_test") {
         // Hardware diagnostic (Devices panel button), intentionally NOT a
         // registered algorithm: use a built-in AlgoInfo so the window and

@@ -62,13 +62,19 @@ TEST(AlgoBridgeRegistry, ListsAllRegisteredAlgos) {
     const auto algos = bridge.list_algos();
     EXPECT_EQ(algos.size(), 33u);
 
-    std::size_t self_count = 0, openeb_count = 0;
+    std::size_t self_count = 0, openeb_count = 0, cv_count = 0, analytics_count = 0;
     for (const auto& a : algos) {
-        if (a.source == "self") ++self_count;
+        if (a.source == "self") {
+            ++self_count;
+            if (a.category == "cv") ++cv_count;
+            if (a.category == "analytics") ++analytics_count;
+        }
         else if (a.source == "openeb") ++openeb_count;
     }
     EXPECT_EQ(self_count, 26u);
     EXPECT_EQ(openeb_count, 7u);
+    EXPECT_EQ(cv_count, 19u);
+    EXPECT_EQ(analytics_count, 7u);
 }
 
 TEST(AlgoBridgeRegistry, KeyNamesPresent) {
@@ -270,10 +276,28 @@ TEST(AlgoBridgeInstances, EnableDisableState) {
     auto inst = bridge.find_or_create("hot_pixel_filter");
     ASSERT_NE(inst, nullptr);
     EXPECT_FALSE(inst->is_enabled());
-    inst->set_enabled(true);
+    EXPECT_TRUE(bridge.set_algo_enabled("hot_pixel_filter", true));
     EXPECT_TRUE(inst->is_enabled());
-    inst->set_enabled(false);
+    EXPECT_TRUE(bridge.set_algo_enabled("hot_pixel_filter", false));
     EXPECT_FALSE(inst->is_enabled());
+}
+
+TEST(AlgoBridgeInstances, DesiredEnabledStateIsLazyAndExclusive) {
+    AlgoBridge bridge;
+    EXPECT_TRUE(bridge.set_algo_enabled("hot_pixel_filter", true));
+    EXPECT_EQ(bridge.find_live("hot_pixel_filter"), nullptr);
+    EXPECT_TRUE(bridge.desired_algo_enabled("hot_pixel_filter").value_or(false));
+    EXPECT_TRUE(bridge.set_algo_enabled("background_mask", true));
+    EXPECT_FALSE(bridge.desired_algo_enabled("hot_pixel_filter").value_or(true));
+    EXPECT_TRUE(bridge.desired_algo_enabled("background_mask").value_or(false));
+
+    auto inst = bridge.find_or_create("background_mask");
+    ASSERT_NE(inst, nullptr);
+    EXPECT_TRUE(inst->is_enabled());
+    EXPECT_TRUE(bridge.set_algo_enabled("background_mask", false));
+    EXPECT_FALSE(inst->is_enabled());
+    EXPECT_FALSE(bridge.algo_enabled("background_mask").value_or(true));
+    EXPECT_FALSE(bridge.set_algo_enabled("flip_x", true));
 }
 
 // ---------------------------------------------------------------------------

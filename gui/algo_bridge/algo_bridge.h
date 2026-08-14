@@ -6,8 +6,8 @@
 // The bridge真正实例化并调用 algo/cv 与 algo/analytics 的真实算法类。
 // AlgoInstance 持有一个 AlgoBackend，push_events 时零拷贝 reinterpret_cast
 // EventCD→gui_algo::Event 后调用真实 process()/filter()，pull_result 返回
-// 过滤事件 + 叠加层 + 帧。注册表列出 28 个自研模块 + 8 个 OpenEB 事件变换
-// 阶段（flip/rotate/ROI 等，实际处理在 FilterChain，此处仅作注册占位）。
+// 过滤事件 + 叠加层 + 帧。注册表列出自研 algorithms 与 OpenEB FilterChain
+// event-transform catalog entries；后者的实际运行时处理仍属于 FilterChain。
 
 #ifndef GUI_ALGO_BRIDGE_ALGO_BRIDGE_H
 #define GUI_ALGO_BRIDGE_ALGO_BRIDGE_H
@@ -270,6 +270,16 @@ public:
     /// selector so a single control updates all enabled algorithms.
     void apply_global_preproc(const std::string& key, const std::string& value);
 
+    /// @brief Reads the shared preprocessing value most recently applied by
+    /// the Algorithms panel or an algorithm-parameter config. Values are
+    /// replayed for newly created self-developed instances.
+    std::optional<std::string> get_global_preproc_param(const std::string& key) const;
+
+    /// @brief Snapshot of explicit shared preprocessing values. Used to
+    /// reflect a config load into the global panel/display controls without
+    /// re-emitting user-edit signals.
+    std::map<std::string, std::string> global_preproc_params() const;
+
     // Phase 2.6: apply_global_roi + roi_cache_ deleted (legacy per-backend
     // ROI). The unified ROI is driven via AlgorithmsPanel::unified_roi_changed.
 
@@ -288,6 +298,26 @@ public:
     /// (audit §5.9-疑点4).
     std::optional<std::string> get_cached_algo_param(
         const std::string& name, const std::string& key) const;
+
+    /// @brief Records the requested enable state of a registered
+    /// self-developed algorithm without constructing it. Enabling one such
+    /// algorithm clears the requested state of the other self-developed
+    /// algorithms to preserve the panel's exclusive-mode contract.
+    /// @return false when @p name is not a registered self-developed
+    /// algorithm.
+    bool set_algo_enabled(const std::string& name, bool enabled);
+
+    /// @brief Returns the effective persisted enable state for a registered
+    /// self-developed algorithm. A live instance's actual state wins so
+    /// legacy direct AlgoInstance::set_enabled callers remain observable;
+    /// otherwise this returns the requested lazy state. Returns std::nullopt
+    /// for catalog-only entries such as OpenEB filters.
+    std::optional<bool> algo_enabled(const std::string& name) const;
+
+    /// @brief Returns the requested enable state without consulting a live
+    /// instance. This is useful when a caller needs to distinguish a lazy
+    /// configuration from an instantiated algorithm.
+    std::optional<bool> desired_algo_enabled(const std::string& name) const;
 
     /// @brief Looks up a live instance by name. Returns nullptr if no live
     /// instance exists (either never created or already destroyed).
@@ -326,6 +356,12 @@ private:
     /// Populated by ConfigManager::apply_algo_state when an algorithm has
     /// no live instance; replayed in create() so saved values are not lost.
     std::unordered_map<std::string, std::map<std::string, std::string>> algo_param_cache_;
+
+    /// Requested enable state for registered self-developed algorithms. The
+    /// state is intentionally independent of live_instances_: loading a
+    /// configuration must not instantiate an algorithm just to remember that
+    /// it should be enabled when the user later creates it.
+    std::unordered_map<std::string, bool> desired_enabled_;
 
     /// Flood-guard overload callback, wired into every instance created by
     /// create() (see set_overload_callback).

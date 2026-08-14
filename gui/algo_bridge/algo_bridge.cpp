@@ -1,8 +1,8 @@
 // gui/algo_bridge/algo_bridge.cpp
 //
 // AlgoInstance 持有真实的 AlgoBackend 实例，真正调用 algo/cv 与 algo/analytics
-// 的算法类。注册表列出 28 个自研模块 + 8 个 OpenEB 事件变换阶段（实际处理
-// 在 FilterChain，此处仅作注册占位）= 36 项。
+// 的算法类。注册表包含自研 algorithms 与由 FilterChain 实际处理的 OpenEB
+// event-transform catalog entries；这些 OpenEB entries 不由 AlgoInstance 运行。
 
 #include "algo_bridge.h"
 
@@ -442,6 +442,11 @@ std::shared_ptr<AlgoInstance> AlgoBridge::create_with_info(const AlgoInfo& info)
         auto cb = overload_cb_;
         inst->set_overload_callback([cb, name]() { cb(name); });
     }
+    const bool managed_self = [&]() {
+        const auto registered = registry_.find(name);
+        return registered != registry_.end() && registered->second.source == "self";
+    }();
+    bool desired_enabled = false;
     {
         std::lock_guard<std::mutex> lk(live_mutex_);
         live_instances_[name] = inst;
@@ -461,7 +466,7 @@ std::shared_ptr<AlgoInstance> AlgoBridge::create_with_info(const AlgoInfo& info)
             }
             algo_param_cache_.erase(pit);
         }
-        if (info.source == "self") {
+        if (managed_self) {
             for (const auto& [k, v] : preproc_cache_) {
                 inst->set_param(k, v);
             }
@@ -478,6 +483,22 @@ std::shared_ptr<AlgoInstance> AlgoBridge::create_with_info(const AlgoInfo& info)
             inst->set_unified_roi(uroi_enabled_ && !uroi_roni_,
                                   uroi_x0_, uroi_y0_, uroi_x1_, uroi_y1_);
         }
+
+        // Only registered self-developed algorithms participate in the
+        // configuration-model enable state. The OpenEB catalog entries are
+        // represented by FilterChain, not AlgoInstance, and sensor_self_test
+        // is an unregistered hardware workflow.
+        if (managed_self) {
+            const auto dit = desired_enabled_.find(name);
+            desired_enabled = dit != desired_enabled_.end() && dit->second;
+        }
+    }
+    // Establish the model default when a self-developed algorithm first
+    // becomes live, then apply a previously loaded desired state. Direct
+    // callers that only create an instance still observe its actual enabled
+    // state through algo_enabled().
+    if (managed_self) {
+        set_algo_enabled(name, desired_enabled);
     }
     return inst;
 }
@@ -535,6 +556,19 @@ void AlgoBridge::apply_global_preproc(const std::string& key,
     for (auto& inst : snapshot) {
         inst->set_param(key, value);
     }
+}
+
+std::optional<std::string> AlgoBridge::get_global_preproc_param(
+    const std::string& key) const {
+    std::lock_guard<std::mutex> lk(live_mutex_);
+    const auto it = preproc_cache_.find(key);
+    if (it == preproc_cache_.end()) return std::nullopt;
+    return it->second;
+}
+
+std::map<std::string, std::string> AlgoBridge::global_preproc_params() const {
+    std::lock_guard<std::mutex> lk(live_mutex_);
+    return {preproc_cache_.begin(), preproc_cache_.end()};
 }
 
 // Phase 2.6: AlgoBridge::apply_global_roi and roi_cache_ were deleted with
@@ -596,6 +630,76 @@ std::optional<std::string> AlgoBridge::get_cached_algo_param(
     const auto pit = ait->second.find(key);
     if (pit == ait->second.end()) return std::nullopt;
     return pit->second;
+}
+
+bool AlgoBridge::set_algo_enabled(const std::string& name, bool enabled) {
+    const auto target = registry_.find(name);
+    if (target == registry_.end() || target->second.source != "self") {
+        return false;
+    }
+
+    std::vector<std::pair<std::string, std::shared_ptr<AlgoInstance>>> live;
+    {
+        std::lock_guard<std::mutex> lk(live_mutex_);
+        if (enabled) {
+            for (const auto& [other_name, info] : registry_) {
+                if (info.source == "self" && other_name != name) {
+                    desired_enabled_[other_name] = false;
+                }
+            }
+        }
+        desired_enabled_[name] = enabled;
+
+        for (auto it = live_instances_.begin(); it != live_instances_.end();) {
+            if (auto instance = it->second.lock()) {
+                const auto registered = registry_.find(it->first);
+                if (registered != registry_.end() &&
+                    registered->second.source == "self" &&
+                    (it->first == name || enabled)) {
+                    live.emplace_back(it->first, std::move(instance));
+                }
+                ++it;
+            } else {
+                it = live_instances_.erase(it);
+            }
+        }
+    }
+
+    for (auto& [live_name, instance] : live) {
+        instance->set_enabled(live_name == name ? enabled : false);
+    }
+    return true;
+}
+
+std::optional<bool> AlgoBridge::desired_algo_enabled(const std::string& name) const {
+    const auto registered = registry_.find(name);
+    if (registered == registry_.end() || registered->second.source != "self") {
+        return std::nullopt;
+    }
+    std::lock_guard<std::mutex> lk(live_mutex_);
+    const auto it = desired_enabled_.find(name);
+    return it != desired_enabled_.end() && it->second;
+}
+
+std::optional<bool> AlgoBridge::algo_enabled(const std::string& name) const {
+    const auto registered = registry_.find(name);
+    if (registered == registry_.end() || registered->second.source != "self") {
+        return std::nullopt;
+    }
+
+    // Older callers can still mutate a live AlgoInstance directly. Preserve
+    // their observable save/UI behavior while the bridge remains the source
+    // of truth for algorithms that have not been instantiated yet.
+    std::shared_ptr<AlgoInstance> live;
+    bool desired = false;
+    {
+        std::lock_guard<std::mutex> lk(live_mutex_);
+        const auto live_it = live_instances_.find(name);
+        if (live_it != live_instances_.end()) live = live_it->second.lock();
+        const auto desired_it = desired_enabled_.find(name);
+        if (desired_it != desired_enabled_.end()) desired = desired_it->second;
+    }
+    return live ? live->is_enabled() : desired;
 }
 
 std::shared_ptr<AlgoInstance> AlgoBridge::find_live(const std::string& name) {
@@ -681,8 +785,8 @@ void AlgoBridge::register_openeb_filters() {
 }
 
 // ---------------------------------------------------------------------------
-// Self-developed CV algorithms (design §4.3.5 - §4.3.27)
-// 21 modules, all with real algo_backend wiring.
+// Self-developed CV algorithms (design §4.3.5 - §4.3.27), all with real
+// algo_backend wiring.
 // ---------------------------------------------------------------------------
 
 void AlgoBridge::register_self_cv() {

@@ -17,6 +17,7 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -63,6 +64,25 @@ public:
     /// directly, so without this the panel keeps displaying the pre-load
     /// values while the algorithms run with the loaded ones (audit §5.9-疑点4).
     void refresh_param_values();
+
+    /// @brief Passively refreshes algorithm parameter controls and requested
+    /// enable state after a configuration load. This never constructs an
+    /// algorithm, emits algorithm_toggled, or applies the mutex; it only
+    /// reflects the already-applied bridge model with blocked Qt signals.
+    void refresh_config_state();
+
+    /// @brief Returns the current checkbox state for a self-developed
+    /// algorithm. Primarily used by headless regression tests for passive
+    /// config-load synchronization.
+    bool is_algo_enabled(const std::string& name) const;
+
+    /// @brief Applies catalog-backed shared preprocessing values already
+    /// stored in the bridge to global controls with blocked signals. Values
+    /// outside the algorithm config catalog, including undistort/calibration
+    /// state, remain outside this persistence slice. The returned values let
+    /// MainWindow update the display path without treating the load as a user
+    /// edit.
+    std::map<std::string, std::string> refresh_global_preproc_values();
 
     /// @brief Syncs the "Enable ROI" checkbox from the unified ROI state
     /// (driven by CameraController::roi_state_changed via MainWindow;
