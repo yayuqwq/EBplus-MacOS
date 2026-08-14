@@ -386,12 +386,17 @@ scope and does not automatically reopen or change this pinned integration.
 
 ### Milestone 6: Live camera parity
 
-**状态：** `Planned`
+**状态：** `Planned / Paused — physical CenturyArks camera currently unavailable`
 **独立分支：** `feat/macos-live-camera`
 
 Milestone 6 covers the current integrated source's live-camera and facility
 lifecycle. Source wiring exists, but no current macOS EBplus GUI physical-camera
 evidence is implied by that fact or by OpenEB-only camera evidence.
+
+M6 is paused because the required physical CenturyArks camera is currently
+unavailable. This is a temporary hardware dependency, not a failed, cancelled
+or complete milestone. M7 Slice 1 configuration evidence does not substitute
+for any M6 device, facility, live-stream, recording or reconnect evidence.
 
 #### M6-A: basic live lifecycle
 
@@ -440,8 +445,9 @@ the frozen integration Linux-risk acceptance does not extend to M6.
 
 ### Milestone 7: Algorithms, models and export
 
-**状态：** `Planned`
-**独立分支：** `feat/macos-algorithms-models-export`
+**状态：** `In progress` — Slice 1 is `Complete / Qualified`; Milestone 7 is
+not complete.
+**Slice 1 branch：** `feat/macos-config-persistence-contract`
 
 **当前 source baseline**
 
@@ -457,7 +463,8 @@ metric.
 
 **独立可验收 slices**
 
-1. current catalog/config persistence and migration;
+1. **Complete / Qualified:** current catalog/config persistence and migration;
+   see [macOS Milestone 7 Slice 1 Config Persistence Validation](macos_milestone_7_config_persistence_validation.md).
 2. deterministic file-source preprocessing and category-based representative
    algorithm lifecycle/numerical evidence (including nine shared noise modes,
    KNoise, Arc and current Time Surface modes);
@@ -467,6 +474,10 @@ metric.
    CSV, RAW clip and AVI creation/readback/error behavior;
 5. calibration solve/YAML/undistort after the M6 live-capture prerequisite;
 6. processed-recording semantics and output integrity after M6 live lifecycle.
+
+Slices 2 through 6 remain pending. Slice 1 qualifies the current catalog and
+algorithm-parameter persistence contract only; it does not establish broader
+algorithm runtime, model, export, calibration or processed-recording behavior.
 
 General `AlgoResult` export remains a deferred product decision, not an
 assumed current feature. M7 must separate current source inventory, automated

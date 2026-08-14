@@ -9,7 +9,10 @@
 #include <QJsonValue>
 #include <QtDebug>
 
+#include <algorithm>
+#include <cmath>
 #include <map>
+#include <vector>
 
 #include <metavision/hal/facilities/i_antiflicker_module.h>
 #include <metavision/hal/facilities/i_erc_module.h>
@@ -402,23 +405,42 @@ QJsonObject ConfigManager::capture_algo_state(AlgoBridge* bridge) const {
     root["version"] = 1;
     if (!bridge) return root;
     QJsonObject algos;
+    const auto global_preproc = bridge->global_preproc_params();
     for (const auto& info : bridge->list_algos()) {
         QJsonObject entry;
         entry["category"] = QString::fromStdString(info.category);
         QJsonObject params;
-        // Query the live instance (if any) for current values; fall back to
-        // the factory default when no instance exists yet.
+        // Query the live instance first, then the bridge's lazy cache, then
+        // the factory default. A config load must survive a save before the
+        // user first instantiates that algorithm.
         auto live = bridge->find_live(info.name);
         for (const auto& p : info.params) {
             std::string val = p.default_value;
-            if (live) {
+            if (p.key.rfind("preproc_", 0) == 0) {
+                if (const auto global = global_preproc.find(p.key);
+                    global != global_preproc.end()) {
+                    val = global->second;
+                } else if (live) {
+                    const auto cur = live->get_param(p.key);
+                    if (!cur.empty()) val = cur;
+                } else if (auto cached = bridge->get_cached_algo_param(info.name, p.key)) {
+                    val = *cached;
+                }
+            } else if (live) {
                 const auto cur = live->get_param(p.key);
                 if (!cur.empty()) val = cur;
+            } else if (auto cached = bridge->get_cached_algo_param(info.name, p.key)) {
+                val = *cached;
             }
             params[QString::fromStdString(p.key)] = QString::fromStdString(val);
         }
         entry["params"] = params;
-        if (live) entry["enabled"] = live->is_enabled();
+        // Only self-developed algorithms have an AlgoBridge configuration
+        // model. The seven OpenEB entries are catalog metadata here; their
+        // real runtime state belongs to FilterChain/PreprocessingPanel.
+        if (info.source == "self") {
+            entry["enabled"] = bridge->algo_enabled(info.name).value_or(false);
+        }
         algos[QString::fromStdString(info.name)] = entry;
     }
     root["algorithms"] = algos;
@@ -426,12 +448,107 @@ QJsonObject ConfigManager::capture_algo_state(AlgoBridge* bridge) const {
 }
 
 bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj, QString& err,
-                                     std::map<std::string, std::string>* legacy_roi) const {
+                                     std::map<std::string, std::string>* legacy_roi,
+                                     bool* accepted) const {
+    if (accepted) *accepted = false;
     if (!bridge) { err = tr("No algorithm bridge."); return false; }
     if (obj.value("format").toString() != "GUI-for-openEB-algo-params") {
         err = tr("Not an algorithm parameter file.");
         return false;
     }
+
+    // Version was absent from early algorithm-parameter files, so its absence
+    // remains legacy-v1 compatibility. An explicit version must be the exact
+    // integral v1 value; never guess how to read a future schema.
+    if (obj.contains("version")) {
+        const QJsonValue version = obj.value("version");
+        if (!version.isDouble() || !std::isfinite(version.toDouble()) ||
+            std::floor(version.toDouble()) != version.toDouble() ||
+            version.toInt() != 1) {
+            err = tr("Unsupported algorithm parameter file version.");
+            return false;
+        }
+    }
+    if (obj.contains("algorithms") && !obj.value("algorithms").isObject()) {
+        err = tr("Algorithm parameter file has an invalid algorithms object.");
+        return false;
+    }
+
+    const auto algos = obj.value("algorithms").toObject();
+
+    // The migration table is scoped by algo name because the same historical
+    // spelling can have different meanings in different algorithms.
+    static const std::map<std::string, std::map<std::string, std::string>> kParamRenames = {
+        {"background_mask", {{"learning_rate", "learning_window_s"}}},
+    };
+
+    // Complete structural preflight. Rejections here deliberately occur
+    // before any live instance, cache, or desired-enable state changes.
+    int requested_self_enabled = 0;
+    std::map<std::string, std::string> preflight_global_preproc;
+    for (auto it = algos.begin(); it != algos.end(); ++it) {
+        if (!it.value().isObject()) {
+            err = tr("Algorithm entry '%1' is not an object.").arg(it.key());
+            return false;
+        }
+        const auto entry = it.value().toObject();
+        if (entry.contains("params") && !entry.value("params").isObject()) {
+            err = tr("Algorithm parameters for '%1' are not an object.").arg(it.key());
+            return false;
+        }
+        if (entry.contains("enabled") && !entry.value("enabled").isBool()) {
+            err = tr("Algorithm enabled state for '%1' is not a boolean.").arg(it.key());
+            return false;
+        }
+        const auto params = entry.value("params").toObject();
+        for (auto pit = params.begin(); pit != params.end(); ++pit) {
+            if (!pit.value().isString()) {
+                err = tr("Algorithm parameter '%1::%2' is not a string.")
+                          .arg(it.key())
+                          .arg(pit.key());
+                return false;
+            }
+        }
+        if (const auto* info = bridge->find(it.key().toStdString())) {
+            for (auto pit = params.begin(); pit != params.end(); ++pit) {
+                std::string key = pit.key().toStdString();
+                const auto renames = kParamRenames.find(it.key().toStdString());
+                if (renames != kParamRenames.end()) {
+                    const auto rename = renames->second.find(key);
+                    if (rename != renames->second.end()) key = rename->second;
+                }
+                const auto spec = std::find_if(
+                    info->params.begin(), info->params.end(),
+                    [&key](const AlgoParamSpec& candidate) { return candidate.key == key; });
+                if (info->source == "self" && spec != info->params.end() &&
+                    key.rfind("preproc_", 0) == 0) {
+                    const std::string value = pit.value().toString().toStdString();
+                    const auto existing = preflight_global_preproc.find(key);
+                    if (existing == preflight_global_preproc.end()) {
+                        preflight_global_preproc.emplace(key, value);
+                    } else if (existing->second != value) {
+                        err = tr("Conflicting shared preprocessing value for '%1'.")
+                                  .arg(QString::fromStdString(key));
+                        return false;
+                    }
+                }
+            }
+            if (info->source == "self" && entry.value("enabled").toBool()) {
+                ++requested_self_enabled;
+            }
+        }
+    }
+    if (requested_self_enabled > 1) {
+        err = tr("Algorithm parameter file enables more than one self-developed algorithm.");
+        return false;
+    }
+
+    // A document can mention algorithms removed from a newer registry. Those
+    // entries are ignored with a warning, while compatible known entries are
+    // still applied. `accepted` distinguishes that compatibility outcome from
+    // a structural rejection above.
+    if (accepted) *accepted = true;
+
     // Apply parameter values to live instances. Instances not yet created by
     // AlgorithmsPanel are cached via bridge->cache_algo_params() so they are
     // replayed when the instance is eventually created (N1). Without this,
@@ -451,20 +568,22 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
     // e.g. blob_detector still uses "learning_rate" as a rate, while
     // background_mask renamed it to "learning_window_s" for a window-in-
     // seconds semantics (§五-B2).
-    static const std::map<std::string, std::map<std::string, std::string>> kParamRenames = {
-        {"background_mask", {{"learning_rate", "learning_window_s"}}},
+    struct PreparedEntry {
+        std::string name;
+        const AlgoInfo* info{nullptr};
+        std::map<std::string, std::string> params;
+        bool has_enabled{false};
+        bool enabled{false};
     };
-
-    const auto algos = obj.value("algorithms").toObject();
-    bool ok = true;
+    std::vector<PreparedEntry> prepared;
     QStringList unknown_algos;
+    std::map<std::string, std::string> loaded_global_preproc;
     for (auto it = algos.begin(); it != algos.end(); ++it) {
         const auto name = it.key().toStdString();
         const auto* info = bridge->find(name);
         if (!info) {
             // Unknown algorithm — skip but flag failure with a descriptive
             // message so the user knows which entries were rejected (BUG-R1).
-            ok = false;
             unknown_algos << it.key();
             continue;
         }
@@ -480,13 +599,21 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
 
             // §11.2-G: rename obsolete keys per-algorithm.
             auto rit = kParamRenames.find(name);
+            bool migrated_from_legacy = false;
             if (rit != kParamRenames.end()) {
                 auto mit = rit->second.find(key);
                 if (mit != rit->second.end()) {
                     qWarning("ConfigManager: migrating obsolete param %s::%s -> %s",
                              name.c_str(), key.c_str(), mit->second.c_str());
                     key = mit->second;
+                    migrated_from_legacy = true;
                 }
+            }
+
+            // When a document contains both the legacy and canonical key,
+            // the canonical spelling wins regardless of JSON object order.
+            if (migrated_from_legacy && params.contains(QString::fromStdString(key))) {
+                continue;
             }
 
             // Phase 2.6: legacy per-algorithm roi_* keys (the deleted
@@ -549,34 +676,52 @@ bool ConfigManager::apply_algo_state(AlgoBridge* bridge, const QJsonObject& obj,
                 }
             }
             migrated[key] = val;
+            if (info->source == "self" && key.rfind("preproc_", 0) == 0) {
+                // preproc_* is a single shared setting even though the
+                // registry attaches it to each self algorithm for catalog
+                // completeness. Any copied entry represents the same value.
+                loaded_global_preproc.emplace(key, val);
+            }
         }
 
-        auto live = bridge->find_live(name);
+        prepared.push_back({name, info, std::move(migrated), entry.contains("enabled"),
+                            entry.value("enabled").toBool()});
+    }
+
+    // All checks and migrations above completed before this commit phase.
+    // Applying known entries is therefore atomic with respect to malformed
+    // schema/content and does not depend on JSON object order.
+    for (const auto& entry : prepared) {
+        auto live = bridge->find_live(entry.name);
         if (live) {
-            for (const auto& kv : migrated) {
-                live->set_param(kv.first, kv.second);
+            for (const auto& [key, value] : entry.params) {
+                if (key.rfind("preproc_", 0) == 0) continue;
+                live->set_param(key, value);
             }
-            if (entry.contains("enabled")) {
-                // Enforce single-algorithm mutual exclusion (design §5.6.6):
-                // enabling one algorithm from a config must disable every
-                // other live instance, otherwise two algorithms run at once.
-                if (entry.value("enabled").toBool()) {
-                    for (auto& other : bridge->list_live()) {
-                        if (other != live) other->set_enabled(false);
-                    }
-                }
-                live->set_enabled(entry.value("enabled").toBool());
+        } else if (algos.value(QString::fromStdString(entry.name)).toObject().contains("params")) {
+            // A sparse legacy entry without params must not erase an existing
+            // lazy cache. Shared preprocessing lives in preproc_cache_, so do
+            // not create an empty per-algorithm cache merely because its
+            // entry contains only preproc_* keys.
+            std::map<std::string, std::string> lazy_params;
+            for (const auto& [key, value] : entry.params) {
+                if (key.rfind("preproc_", 0) != 0) lazy_params.emplace(key, value);
             }
-        } else {
-            // No live instance — cache the params so create() can replay
-            // them when the algorithm is later enabled (N1).
-            bridge->cache_algo_params(name, migrated);
+            if (!lazy_params.empty()) bridge->cache_algo_params(entry.name, lazy_params);
         }
+        // Missing enabled preserves existing desired state. Catalog-only
+        // OpenEB entries remain FilterChain-owned and are untouched here.
+        if (entry.info->source == "self" && entry.has_enabled) {
+            bridge->set_algo_enabled(entry.name, entry.enabled);
+        }
+    }
+    for (const auto& [key, value] : loaded_global_preproc) {
+        bridge->apply_global_preproc(key, value);
     }
     if (!unknown_algos.isEmpty()) {
         err = tr("Unknown algorithm(s) in config: %1").arg(unknown_algos.join(", "));
     }
-    return ok;
+    return unknown_algos.isEmpty();
 }
 
 bool ConfigManager::save_algo_params_to_file(AlgoBridge* bridge, const QString& path, QString& err) const {
@@ -596,7 +741,9 @@ bool ConfigManager::save_algo_params_to_file(AlgoBridge* bridge, const QString& 
 }
 
 bool ConfigManager::load_algo_params_from_file(AlgoBridge* bridge, const QString& path, QString& err,
-                                               std::map<std::string, std::string>* legacy_roi) const {
+                                               std::map<std::string, std::string>* legacy_roi,
+                                               bool* accepted) const {
+    if (accepted) *accepted = false;
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly)) {
         err = tr("Cannot open file for reading:\n%1").arg(path);
@@ -608,7 +755,7 @@ bool ConfigManager::load_algo_params_from_file(AlgoBridge* bridge, const QString
         err = pe.errorString();
         return false;
     }
-    return apply_algo_state(bridge, doc.object(), err, legacy_roi);
+    return apply_algo_state(bridge, doc.object(), err, legacy_roi, accepted);
 }
 
 } // namespace gui

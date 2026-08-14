@@ -61,6 +61,20 @@ gtest_discover_tests(test_config_manager
     DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
 )
 
+# --- test_algorithms_panel_config: passive config-load widget synchronization. ---
+add_executable(test_algorithms_panel_config
+    test_algorithms_panel_config.cpp
+)
+target_link_libraries(test_algorithms_panel_config PRIVATE
+    gui_core
+    GTest::GTest
+)
+target_compile_options(test_algorithms_panel_config PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_algorithms_panel_config
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
+    PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+)
+
 # --- test_camera_controller_lifecycle: file-open exception boundary. ---
 add_executable(test_camera_controller_lifecycle
     test_camera_controller_lifecycle.cpp

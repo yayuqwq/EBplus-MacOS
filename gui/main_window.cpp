@@ -27,6 +27,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <map>
 #include <vector>
 
 #include <metavision/sdk/core/utils/colors.h>
@@ -442,7 +443,10 @@ void MainWindow::build_menus() {
         if (path.isEmpty()) return;
         QString err;
         std::map<std::string, std::string> legacy_roi;
-        if (config_.load_algo_params_from_file(&algo_bridge_, path, err, &legacy_roi)) {
+        bool accepted = false;
+        const bool complete = config_.load_algo_params_from_file(
+            &algo_bridge_, path, err, &legacy_roi, &accepted);
+        if (accepted) {
             auto* ap = settings_->algorithms_panel();
             // Phase 2.6: legacy per-algorithm roi_* entries were collected
             // instead of forwarded — map the first algorithm's ROI onto the
@@ -463,13 +467,23 @@ void MainWindow::build_menus() {
                 const int rh = parse(legacy_roi, "roi_h", 128);
                 camera_.set_unified_roi(on, rx, ry, rw, rh);
             }
-            // apply_algo_state wrote instances/caches directly — re-sync the
-            // panel controls so the displayed values match the loaded ones
-            // (audit §5.9-疑点4).
+            // Apply is model-side. Reflect it passively so a config load does
+            // not construct algorithms, emit toggles, or re-enter the mutex.
             if (ap) {
-                ap->refresh_param_values();
+                ap->refresh_config_state();
+                // Shared preproc values are synchronized with blocked panel
+                // signals, so mirror them to the display path explicitly.
+                for (const auto& [key, value] : ap->refresh_global_preproc_values()) {
+                    if (auto* fp = camera_.frame_pipeline()) {
+                        fp->set_display_preproc_param(key, value);
+                    }
+                }
             }
-            statusBar()->showMessage(tr("Algorithm params loaded from %1").arg(path), 3000);
+            if (complete) {
+                statusBar()->showMessage(tr("Algorithm params loaded from %1").arg(path), 3000);
+            } else {
+                QMessageBox::warning(this, tr("Loaded with warnings"), err);
+            }
         } else if (!err.isEmpty()) {
             QMessageBox::warning(this, tr("Load failed"), err);
         }
@@ -2226,7 +2240,7 @@ void MainWindow::on_open_algo_window(const std::string& algo_name) {
                 dlg.exec();
             }
         } else {
-            if (inst) inst->set_enabled(false);
+            if (inst) algo_bridge_.set_algo_enabled(algo_name, false);
         }
         // Sync the AlgorithmsPanel checkbox (blocked, no re-entry).
         if (auto* ap = settings_->algorithms_panel()) {
@@ -2258,7 +2272,7 @@ void MainWindow::on_open_xyt_view() {
         }
         xyt_algo_ = algo_bridge_.find_live("xyt_visualizer");
         if (!xyt_algo_) xyt_algo_ = algo_bridge_.find_or_create("xyt_visualizer");
-        if (xyt_algo_) xyt_algo_->set_enabled(true);
+        if (xyt_algo_) algo_bridge_.set_algo_enabled("xyt_visualizer", true);
         // Sync the time_window from the algo parameter to the 3D display.
         // The GUI registers time_window_us (default 500000 = 500ms); the
         // SpaceTimeDisplay uses time_window_ms. Without this sync, the
@@ -2283,7 +2297,7 @@ void MainWindow::on_open_xyt_view() {
         // stops processing events, and sync the sidebar checkbox.
         connect(xyt_display_, &QObject::destroyed, this, [this]() {
             if (xyt_algo_) {
-                xyt_algo_->set_enabled(false);
+                algo_bridge_.set_algo_enabled("xyt_visualizer", false);
                 xyt_algo_.reset();
             }
             if (auto* ap = settings_->algorithms_panel()) {
