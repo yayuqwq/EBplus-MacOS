@@ -297,7 +297,8 @@ complete, and this Slice 1 evidence does not substitute for it.
 
 ## Closure result
 
-M7 Slice 1 documentation closure preparation is complete. The next action is
-maintainer review followed, only if separately authorized, by an explicit
-commit decision. This report does not authorize a commit, push, pull request,
-or work on another M7 slice.
+M7 Slice 1 documentation closure preparation was complete at validation time.
+The Slice 1 branch was subsequently merged to `main` by PR #22
+(`404a6e0290c424ee4809dd19b2f674af2ed264e6`). This report preserves that
+validation-time boundary and does not itself authorize later Git actions or
+work on another M7 slice.

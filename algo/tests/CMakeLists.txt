@@ -119,6 +119,25 @@ gtest_discover_tests(test_raw_algos
     DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
 )
 
+# Exact synthetic semantics for the seven OpenEB FilterChain stages. A
+# non-square geometry makes coordinate/axis mistakes visible without a GUI.
+add_executable(test_filter_chain_semantics
+    test_filter_chain_semantics.cpp
+)
+target_include_directories(test_filter_chain_semantics PRIVATE
+    ${CMAKE_SOURCE_DIR}/gui
+    ${CMAKE_SOURCE_DIR}
+)
+target_link_libraries(test_filter_chain_semantics PRIVATE
+    gui_core
+    GTest::GTest
+    GTest::Main
+)
+target_compile_options(test_filter_chain_semantics PRIVATE -Wall -Wextra -Werror)
+gtest_discover_tests(test_filter_chain_semantics
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
+)
+
 # Standalone diagnostic: feed .raw events to EventToVideo and report stats.
 # Registered with CTest (audit §三-S7): all 7 diagnostics below assert via
 # their exit code and were verified to pass on algo/tests/sparklers.raw.

@@ -445,9 +445,10 @@ the frozen integration Linux-risk acceptance does not extend to M6.
 
 ### Milestone 7: Algorithms, models and export
 
-**状态：** `In progress` — Slice 1 is `Complete / Qualified`; Milestone 7 is
-not complete.
+**状态：** `In progress` — Slices 1 and 2 are `Complete / Qualified`;
+Milestone 7 is not complete.
 **Slice 1 branch：** `feat/macos-config-persistence-contract`
+**Slice 2 branch：** `feat/macos-file-algorithm-qualification`
 
 **当前 source baseline**
 
@@ -465,9 +466,10 @@ metric.
 
 1. **Complete / Qualified:** current catalog/config persistence and migration;
    see [macOS Milestone 7 Slice 1 Config Persistence Validation](macos_milestone_7_config_persistence_validation.md).
-2. deterministic file-source preprocessing and category-based representative
-   algorithm lifecycle/numerical evidence (including nine shared noise modes,
-   KNoise, Arc and current Time Surface modes);
+2. **Complete / Qualified:** deterministic file-source preprocessing and
+   category-based representative algorithm lifecycle/numerical evidence,
+   including nine shared noise modes, KNoise, Arc and current Time Surface
+   modes; see [macOS Milestone 7 Slice 2 File-Source Algorithm Validation](macos_milestone_7_file_algorithm_validation.md).
 3. E2VID/model qualification: heuristic fallback separately from a real,
    compatible arm64 ONNX Runtime plus model;
 4. offline export: extend existing bounded HDF5 evidence independently for
@@ -475,9 +477,11 @@ metric.
 5. calibration solve/YAML/undistort after the M6 live-capture prerequisite;
 6. processed-recording semantics and output integrity after M6 live lifecycle.
 
-Slices 2 through 6 remain pending. Slice 1 qualifies the current catalog and
-algorithm-parameter persistence contract only; it does not establish broader
-algorithm runtime, model, export, calibration or processed-recording behavior.
+Slices 3 through 6 remain pending. Slice 1 qualifies the current catalog and
+algorithm-parameter persistence contract; Slice 2 qualifies bounded
+deterministic file-source preprocessing and representative algorithm evidence.
+Neither slice establishes broader algorithm runtime, model, export, calibration
+or processed-recording behavior.
 
 General `AlgoResult` export remains a deferred product decision, not an
 assumed current feature. M7 must separate current source inventory, automated

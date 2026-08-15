@@ -79,6 +79,7 @@ using gui_algo::FreqDetector;
 namespace {
 constexpr Metavision::timestamp kBatchWindowUs = 33000;  // ~30 Hz batches.
 constexpr int kE2vRoi = 128;  // EventToVideo ROI per project convention.
+constexpr std::size_t kNoiseReplayPrefixEvents = 8192;
 
 bool is_finite(double v) { return std::isfinite(v); }
 
@@ -161,6 +162,41 @@ INSTANTIATE_TEST_SUITE_P(AllModes, NoiseFilterRawTest,
         NoiseFilter::Mode::AgePolarity, NoiseFilter::Mode::Harmonic,
         NoiseFilter::Mode::Repetitious, NoiseFilter::Mode::SpatialBP,
         NoiseFilter::Mode::KNoise));
+
+// Every noise mode keeps internal temporal state. Reset must return that mode
+// to the same state it had before a fixed file-source prefix was processed.
+// This also checks that in-place compaction never produces invalid coordinates.
+TEST_P(NoiseFilterRawTest, ResetReplaysFixedPrefixWithValidCoordinates) {
+    const auto& s = stream();
+    ASSERT_GE(s.size(), kNoiseReplayPrefixEvents);
+
+    const auto begin = s.events().begin();
+    const auto end = begin + static_cast<std::ptrdiff_t>(kNoiseReplayPrefixEvents);
+    std::vector<Event> first(begin, end);
+
+    NoiseFilter filter(s.width(), s.height(), GetParam());
+    const std::size_t first_kept = filter.filter(first.data(), first.size());
+    first.resize(first_kept);
+
+    ASSERT_LE(first_kept, kNoiseReplayPrefixEvents);
+    for (const Event& event : first) {
+        EXPECT_LT(event.x, s.width());
+        EXPECT_LT(event.y, s.height());
+        EXPECT_GE(event.t, 0);
+    }
+
+    filter.reset();
+    std::vector<Event> replay(begin, end);
+    const std::size_t replay_kept = filter.filter(replay.data(), replay.size());
+    replay.resize(replay_kept);
+
+    ASSERT_EQ(replay_kept, first_kept);
+    ASSERT_EQ(replay.size(), first.size());
+    for (std::size_t i = 0; i < first.size(); ++i) {
+        EXPECT_EQ(replay[i], first[i]) << "mode " << static_cast<int>(GetParam())
+                                       << " differed after reset at index " << i;
+    }
+}
 
 // KNoise (dv-processing port) on real data: with the calibrated default
 // dt=3000 us the keep-rate on sparklers.raw is ~0.72 (keeps most real
