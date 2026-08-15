@@ -1,20 +1,20 @@
-// Test: flip_x during LOOP playback of a raw file.
-// Simulates the exact GUI scenario: file plays in loop mode, user toggles
-// flip_x, verifies the flip takes effect AND survives across loop wraps.
+// Test: flip_x survives a file-playback loop for the same source event window.
 //
-// Build:
-//   cmake --build build --target test_loop_flip
-// Run:
-//   ./build/algo/tests/test_loop_flip <file.raw>
+// The test intentionally observes events_window_ready rather than rendered
+// pixels: a frame callback carries an arbitrary timer-selected window, while
+// this signal identifies the exact [start, start + accumulation) event batch.
 
 #include <QCoreApplication>
-#include <QImage>
-#include <QTimer>
+#include <QEventLoop>
+
+#include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <memory>
+#include <optional>
+#include <string>
 #include <thread>
-
-#include <opencv2/imgproc.hpp>
+#include <vector>
 
 #include <metavision/sdk/base/events/event_cd.h>
 #include <metavision/sdk/stream/camera.h>
@@ -24,186 +24,262 @@
 #include "algo_bridge/filter_chain.h"
 #include "app/file_frame_generator.h"
 
-using namespace gui;
-using std::chrono::steady_clock;
+namespace {
+
+using Event = Metavision::EventCD;
+using Metavision::timestamp;
 using std::chrono::milliseconds;
+using std::chrono::steady_clock;
+
+struct CapturedWindow {
+    timestamp start_us{};
+    std::vector<Event> events;
+};
+
+void print_event(const char* label, std::size_t index, const Event& event) {
+    std::fprintf(stderr, "%s[%zu] = (x=%d, y=%d, p=%d, t=%lld)\n", label, index,
+                 static_cast<int>(event.x), static_cast<int>(event.y),
+                 static_cast<int>(event.p), static_cast<long long>(event.t));
+}
+
+bool verify_source_window(const CapturedWindow& window, timestamp expected_start,
+                          timestamp accumulation_us) {
+    if (window.start_us != expected_start) {
+        std::fprintf(stderr, "FAIL: baseline window start=%lld, expected=%lld\n",
+                     static_cast<long long>(window.start_us),
+                     static_cast<long long>(expected_start));
+        return false;
+    }
+    if (window.events.empty()) {
+        std::fprintf(stderr, "FAIL: baseline window [%lld,%lld) contains no events\n",
+                     static_cast<long long>(expected_start),
+                     static_cast<long long>(expected_start + accumulation_us));
+        return false;
+    }
+    const timestamp end_us = expected_start + accumulation_us;
+    for (std::size_t i = 0; i < window.events.size(); ++i) {
+        const Event& event = window.events[i];
+        if (event.t < expected_start || event.t >= end_us) {
+            std::fprintf(stderr, "FAIL: baseline event outside [%lld,%lld)\n",
+                         static_cast<long long>(expected_start), static_cast<long long>(end_us));
+            print_event("actual", i, event);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool verify_flip_x(const char* label, const CapturedWindow& actual,
+                   const CapturedWindow& source, long width) {
+    if (actual.start_us != source.start_us) {
+        std::fprintf(stderr, "FAIL: %s window start=%lld, expected=%lld\n", label,
+                     static_cast<long long>(actual.start_us),
+                     static_cast<long long>(source.start_us));
+        return false;
+    }
+    if (actual.events.size() != source.events.size()) {
+        std::fprintf(stderr, "FAIL: %s event count=%zu, expected=%zu\n", label,
+                     actual.events.size(), source.events.size());
+        return false;
+    }
+    for (std::size_t i = 0; i < source.events.size(); ++i) {
+        const Event& input = source.events[i];
+        const Event& output = actual.events[i];
+        const int expected_x = static_cast<int>(width) - 1 - static_cast<int>(input.x);
+        if (static_cast<int>(output.x) != expected_x || output.y != input.y ||
+            output.p != input.p || output.t != input.t) {
+            std::fprintf(stderr,
+                         "FAIL: %s flip mismatch at event %zu; expected "
+                         "(x=%d, y=%d, p=%d, t=%lld)\n",
+                         label, i, expected_x, static_cast<int>(input.y),
+                         static_cast<int>(input.p), static_cast<long long>(input.t));
+            print_event("actual", i, output);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool verify_identical_windows(const CapturedWindow& baseline,
+                              const CapturedWindow& post_loop) {
+    if (post_loop.start_us != baseline.start_us) {
+        std::fprintf(stderr, "FAIL: post-loop window start=%lld, baseline=%lld\n",
+                     static_cast<long long>(post_loop.start_us),
+                     static_cast<long long>(baseline.start_us));
+        return false;
+    }
+    if (post_loop.events.size() != baseline.events.size()) {
+        std::fprintf(stderr, "FAIL: post-loop event count=%zu, baseline=%zu\n",
+                     post_loop.events.size(), baseline.events.size());
+        return false;
+    }
+    for (std::size_t i = 0; i < baseline.events.size(); ++i) {
+        const Event& expected = baseline.events[i];
+        const Event& actual = post_loop.events[i];
+        if (actual.x != expected.x || actual.y != expected.y ||
+            actual.p != expected.p || actual.t != expected.t) {
+            std::fprintf(stderr, "FAIL: post-loop output differs from initial flip at event %zu\n", i);
+            print_event("expected", i, expected);
+            print_event("actual", i, actual);
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
     if (argc < 2) {
         std::fprintf(stderr, "Usage: %s <file.raw>\n", argv[0]);
         return 1;
     }
+
     QCoreApplication app(argc, argv);
     const std::string path = argv[1];
 
-    // --- Simulate CameraController setup ---
-    FilterChain chain;
-    FileFrameGenerator gen;
+    gui::FilterChain chain;
+    gui::FileFrameGenerator gen;
     gen.set_fps(60);
     gen.set_accumulation_time_us(33000);
+    const timestamp baseline_start_us = 0;
+    const timestamp accumulation_us = gen.accumulation_time_us();
 
-    QImage last_frame;
-    QObject::connect(&gen, &FileFrameGenerator::frame_ready,
-                     [&](QImage f, Metavision::timestamp) { last_frame = f; });
-
-    // Open file
     Metavision::FileConfigHints hints;
     hints.real_time_playback(false);
     Metavision::Camera cam = Metavision::Camera::from_file(path, hints);
-    const long W = cam.geometry().get_width();
-    const long H = cam.geometry().get_height();
-    std::fprintf(stderr, "File: %s  geometry: %ldx%ld\n", path.c_str(), W, H);
+    const long width = cam.geometry().get_width();
+    const long height = cam.geometry().get_height();
+    std::fprintf(stderr, "File: %s  geometry: %ldx%ld\n", path.c_str(), width, height);
 
-    chain.set_geometry(static_cast<int>(W), static_cast<int>(H));
+    chain.set_geometry(static_cast<int>(width), static_cast<int>(height));
     gen.set_filter_chain(&chain);
-    gen.set_geometry(W, H);
+    gen.set_geometry(width, height);
+    gen.set_loop(true);
 
-    // Buffer all events
-    cam.cd().add_callback([&](const Metavision::EventCD* b, const Metavision::EventCD* e) {
-        gen.add_events(b, e);
+    std::atomic_bool camera_done{false};
+    cam.cd().add_callback([&](const Event* begin, const Event* end) {
+        gen.add_events(begin, end);
+    });
+    cam.add_status_change_callback([&](const Metavision::CameraStatus& status) {
+        if (status == Metavision::CameraStatus::STOPPED) {
+            camera_done.store(true, std::memory_order_release);
+        }
     });
 
-    Metavision::timestamp duration = 0;
+    timestamp file_duration_us = 0;
     cam.start();
     try {
         auto& osc = cam.offline_streaming_control();
-        if (osc.is_ready()) duration = osc.get_duration();
-    } catch (...) {}
-    gen.set_duration_us(duration);
-    gen.set_loop(true);  // LOOP MODE
+        if (osc.is_ready()) file_duration_us = osc.get_duration();
+    } catch (...) {
+    }
+    gen.set_duration_us(file_duration_us);
 
-    // Wait for buffering
-    bool camera_done = false;
-    cam.add_status_change_callback([&](const Metavision::CameraStatus& s) {
-        if (s == Metavision::CameraStatus::STOPPED) camera_done = true;
-    });
-    auto t0 = steady_clock::now();
-    while (!camera_done && steady_clock::now() - t0 < milliseconds(3000)) {
-        QCoreApplication::processEvents();
-        std::this_thread::sleep_for(milliseconds(5));
+    const auto buffer_deadline = steady_clock::now() + milliseconds(3000);
+    while (!camera_done.load(std::memory_order_acquire) && steady_clock::now() < buffer_deadline) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        std::this_thread::sleep_for(milliseconds(1));
     }
     if (cam.is_running()) cam.stop();
+    if (!camera_done.load(std::memory_order_acquire)) {
+        std::fprintf(stderr, "FAIL: RAW buffering did not finish before timeout\n");
+        return 1;
+    }
+
+    file_duration_us = gen.duration_us();
+    gen.set_loading_complete(true);
     std::fprintf(stderr, "Buffered. duration=%lld us  events=%zu\n",
-                 (long long)duration, gen.event_count());
-
-    // --- Phase 1: Play without filter, find a tracking pixel ---
-    gen.play();
-    t0 = steady_clock::now();
-    while (steady_clock::now() - t0 < milliseconds(200)) {
-        QCoreApplication::processEvents();
-        std::this_thread::sleep_for(milliseconds(1));
-    }
-    gen.pause();
-    QImage no_filter_frame = last_frame;
-    if (no_filter_frame.isNull()) {
-        std::fprintf(stderr, "FAIL: no frame produced\n");
+                 static_cast<long long>(file_duration_us), gen.event_count());
+    if (file_duration_us <= baseline_start_us || gen.event_count() == 0) {
+        std::fprintf(stderr, "FAIL: RAW fixture did not provide a playable event stream\n");
         return 1;
     }
 
-    // Find a non-background pixel
-    int track_x = -1, track_y = -1;
-    const QRgb bg = no_filter_frame.pixel(0, 0);
-    for (int y = 0; y < no_filter_frame.height() && track_x < 0; ++y) {
-        for (int x = 0; x < no_filter_frame.width(); ++x) {
-            if (no_filter_frame.pixel(x, y) != bg) {
-                track_x = x;
-                track_y = y;
-                break;
-            }
-        }
-    }
-    if (track_x < 0) {
-        std::fprintf(stderr, "WARN: could not find a non-background pixel\n");
-        return 1;
-    }
-    const QRgb track_pixel = no_filter_frame.pixel(track_x, track_y);
-    const int flip_x_pos = static_cast<int>(W) - 1 - track_x;
-    std::fprintf(stderr, "Track pixel (%d,%d)=%08X  flip→(%d,%d)\n",
-                 track_x, track_y, track_pixel, flip_x_pos, track_y);
-
-    // --- Phase 2: Enable flip_x DURING loop playback ---
-    chain.set_stage_enabled("flip_x", true);
-    std::fprintf(stderr, "flip_x enabled. has_enabled()=%d\n", chain.has_enabled() ? 1 : 0);
-    gen.play();
-    t0 = steady_clock::now();
-    while (steady_clock::now() - t0 < milliseconds(200)) {
-        QCoreApplication::processEvents();
-        std::this_thread::sleep_for(milliseconds(1));
-    }
-    gen.pause();
-    QImage flip_frame = last_frame;
-
-    bool ok = true;
-    const QRgb after_track = flip_frame.pixel(track_x, track_y);
-    const QRgb after_flip = flip_frame.pixel(flip_x_pos, track_y);
-    std::fprintf(stderr, "After flip (first pass): pixel(%d,%d)=%08X  pixel(%d,%d)=%08X  (orig=%08X)\n",
-                 track_x, track_y, after_track, flip_x_pos, track_y, after_flip, track_pixel);
-
-    if (after_track == track_pixel) {
-        std::fprintf(stderr, "FAIL: pixel at original position unchanged — flip NOT applied\n");
-        ok = false;
-    }
-    if (after_flip != track_pixel) {
-        std::fprintf(stderr, "FAIL: pixel at flipped position doesn't match original\n");
-        ok = false;
-    }
-
-    // --- Phase 3: Let it loop multiple times, verify flip survives ---
+    enum class Capture { None, RawBaseline, FlippedBaseline };
+    Capture capture = Capture::None;
+    std::optional<CapturedWindow> raw_baseline;
+    std::optional<CapturedWindow> flipped_baseline;
+    std::optional<CapturedWindow> post_loop;
     int loop_count = 0;
-    QObject::connect(&gen, &FileFrameGenerator::looped, [&]() { loop_count++; });
+    bool loop_seen = false;
 
+    QObject::connect(&gen, &gui::FileFrameGenerator::looped, &app, [&]() {
+        ++loop_count;
+        loop_seen = true;
+    });
+    QObject::connect(&gen, &gui::FileFrameGenerator::events_window_ready,
+                     &app,
+                     [&](std::shared_ptr<std::vector<Event>> events, timestamp start_us) {
+                         if (!events) return;
+                         const CapturedWindow window{start_us, *events};
+                         if (capture == Capture::RawBaseline &&
+                             start_us == baseline_start_us && !raw_baseline) {
+                             raw_baseline = window;
+                         }
+                         if (capture == Capture::FlippedBaseline &&
+                             start_us == baseline_start_us && !flipped_baseline) {
+                             flipped_baseline = window;
+                         }
+                         if (loop_seen && start_us == baseline_start_us && !post_loop) {
+                             post_loop = window;
+                         }
+                     });
+
+    // seek(0) renders synchronously, so each baseline is the exact [0, window) input.
+    capture = Capture::RawBaseline;
+    gen.seek(baseline_start_us);
+    capture = Capture::None;
+    if (!raw_baseline || !verify_source_window(*raw_baseline, baseline_start_us, accumulation_us)) {
+        return 1;
+    }
+
+    chain.set_stage_enabled("flip_x", true);
+    if (!chain.is_stage_enabled("flip_x")) {
+        std::fprintf(stderr, "FAIL: flip_x was not enabled before playback\n");
+        return 1;
+    }
+    capture = Capture::FlippedBaseline;
+    gen.seek(baseline_start_us);
+    capture = Capture::None;
+    if (!flipped_baseline || !verify_flip_x("initial", *flipped_baseline, *raw_baseline, width)) {
+        return 1;
+    }
+
+    // The timeout bounds event-loop waiting only; the sample is selected by
+    // a real looped() signal followed by the first matching source window.
     gen.play();
-    // Play for 3 seconds — with 95871us duration at 60fps*33000us window,
-    // the file loops ~2 times per second, so ~6 loops in 3 seconds.
-    t0 = steady_clock::now();
-    while (steady_clock::now() - t0 < milliseconds(3000)) {
-        QCoreApplication::processEvents();
+    const auto loop_deadline = steady_clock::now() + milliseconds(2000);
+    while (!post_loop && steady_clock::now() < loop_deadline) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
         std::this_thread::sleep_for(milliseconds(1));
     }
     gen.pause();
-    std::fprintf(stderr, "Looped %d times in 3 seconds\n", loop_count);
 
-    if (loop_count == 0) {
-        std::fprintf(stderr, "WARN: file never looped (too short duration?)\n");
+    if (loop_count < 1 || !loop_seen) {
+        std::fprintf(stderr, "FAIL: no loop boundary observed before timeout\n");
+        return 1;
+    }
+    if (!post_loop) {
+        std::fprintf(stderr,
+                     "FAIL: no post-loop matching window at start=%lld after %d loop(s)\n",
+                     static_cast<long long>(baseline_start_us), loop_count);
+        return 1;
+    }
+    if (!chain.is_stage_enabled("flip_x")) {
+        std::fprintf(stderr, "FAIL: flip_x is disabled after %d loop(s)\n", loop_count);
+        return 1;
+    }
+    if (!verify_flip_x("post-loop", *post_loop, *raw_baseline, width) ||
+        !verify_identical_windows(*flipped_baseline, *post_loop)) {
+        return 1;
     }
 
-    QImage post_loop_frame = last_frame;
-    if (!post_loop_frame.isNull()) {
-        const QRgb post_loop_track = post_loop_frame.pixel(track_x, track_y);
-        const QRgb post_loop_flip = post_loop_frame.pixel(flip_x_pos, track_y);
-        std::fprintf(stderr, "After loop: pixel(%d,%d)=%08X  pixel(%d,%d)=%08X  (orig=%08X)\n",
-                     track_x, track_y, post_loop_track, flip_x_pos, track_y, post_loop_flip, track_pixel);
-
-        if (post_loop_track == track_pixel) {
-            std::fprintf(stderr, "FAIL: flip lost after loop — pixel at original position unchanged\n");
-            ok = false;
-        }
-        if (post_loop_flip != track_pixel) {
-            std::fprintf(stderr, "FAIL: flip lost after loop — pixel at flipped position doesn't match\n");
-            ok = false;
-        }
-    }
-
-    // --- Phase 4: Disable flip_x, verify it reverts ---
-    chain.set_stage_enabled("flip_x", false);
-    gen.play();
-    t0 = steady_clock::now();
-    while (steady_clock::now() - t0 < milliseconds(200)) {
-        QCoreApplication::processEvents();
-        std::this_thread::sleep_for(milliseconds(1));
-    }
-    gen.pause();
-    QImage revert_frame = last_frame;
-    if (!revert_frame.isNull()) {
-        const QRgb revert_track = revert_frame.pixel(track_x, track_y);
-        std::fprintf(stderr, "After disable: pixel(%d,%d)=%08X (orig=%08X)\n",
-                     track_x, track_y, revert_track, track_pixel);
-    }
-
-    if (ok) {
-        std::fprintf(stderr, "\nPASS: flip_x works during loop playback and survives across loop wraps\n");
-        return 0;
-    }
-    std::fprintf(stderr, "\nFAIL: flip_x does NOT work during loop playback\n");
-    return 1;
+    std::fprintf(stderr,
+                 "PASS: flip_x preserved through %d real loop(s); baseline and post-loop "
+                 "window=[%lld,%lld), events=%zu\n",
+                 loop_count, static_cast<long long>(baseline_start_us),
+                 static_cast<long long>(baseline_start_us + accumulation_us),
+                 post_loop->events.size());
+    return 0;
 }

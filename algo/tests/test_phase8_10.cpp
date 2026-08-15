@@ -413,6 +413,7 @@ TEST(TimeSurfaceTest, Params) {
     EXPECT_EQ(ts.decay_time_us(), 200000);
     ts.set_refresh_rate_hz(60);
     EXPECT_EQ(ts.refresh_rate_hz(), 60);
+    EXPECT_EQ(ts.refresh_interval_us(), 16666);
 }
 TEST(TimeSurfaceTest, ProcessAndRender) {
     TimeSurface ts(32, 32);
@@ -485,6 +486,80 @@ TEST(TimeSurfaceTest, LinearDecayUnchangedByDefault) {
     cv::Mat img = ts.render();
     EXPECT_EQ(img.at<cv::Vec3b>(5, 5)[0], 0);
     EXPECT_EQ(img.at<cv::Vec3b>(10, 10)[0], 255);
+}
+
+TEST(TimeSurfaceTest, SplitChannelsDoNotAccumulateOppositePolarities) {
+    // In Merged mode, opposite-polarity events at the same pixel contribute
+    // to one accumulator. Split mode maintains one accumulator per polarity
+    // and merges their rendered colors with a per-channel maximum.
+    const std::vector<Event> events{
+        Event(5, 5, 0, 0),
+        Event(5, 5, 1, 100),
+    };
+    TimeSurface merged(16, 12, TimeSurface::Channels::Merged, 100000,
+                       TimeSurface::Palette::Gray, 30,
+                       TimeSurface::Decay::Exponential, 1000000);
+    TimeSurface split(16, 12, TimeSurface::Channels::Split, 100000,
+                      TimeSurface::Palette::Gray, 30,
+                      TimeSurface::Decay::Exponential, 1000000);
+    merged.process(events.data(), events.size());
+    split.process(events.data(), events.size());
+
+    const cv::Vec3b merged_px = merged.render().at<cv::Vec3b>(5, 5);
+    const cv::Vec3b split_px = split.render().at<cv::Vec3b>(5, 5);
+    const double expected_merged =
+        255.0 * (0.15 * std::exp(-100.0 / 1000000.0) + 0.15);
+    const double expected_split = 255.0 * 0.15;
+    EXPECT_NEAR(merged_px[0], expected_merged, 2.0);
+    EXPECT_NEAR(split_px[0], expected_split, 2.0);
+    EXPECT_GT(merged_px[0], split_px[0] + 20);
+    EXPECT_EQ(split.channels(), TimeSurface::Channels::Split);
+}
+
+TEST(TimeSurfaceTest, ResetClearsAndReplaysDeterministically) {
+    TimeSurface ts(16, 12, TimeSurface::Channels::Merged, 100000,
+                   TimeSurface::Palette::Gray, 30,
+                   TimeSurface::Decay::Exponential, 1000000);
+    const std::vector<Event> events{
+        Event(2, 3, 0, 100),
+        Event(7, 8, 1, 500),
+        Event(2, 3, 0, 900),
+    };
+
+    ts.process(events.data(), events.size());
+    const cv::Mat first = ts.render();
+    ASSERT_GT(cv::norm(first, cv::NORM_INF), 0.0);
+
+    ts.reset();
+    const cv::Mat cleared = ts.render();
+    EXPECT_EQ(cv::norm(cleared, cv::NORM_INF), 0.0);
+
+    ts.process(events.data(), events.size());
+    const cv::Mat replay = ts.render();
+    EXPECT_EQ(cv::norm(first, replay, cv::NORM_INF), 0.0);
+}
+
+TEST(TimeSurfaceTest, RepresentativePaletteMappingAtFullScale) {
+    struct PaletteCase {
+        TimeSurface::Palette palette;
+        cv::Vec3b expected_bgr;
+    };
+    const PaletteCase cases[] = {
+        {TimeSurface::Palette::Gray, cv::Vec3b(255, 255, 255)},
+        {TimeSurface::Palette::Hot, cv::Vec3b(255, 255, 255)},
+        {TimeSurface::Palette::Plasma, cv::Vec3b(0, 255, 255)},
+        {TimeSurface::Palette::Turbo, cv::Vec3b(0, 0, 255)},
+    };
+    const Event event(1, 1, 1, 100);
+    for (const PaletteCase& test : cases) {
+        TimeSurface ts(4, 4, TimeSurface::Channels::Merged, 100000,
+                       test.palette, 30);
+        ts.process(&event, 1);
+        const cv::Vec3b actual = ts.render().at<cv::Vec3b>(1, 1);
+        EXPECT_EQ(actual[0], test.expected_bgr[0]);
+        EXPECT_EQ(actual[1], test.expected_bgr[1]);
+        EXPECT_EQ(actual[2], test.expected_bgr[2]);
+    }
 }
 
 // =========================================================================
