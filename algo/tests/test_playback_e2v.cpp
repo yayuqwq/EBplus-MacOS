@@ -71,7 +71,10 @@ int main(int argc, char** argv) {
         }
     }
     std::printf("Total ROI events: %zu\n", all_events.size());
-    if (all_events.empty()) return 0;
+    if (all_events.empty()) {
+        std::fprintf(stderr, "No ROI events were read from %s\n", path.c_str());
+        return 1;
+    }
     const Metavision::timestamp t_max = all_events.back().t;
     std::printf("Time span: %lld us (%.3f s)\n",
                 static_cast<long long>(t_max),
@@ -86,14 +89,23 @@ int main(int argc, char** argv) {
     const double inv_rate = 1.0 / playback_rate;
     std::printf("Playback rate: %.6f (inv_rate=%.2f)\n", playback_rate, inv_rate);
 
-    // Test both modes.
-    for (int mode_idx = 0; mode_idx <= 1; ++mode_idx) {
+    // Keep the existing modes while adding no-model E2VID heuristic playback.
+    for (int mode_idx = 0; mode_idx <= 2; ++mode_idx) {
         const auto mode = static_cast<EventToVideo::Mode>(mode_idx);
-        const char* mode_name =
-            (mode_idx == 0) ? "BardowVariational" : "InteractingMaps";
+        const char* mode_name = mode_idx == 0 ? "BardowVariational"
+                              : mode_idx == 1 ? "InteractingMaps"
+                                              : "E2VID heuristic";
 
         EventToVideo v(128, 128, mode);
-        v.set_downsample(true);
+        if (mode == EventToVideo::Mode::E2VID) {
+            v.set_e2vid_downsample(false);
+            if (v.e2vid_model_loaded()) {
+                std::fprintf(stderr, "[%s] unexpectedly loaded a model\n", mode_name);
+                return 1;
+            }
+        } else {
+            v.set_downsample(true);
+        }
         v.set_output_fps(30);
         v.set_decay_tau_ms(500.0f);
         v.reset();  // Simulate the reset-on-connect fix.
@@ -104,6 +116,7 @@ int main(int argc, char** argv) {
         int frame_count = 0;
         int black_count = 0;  // frames where min==max==0
         int gray_count = 0;   // frames where min==max==128
+        int non_flat_count = 0;
 
         // Feed events in 100us windows (simulating FileFrameGenerator).
         Metavision::timestamp cursor = 0;
@@ -129,6 +142,11 @@ int main(int argc, char** argv) {
             // Simulate pull_result → get_frame (called every frame).
             cv::Mat frame = v.get_frame();
             if (!frame.empty()) {
+                if (frame.type() != CV_8UC1 || frame.rows != 128 || frame.cols != 128) {
+                    std::fprintf(stderr, "[%s] invalid frame %dx%d type=%d\n",
+                                 mode_name, frame.cols, frame.rows, frame.type());
+                    return 1;
+                }
                 frame_count++;
                 double mn = 0, mx = 0;
                 cv::minMaxLoc(frame, &mn, &mx);
@@ -141,6 +159,7 @@ int main(int argc, char** argv) {
                 }
                 if (mx < 1.0) black_count++;
                 else if (mx - mn < 1.0) gray_count++;
+                if (mx - mn >= 1.0) non_flat_count++;
             }
         }
 
@@ -150,6 +169,10 @@ int main(int argc, char** argv) {
                     frame_count - black_count - gray_count,
                     frame_count > 0 ? 100.0 * black_count / frame_count : 0.0,
                     frame_count > 0 ? 100.0 * gray_count / frame_count : 0.0);
+        if (frame_count == 0 || non_flat_count == 0) {
+            std::fprintf(stderr, "[%s] no valid non-flat playback frame\n", mode_name);
+            return 1;
+        }
     }
 
     return 0;

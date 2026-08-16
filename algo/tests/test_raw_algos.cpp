@@ -242,7 +242,7 @@ TEST_F(RawAlgoTest, HotPixelFilterLearnsAndSuppresses) {
 
 // =========================================================================
 // 4. EventToVideo — the historical "flat gray output" regression. Each
-//    non-E2VID mode must produce a non-flat frame on real sparkler activity,
+//    reconstruction mode must produce a non-flat frame on real sparkler activity,
 //    and never diverge to NaN. This is exactly the class of bug the synthetic
 //    suite failed to catch.
 // =========================================================================
@@ -253,6 +253,9 @@ TEST_P(EventToVideoRawTest, ProducesNonFlatFiniteFrame) {
     const auto& s = stream();
     EventToVideo v(kE2vRoi, kE2vRoi, mode);
     if (mode != EventToVideo::Mode::E2VID) v.set_downsample(true);
+    if (mode == EventToVideo::Mode::E2VID) {
+        EXPECT_FALSE(v.e2vid_model_loaded());
+    }
     const auto roi_events = s.centered_roi(kE2vRoi, kE2vRoi);
     ASSERT_FALSE(roi_events.empty());
     int non_flat_frames = 0;
@@ -266,6 +269,9 @@ TEST_P(EventToVideoRawTest, ProducesNonFlatFiniteFrame) {
         ++total_frames;
         EXPECT_EQ(frame.rows, kE2vRoi);
         EXPECT_EQ(frame.cols, kE2vRoi);
+        if (mode == EventToVideo::Mode::E2VID) {
+            EXPECT_EQ(frame.type(), CV_8UC1);
+        }
         double mn = 0, mx = 0;
         cv::minMaxLoc(frame, &mn, &mx);
         EXPECT_TRUE(is_finite(mn)) << "NaN in frame min (mode " << static_cast<int>(mode) << ")";

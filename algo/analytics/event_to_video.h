@@ -146,6 +146,9 @@ public:
             mode_ = m;
             // Mode change invalidates state buffers (different code path).
             reset_state();
+            e2vid_.reset();
+            e2vid_event_buffer_.clear();
+            intensity_rescaler_.reset();
         }
     }
     Mode mode() const { return mode_; }
