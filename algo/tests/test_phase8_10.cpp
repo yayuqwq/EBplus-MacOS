@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <filesystem>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -60,6 +61,12 @@ using gui_algo::ParticleCounter;
 using gui_algo::AutoBiasController;
 using gui_algo::FreqDetector;
 using gui_algo::SensorSelfTest;
+
+std::filesystem::path missing_e2vid_model_path() {
+    const std::filesystem::path source_path{__FILE__};
+    return source_path.parent_path().parent_path().parent_path() /
+           ".tmp/m7-e2vid-fallback/nonexistent-model.onnx";
+}
 
 static std::vector<Event> make_events(int w, int h, int count, int t0 = 0) {
     std::vector<Event> ev;
@@ -601,6 +608,40 @@ TEST(EventToVideoTest, ModeSwitching) {
     v.set_mode(EventToVideo::Mode::E2VID);
     EXPECT_EQ(v.mode(), EventToVideo::Mode::E2VID);
 }
+TEST(EventToVideoTest, ModeSwitchClearsPendingE2VIDTemporalState) {
+    constexpr int kWidth = 8;
+    constexpr int kHeight = 8;
+    const std::vector<Event> pending_before_switch{
+        Event(2, 2, 0, 100),
+        Event(2, 2, 0, 200),
+    };
+    const std::vector<Event> intended_after_switch{
+        Event(5, 4, 1, 1000),
+        Event(5, 4, 1, 1100),
+    };
+
+    EventToVideo switched(kWidth, kHeight, EventToVideo::Mode::E2VID);
+    switched.set_e2vid_downsample(false);
+    ASSERT_FALSE(switched.e2vid_model_loaded());
+    switched.process(pending_before_switch.data(), pending_before_switch.size());
+    switched.set_mode(EventToVideo::Mode::BardowVariational);
+    switched.set_mode(EventToVideo::Mode::E2VID);
+    switched.process(intended_after_switch.data(), intended_after_switch.size());
+    const cv::Mat switched_frame = switched.get_frame();
+
+    EventToVideo fresh(kWidth, kHeight, EventToVideo::Mode::E2VID);
+    fresh.set_e2vid_downsample(false);
+    ASSERT_FALSE(fresh.e2vid_model_loaded());
+    fresh.process(intended_after_switch.data(), intended_after_switch.size());
+    const cv::Mat fresh_frame = fresh.get_frame();
+
+    ASSERT_EQ(switched_frame.type(), CV_8UC1);
+    ASSERT_EQ(switched_frame.size(), cv::Size(kWidth, kHeight));
+    ASSERT_EQ(fresh_frame.type(), CV_8UC1);
+    ASSERT_EQ(fresh_frame.size(), cv::Size(kWidth, kHeight));
+    EXPECT_EQ(cv::norm(switched_frame, fresh_frame, cv::NORM_INF), 0.0)
+        << "pending E2VID events leaked through a mode switch";
+}
 TEST(EventToVideoTest, ProcessAndGetFrame) {
     EventToVideo v(32, 32, EventToVideo::Mode::BardowVariational);
     auto ev = make_events(32, 32, 100);
@@ -656,16 +697,32 @@ TEST(EventToVideoTest, InteractingMapsNotFlat) {
     EXPECT_GT(max_val, 150.0) << "min=" << min_val << " max=" << max_val;
 }
 TEST(EventToVideoTest, E2VIDModeHeuristic) {
-    // E2VID without model -> heuristic fallback (always available).
-    EventToVideo v(32, 32, EventToVideo::Mode::E2VID);
-    EXPECT_FALSE(v.e2vid_model_loaded());
-    auto ev = make_events(32, 32, 200);
-    v.process(ev.data(), ev.size());
-    cv::Mat frame = v.get_frame();
-    EXPECT_FALSE(frame.empty());
-    EXPECT_EQ(frame.type(), CV_8UC1);
-    EXPECT_EQ(frame.rows, 32);
-    EXPECT_EQ(frame.cols, 32);
+    // E2VID without a model reconstructs a deterministic heuristic frame.
+    const std::vector<Event> events{
+        Event(2, 2, 0, 100),
+        Event(5, 4, 1, 200),
+        Event(2, 2, 0, 600),
+        Event(6, 1, 1, 900),
+    };
+    EventToVideo v(8, 8, EventToVideo::Mode::E2VID);
+    v.set_e2vid_downsample(false);
+    ASSERT_FALSE(v.e2vid_model_loaded());
+    v.process(events.data(), events.size());
+    const cv::Mat first = v.get_frame();
+    ASSERT_FALSE(first.empty());
+    ASSERT_EQ(first.type(), CV_8UC1);
+    ASSERT_EQ(first.rows, 8);
+    ASSERT_EQ(first.cols, 8);
+    double mn = 0.0, mx = 0.0;
+    cv::minMaxLoc(first, &mn, &mx);
+    EXPECT_GE(mn, 0.0);
+    EXPECT_LE(mx, 255.0);
+    EXPECT_GT(first.at<std::uint8_t>(4, 5), first.at<std::uint8_t>(2, 2));
+
+    v.reset();
+    v.process(events.data(), events.size());
+    const cv::Mat replay = v.get_frame();
+    EXPECT_EQ(cv::norm(first, replay, cv::NORM_INF), 0.0);
 }
 TEST(EventToVideoTest, E2VIDParams) {
     EventToVideo v(32, 32, EventToVideo::Mode::E2VID);
@@ -681,10 +738,22 @@ TEST(EventToVideoTest, E2VIDParams) {
     EXPECT_FLOAT_EQ(v.bilateral_sigma(), 1.0f);
 }
 TEST(EventToVideoTest, E2VIDModelLoadFailure) {
-    // Loading a nonexistent model path should fail gracefully.
-    EventToVideo v(32, 32, EventToVideo::Mode::E2VID);
-    v.set_model_path("/nonexistent/model.onnx");
+    // A repository-local missing path must leave the heuristic usable.
+    const auto missing_model_path = missing_e2vid_model_path();
+    ASSERT_FALSE(std::filesystem::exists(missing_model_path));
+    const std::vector<Event> events{
+        Event(2, 2, 1, 100), Event(4, 4, 0, 300),
+    };
+    EventToVideo v(8, 8, EventToVideo::Mode::E2VID);
+    v.set_e2vid_downsample(false);
+    v.set_model_path(missing_model_path.string());
     EXPECT_FALSE(v.e2vid_model_loaded());
+    v.process(events.data(), events.size());
+    const cv::Mat frame = v.get_frame();
+    EXPECT_FALSE(frame.empty());
+    EXPECT_EQ(frame.type(), CV_8UC1);
+    EXPECT_EQ(frame.size(), cv::Size(8, 8));
+    EXPECT_FALSE(std::filesystem::exists(missing_model_path));
 }
 
 // --- E2VID submodule tests ---
@@ -762,18 +831,40 @@ TEST(E2VIDInferenceTest, Construction) {
     EXPECT_FALSE(e.is_model_loaded());
 }
 TEST(E2VIDInferenceTest, HeuristicInference) {
-    gui_algo::E2VIDInference e(32, 32, 5);
-    auto ev = make_events(32, 32, 200);
-    cv::Mat frame = e.infer(ev.data(), ev.size());
-    EXPECT_FALSE(frame.empty());
-    EXPECT_EQ(frame.type(), CV_8UC1);
-    EXPECT_EQ(frame.rows, 32);
-    EXPECT_EQ(frame.cols, 32);
+    const std::vector<Event> events{
+        Event(1, 1, 1, 100),
+        Event(3, 2, 0, 200),
+        Event(1, 1, 1, 600),
+        Event(6, 4, 0, 900),
+    };
+    gui_algo::E2VIDInference e(8, 6, 5);
+    e.set_downsample(false);
+    ASSERT_FALSE(e.is_model_loaded());
+    const cv::Mat frame = e.infer(events.data(), events.size());
+    ASSERT_FALSE(frame.empty());
+    ASSERT_EQ(frame.type(), CV_8UC1);
+    ASSERT_EQ(frame.size(), cv::Size(8, 6));
+    double mn = 0.0, mx = 0.0;
+    cv::minMaxLoc(frame, &mn, &mx);
+    EXPECT_GE(mn, 0.0);
+    EXPECT_LE(mx, 255.0);
+    EXPECT_GT(frame.at<std::uint8_t>(1, 1), frame.at<std::uint8_t>(2, 3));
 }
 TEST(E2VIDInferenceTest, ModelLoadFailure) {
-    gui_algo::E2VIDInference e(32, 32, 5);
-    EXPECT_FALSE(e.load_model("/nonexistent/model.onnx"));
+    const auto missing_model_path = missing_e2vid_model_path();
+    ASSERT_FALSE(std::filesystem::exists(missing_model_path));
+    const std::vector<Event> events{
+        Event(2, 2, 1, 100), Event(4, 4, 0, 300),
+    };
+    gui_algo::E2VIDInference e(8, 8, 5);
+    e.set_downsample(false);
+    EXPECT_FALSE(e.load_model(missing_model_path.string()));
     EXPECT_FALSE(e.is_model_loaded());
+    const cv::Mat frame = e.infer(events.data(), events.size());
+    EXPECT_FALSE(frame.empty());
+    EXPECT_EQ(frame.type(), CV_8UC1);
+    EXPECT_EQ(frame.size(), cv::Size(8, 8));
+    EXPECT_FALSE(std::filesystem::exists(missing_model_path));
 }
 TEST(E2VIDInferenceTest, NumBinsClamp) {
     // BUG 1 regression: num_bins must be clamped to [1, 20].
@@ -783,6 +874,45 @@ TEST(E2VIDInferenceTest, NumBinsClamp) {
     EXPECT_EQ(e.num_bins(), 1);
     e.set_num_bins(10);
     EXPECT_EQ(e.num_bins(), 10);
+    const std::vector<Event> events{
+        Event(2, 2, 1, 100), Event(4, 4, 0, 300),
+    };
+    const cv::Mat alternate_bins = e.infer(events.data(), events.size());
+    EXPECT_EQ(alternate_bins.type(), CV_8UC1);
+    EXPECT_EQ(alternate_bins.size(), cv::Size(32, 32));
+}
+TEST(E2VIDInferenceTest, ResetReplaysHeuristicFallbackDeterministically) {
+    const std::vector<Event> events{
+        Event(2, 2, 1, 100),
+        Event(4, 3, 0, 300),
+        Event(6, 5, 1, 900),
+    };
+    gui_algo::E2VIDInference e(8, 8, 5);
+    e.set_downsample(false);
+    const cv::Mat first = e.infer(events.data(), events.size());
+    e.reset();
+    const cv::Mat replay = e.infer(events.data(), events.size());
+    EXPECT_EQ(cv::norm(first, replay, cv::NORM_INF), 0.0);
+}
+TEST(E2VIDInferenceTest, DownsampleModesPreserveSensorDimensions) {
+    const std::vector<Event> even_events{
+        Event(2, 2, 1, 100),
+        Event(4, 4, 0, 300),
+        Event(6, 2, 1, 900),
+    };
+    gui_algo::E2VIDInference downsampled(8, 6, 5);
+    ASSERT_TRUE(downsampled.downsample());
+    const cv::Mat downsampled_frame =
+        downsampled.infer(even_events.data(), even_events.size());
+    EXPECT_EQ(downsampled_frame.type(), CV_8UC1);
+    EXPECT_EQ(downsampled_frame.size(), cv::Size(8, 6));
+
+    gui_algo::E2VIDInference full_resolution(8, 6, 5);
+    full_resolution.set_downsample(false);
+    const cv::Mat full_resolution_frame =
+        full_resolution.infer(even_events.data(), even_events.size());
+    EXPECT_EQ(full_resolution_frame.type(), CV_8UC1);
+    EXPECT_EQ(full_resolution_frame.size(), cv::Size(8, 6));
 }
 TEST(E2VIDInferenceTest, HotPixelMaskPreservedAcrossNumBins) {
     // BUG 7 regression: set_num_bins must not drop the hot-pixel mask.
