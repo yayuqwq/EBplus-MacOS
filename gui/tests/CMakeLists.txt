@@ -110,6 +110,23 @@ gtest_discover_tests(test_exporter_controller
     DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
 )
 
+# --- test_file_converter: deterministic CSV and RAW clip export contracts. ---
+add_executable(test_file_converter
+    test_file_converter.cpp
+)
+target_compile_definitions(test_file_converter PRIVATE
+    EBPLUS_GUI_TEST_ARTIFACT_DIR="${EBPLUS_GUI_TEST_ARTIFACT_DIR}"
+    EBPLUS_REPO_ROOT="${CMAKE_SOURCE_DIR}"
+)
+target_link_libraries(test_file_converter PRIVATE
+    gui_core
+    GTest::GTest
+)
+target_compile_options(test_file_converter PRIVATE ${GUI_TEST_COMPILE_OPTS})
+gtest_discover_tests(test_file_converter
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
+)
+
 # --- test_layout_manager: layout save/load symmetry (needs QApplication). ---
 # Custom main() creates an offscreen QApplication before InitGoogleTest, so we
 # link GTest::GTest (not GTest::Main) to avoid a duplicate main().
