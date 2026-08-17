@@ -445,11 +445,12 @@ the frozen integration Linux-risk acceptance does not extend to M6.
 
 ### Milestone 7: Algorithms, models and export
 
-**状态：** `In progress` — Slices 1, 2, and 3A are `Complete / Qualified`;
-M7 Slice 3 and Milestone 7 overall are not complete.
+**状态：** `In progress` — Slices 1, 2, 3A, and 4A are `Complete / Qualified`;
+M7 Slices 3 and 4, and Milestone 7 overall, are not complete.
 **Slice 1 branch：** `feat/macos-config-persistence-contract`
 **Slice 2 branch：** `feat/macos-file-algorithm-qualification`
 **Slice 3A branch：** `feat/macos-e2vid-fallback-qualification`
+**Slice 4A branch：** `feat/macos-offline-export-qualification`
 
 **当前 source baseline**
 
@@ -478,18 +479,21 @@ metric.
    Milestone 7 Slice 3A E2VID Heuristic Fallback Validation](macos_milestone_7_e2vid_fallback_validation.md).
    Real compatible arm64 ONNX Runtime plus a model, plain/recurrent inference,
    and model conversion remain separate pending sub-phases;
-4. offline export: extend existing bounded HDF5 evidence independently for
-   CSV, RAW clip and AVI creation/readback/error behavior;
+4. **In progress:** offline export. **Slice 4A is Complete / Qualified** for
+   tracked-RAW CSV source-event export and RAW clip creation/readback; see
+   [macOS Milestone 7 Slice 4A Offline Export Validation](macos_milestone_7_offline_export_validation.md).
+   AVI creation/readback/error behavior remains a separate pending Slice 4B;
 5. calibration solve/YAML/undistort after the M6 live-capture prerequisite;
 6. processed-recording semantics and output integrity after M6 live lifecycle.
 
 Slice 3 remains **In progress**: only its 3A no-model heuristic-fallback
-sub-phase is qualified. Slices 4 through 6 remain pending. Slice 1 qualifies
-the current catalog and algorithm-parameter persistence contract; Slice 2
-qualifies bounded deterministic file-source preprocessing and representative
-algorithm evidence. These slices, including Slice 3A, do not establish
-broader algorithm runtime, neural model behavior, export, calibration, or
-processed-recording behavior.
+sub-phase is qualified. Slice 4 remains **In progress**: only its 4A CSV and
+RAW-clip sub-phase is qualified; AVI remains pending. Slices 5 and 6 remain
+pending. Slice 1 qualifies the current catalog and algorithm-parameter
+persistence contract; Slice 2 qualifies bounded deterministic file-source
+preprocessing and representative algorithm evidence. These slices, including
+Slices 3A and 4A, do not establish broader algorithm runtime, neural model
+behavior, AVI/general export, calibration, or processed-recording behavior.
 
 General `AlgoResult` export remains a deferred product decision, not an
 assumed current feature. M7 must separate current source inventory, automated
