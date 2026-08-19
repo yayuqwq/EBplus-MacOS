@@ -31,14 +31,14 @@ import onnx.checker
 def load_model(path_to_model, rpg_e2vid_dir):
     """加载 rpg_e2vid 的 .pth.tar 检查点并实例化模型。
 
-    与 loading_utils.load_model 等价，但显式使用 weights_only=False
-    （PyTorch >= 2.6 默认 weights_only=True 会拒绝加载 arch 字符串）。
+    与 loading_utils.load_model 等价，显式使用受限的 weights_only=True
+    加载检查点，不反序列化任意 Python 对象。
     """
     sys.path.insert(0, rpg_e2vid_dir)
     from model.model import E2VID, E2VIDRecurrent  # noqa: E402
 
     print(f"Loading model {path_to_model} ...")
-    raw_model = torch.load(path_to_model, map_location="cpu", weights_only=False)
+    raw_model = torch.load(path_to_model, map_location="cpu", weights_only=True)
 
     arch = raw_model["arch"]
     config = raw_model["model"]

@@ -445,11 +445,13 @@ the frozen integration Linux-risk acceptance does not extend to M6.
 
 ### Milestone 7: Algorithms, models and export
 
-**状态：** `In progress` — Slices 1, 2, 3A, 4A, and 4B are `Complete / Qualified`;
-Slice 3 and Milestone 7 overall are not complete.
+**状态：** `In progress` — Slices 1, 2, 3A, the real recurrent-model
+sub-phase of Slice 3, 4A, and 4B are `Complete / Qualified`; Slice 3 and
+Milestone 7 overall are not complete.
 **Slice 1 branch：** `feat/macos-config-persistence-contract`
 **Slice 2 branch：** `feat/macos-file-algorithm-qualification`
 **Slice 3A branch：** `feat/macos-e2vid-fallback-qualification`
+**Slice 3 recurrent branch：** `feat/macos-e2vid-model-conversion`
 **Slice 4A branch：** `feat/macos-offline-export-qualification`
 **Slice 4B branch：** `feat/macos-avi-export-qualification`
 
@@ -478,8 +480,13 @@ metric.
    deterministic cross-mode temporal-state invalidation, bounded real-RAW and
    playback evidence, and one Cocoa wiring/lifecycle session; see [macOS
    Milestone 7 Slice 3A E2VID Heuristic Fallback Validation](macos_milestone_7_e2vid_fallback_validation.md).
-   Real compatible arm64 ONNX Runtime plus a model, plain/recurrent inference,
-   and model conversion remain separate pending sub-phases;
+   The real recurrent-model sub-phase is also **Complete / Qualified**:
+   repository-local arm64 ONNX Runtime, one official UZH/RPG checkpoint under
+   a restricted loader, recurrent ONNX conversion/checking, C++ inference,
+   state/reset replay, tracked-RAW seek/loop evidence, and one bounded Cocoa
+   RAW E2VID session are recorded in [macOS Milestone 7 recurrent E2VID
+   validation](macos_milestone_7_e2vid_recurrent_validation.md). Plain ONNX
+   inference remains a separate unqualified sub-phase;
 4. **Complete / Qualified:** bounded offline source-event export. **Slice 4A**
    qualifies tracked-RAW CSV source-event export and RAW clip
    creation/readback; see [macOS Milestone 7 Slice 4A Offline Export
@@ -491,15 +498,17 @@ metric.
 5. calibration solve/YAML/undistort after the M6 live-capture prerequisite;
 6. processed-recording semantics and output integrity after M6 live lifecycle.
 
-Slice 3 remains **In progress**: only its 3A no-model heuristic-fallback
-sub-phase is qualified. Slice 4 is **Complete / Qualified** within its bounded
-CSV, RAW-clip, and AVI source-event-export scope. Slices 5 and 6 remain
-pending. Slice 1 qualifies the current catalog and algorithm-parameter
-persistence contract; Slice 2 qualifies bounded deterministic file-source
-preprocessing and representative algorithm evidence. These slices, including
-Slices 3A, 4A, and 4B, do not establish broader algorithm runtime, neural
-model behavior, general algorithm-result export, calibration, or
-processed-recording behavior.
+Slice 3 remains **In progress**: its 3A no-model heuristic-fallback sub-phase
+and real recurrent-model/conversion sub-phase are qualified, but `MOD-002`
+plain ONNX inference has no authoritative qualified fixture. Slice 4 is
+**Complete / Qualified** within its bounded CSV, RAW-clip, and AVI
+source-event-export scope. Slices 5 and 6 remain pending. Slice 1 qualifies
+the current catalog and algorithm-parameter persistence contract; Slice 2
+qualifies bounded deterministic file-source preprocessing and representative
+algorithm evidence. These slices, including Slices 3A, the recurrent
+sub-phase, 4A, and 4B, do not establish broader algorithm runtime, neural
+model behavior beyond the stated recurrent fixture, general algorithm-result
+export, calibration, or processed-recording behavior.
 
 General `AlgoResult` export remains a deferred product decision, not an
 assumed current feature. M7 must separate current source inventory, automated

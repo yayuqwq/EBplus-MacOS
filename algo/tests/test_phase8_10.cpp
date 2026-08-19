@@ -5,8 +5,13 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <filesystem>
+#include <iostream>
+#include <optional>
+#include <utility>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -38,6 +43,8 @@
 #include "algo/analytics/auto_bias_controller.h"
 #include "algo/analytics/freq_detector.h"
 #include "algo/analytics/sensor_self_test.h"
+
+#include "raw_event_stream.h"
 
 using gui_algo::Event;
 using gui_algo::EventPacket;
@@ -81,6 +88,107 @@ static std::vector<Event> make_events(int w, int h, int count, int t0 = 0) {
 
 static EventPacket make_packet(const std::vector<Event>& v) {
     return EventPacket(v.data(), v.size());
+}
+
+static std::optional<std::filesystem::path> e2vid_test_model_path() {
+    const char* const value = std::getenv("EBPLUS_E2VID_TEST_MODEL");
+    if (value == nullptr || value[0] == '\0') return std::nullopt;
+    return std::filesystem::path(value);
+}
+
+static std::vector<Event> make_recurrent_events_a(int width, int height) {
+    std::vector<Event> events;
+    events.reserve(96);
+    for (int i = 0; i < 96; ++i) {
+        const auto x = static_cast<std::uint16_t>((3 + 7 * i) % width);
+        const auto y = static_cast<std::uint16_t>((5 + 5 * i) % height);
+        events.emplace_back(x, y, i % 3 != 0, 1000 + i * 100);
+    }
+    return events;
+}
+
+static std::vector<Event> make_recurrent_events_b(int width, int height) {
+    std::vector<Event> events;
+    events.reserve(96);
+    for (int i = 0; i < 96; ++i) {
+        const auto x = static_cast<std::uint16_t>((11 + 11 * i) % width);
+        const auto y = static_cast<std::uint16_t>((7 + 13 * i) % height);
+        events.emplace_back(x, y, (i % 4) < 2, 20000 + i * 125);
+    }
+    return events;
+}
+
+static std::vector<Event> make_even_recurrent_events(int width, int height) {
+    std::vector<Event> events;
+    events.reserve(96);
+    for (int i = 0; i < 96; ++i) {
+        const auto x = static_cast<std::uint16_t>(
+            2 * ((3 + 7 * i) % (width / 2)));
+        const auto y = static_cast<std::uint16_t>(
+            2 * ((5 + 5 * i) % (height / 2)));
+        events.emplace_back(x, y, i % 3 != 0, 40000 + i * 150);
+    }
+    return events;
+}
+
+struct TimedFrame {
+    cv::Mat frame;
+    double elapsed_ms;
+};
+
+static TimedFrame infer_timed(gui_algo::E2VIDInference& inference,
+                              const std::vector<Event>& events) {
+    const auto start = std::chrono::steady_clock::now();
+    cv::Mat frame = inference.infer(events.data(), events.size());
+    const auto elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start);
+    return {std::move(frame), elapsed.count()};
+}
+
+struct NeuralFrameStats {
+    double min;
+    double max;
+};
+
+static std::optional<NeuralFrameStats> neural_frame_stats(
+    const cv::Mat& frame, const cv::Size& expected_size) {
+    if (frame.empty() || frame.type() != CV_32FC1 ||
+        frame.size() != expected_size || !cv::checkRange(frame, true)) {
+        return std::nullopt;
+    }
+    double min = 0.0;
+    double max = 0.0;
+    cv::minMaxLoc(frame, &min, &max);
+    if (!std::isfinite(min) || !std::isfinite(max)) return std::nullopt;
+    return NeuralFrameStats{min, max};
+}
+
+static std::filesystem::path tracked_raw_fixture_path() {
+    return std::filesystem::path(__FILE__).parent_path() / "sparklers.raw";
+}
+
+static std::vector<Event> centered_raw_window(
+    const gui_algo_test::RawEventStream& stream,
+    Metavision::timestamp start_us,
+    Metavision::timestamp window_us,
+    int roi_x,
+    int roi_y,
+    int roi_width,
+    int roi_height) {
+    std::vector<Event> out;
+    const Metavision::timestamp end_us = start_us + window_us;
+    for (const Event& event : stream.events()) {
+        if (event.t < start_us) continue;
+        if (event.t >= end_us) break;
+        if (event.x < roi_x || event.x >= roi_x + roi_width ||
+            event.y < roi_y || event.y >= roi_y + roi_height) {
+            continue;
+        }
+        out.emplace_back(static_cast<std::uint16_t>(event.x - roi_x),
+                         static_cast<std::uint16_t>(event.y - roi_y),
+                         event.p, event.t);
+    }
+    return out;
 }
 
 // =========================================================================
@@ -755,6 +863,38 @@ TEST(EventToVideoTest, E2VIDModelLoadFailure) {
     EXPECT_EQ(frame.size(), cv::Size(8, 8));
     EXPECT_FALSE(std::filesystem::exists(missing_model_path));
 }
+TEST(EventToVideoTest, RealModelSmoke) {
+    const auto model_path = e2vid_test_model_path();
+    if (!model_path.has_value()) {
+        GTEST_SKIP() << "EBPLUS_E2VID_TEST_MODEL is not set";
+    }
+    std::error_code model_error;
+    ASSERT_TRUE(std::filesystem::is_regular_file(*model_path, model_error))
+        << "EBPLUS_E2VID_TEST_MODEL must name a regular file: "
+        << model_path->string() << " error=" << model_error.message();
+
+    constexpr int kWidth = 64;
+    constexpr int kHeight = 48;
+    EventToVideo video(kWidth, kHeight, EventToVideo::Mode::E2VID);
+    video.set_e2vid_downsample(false);
+    video.set_model_path(model_path->string());
+    ASSERT_TRUE(video.e2vid_model_loaded());
+    ASSERT_EQ(video.e2vid_num_bins(), 5);
+
+    const auto events = make_recurrent_events_b(kWidth, kHeight);
+    video.process(events.data(), events.size());
+    const cv::Mat frame = video.get_frame();
+    ASSERT_FALSE(frame.empty());
+    EXPECT_EQ(frame.type(), CV_8UC1);
+    EXPECT_EQ(frame.size(), cv::Size(kWidth, kHeight));
+    double min = 0.0;
+    double max = 0.0;
+    cv::minMaxLoc(frame, &min, &max);
+    EXPECT_GE(min, 0.0);
+    EXPECT_LE(max, 255.0);
+    std::cout << "M7Slice3E2 EventToVideo frame_range=[" << min << ',' << max
+              << "]\n";
+}
 
 // --- E2VID submodule tests ---
 TEST(EventVoxelGridTest, Construction) {
@@ -939,6 +1079,164 @@ TEST(E2VIDInferenceTest, CropToSensor) {
     cv::Mat out2 = e.crop_to_sensor(padded);
     EXPECT_EQ(out2.rows, 32);
     EXPECT_EQ(out2.cols, 32);
+}
+TEST(E2VIDInferenceTest, RealRecurrentModelStateAndReset) {
+    const auto model_path = e2vid_test_model_path();
+    if (!model_path.has_value()) {
+        GTEST_SKIP() << "EBPLUS_E2VID_TEST_MODEL is not set";
+    }
+    std::error_code model_error;
+    ASSERT_TRUE(std::filesystem::is_regular_file(*model_path, model_error))
+        << "EBPLUS_E2VID_TEST_MODEL must name a regular file: "
+        << model_path->string() << " error=" << model_error.message();
+
+    constexpr int kWidth = 64;
+    constexpr int kHeight = 48;
+    constexpr double kReplayTolerance = 1e-5;
+    constexpr double kStateEffectMinimum = 1e-4;
+    const cv::Size sensor_size(kWidth, kHeight);
+    const auto events_a = make_recurrent_events_a(kWidth, kHeight);
+    const auto events_b = make_recurrent_events_b(kWidth, kHeight);
+
+    gui_algo::E2VIDInference inference(kWidth, kHeight, 2);
+    inference.set_downsample(false);
+    ASSERT_TRUE(inference.load_model(model_path->string()));
+    ASSERT_TRUE(inference.is_model_loaded());
+    ASSERT_EQ(inference.num_bins(), 5);
+
+    inference.reset();
+    const TimedFrame a1 = infer_timed(inference, events_a);
+    const TimedFrame b_stateful = infer_timed(inference, events_b);
+
+    inference.reset();
+    const TimedFrame b_zero = infer_timed(inference, events_b);
+
+    inference.reset();
+    const TimedFrame a2 = infer_timed(inference, events_a);
+    const TimedFrame b_replay = infer_timed(inference, events_b);
+
+    const auto a1_stats = neural_frame_stats(a1.frame, sensor_size);
+    const auto b_stateful_stats = neural_frame_stats(b_stateful.frame, sensor_size);
+    const auto b_zero_stats = neural_frame_stats(b_zero.frame, sensor_size);
+    const auto a2_stats = neural_frame_stats(a2.frame, sensor_size);
+    const auto b_replay_stats = neural_frame_stats(b_replay.frame, sensor_size);
+    ASSERT_TRUE(a1_stats.has_value()) << "Expected finite CV_32FC1 neural output for A1; type="
+                                      << a1.frame.type();
+    ASSERT_TRUE(b_stateful_stats.has_value())
+        << "Expected finite CV_32FC1 neural output for stateful B; type="
+        << b_stateful.frame.type();
+    ASSERT_TRUE(b_zero_stats.has_value())
+        << "Expected finite CV_32FC1 neural output for zero-state B; type="
+        << b_zero.frame.type();
+    ASSERT_TRUE(a2_stats.has_value()) << "Expected finite CV_32FC1 neural output for A2; type="
+                                      << a2.frame.type();
+    ASSERT_TRUE(b_replay_stats.has_value())
+        << "Expected finite CV_32FC1 neural output for replay B; type="
+        << b_replay.frame.type();
+
+    const double b_stateful_vs_zero =
+        cv::norm(b_stateful.frame, b_zero.frame, cv::NORM_INF);
+    const double a_replay_difference = cv::norm(a1.frame, a2.frame, cv::NORM_INF);
+    const double b_replay_difference =
+        cv::norm(b_stateful.frame, b_replay.frame, cv::NORM_INF);
+    EXPECT_GT(b_stateful_vs_zero, kStateEffectMinimum);
+    EXPECT_LE(a_replay_difference, kReplayTolerance);
+    EXPECT_LE(b_replay_difference, kReplayTolerance);
+    std::cout << "M7Slice3E2 recurrent ranges A1=[" << a1_stats->min << ','
+              << a1_stats->max << "] B_stateful=[" << b_stateful_stats->min
+              << ',' << b_stateful_stats->max << "] B_zero=["
+              << b_zero_stats->min << ',' << b_zero_stats->max
+              << "] B_stateful_vs_zero_inf=" << b_stateful_vs_zero
+              << " A_replay_inf=" << a_replay_difference
+              << " B_replay_inf=" << b_replay_difference
+              << " elapsed_ms=[" << a1.elapsed_ms << ','
+              << b_stateful.elapsed_ms << ',' << b_zero.elapsed_ms << ','
+              << a2.elapsed_ms << ',' << b_replay.elapsed_ms << "]\n";
+}
+TEST(E2VIDInferenceTest, RealRecurrentModelDownsampleSmoke) {
+    const auto model_path = e2vid_test_model_path();
+    if (!model_path.has_value()) {
+        GTEST_SKIP() << "EBPLUS_E2VID_TEST_MODEL is not set";
+    }
+    std::error_code model_error;
+    ASSERT_TRUE(std::filesystem::is_regular_file(*model_path, model_error))
+        << "EBPLUS_E2VID_TEST_MODEL must name a regular file: "
+        << model_path->string() << " error=" << model_error.message();
+
+    constexpr int kWidth = 62;
+    constexpr int kHeight = 46;
+    const cv::Size padded_size(64, 48);
+    const cv::Size sensor_size(kWidth, kHeight);
+    const auto events = make_even_recurrent_events(kWidth, kHeight);
+
+    gui_algo::E2VIDInference inference(kWidth, kHeight, 2);
+    ASSERT_TRUE(inference.downsample());
+    ASSERT_TRUE(inference.load_model(model_path->string()));
+    ASSERT_TRUE(inference.is_model_loaded());
+    ASSERT_EQ(inference.num_bins(), 5);
+
+    const TimedFrame result = infer_timed(inference, events);
+    const auto result_stats = neural_frame_stats(result.frame, padded_size);
+    ASSERT_TRUE(result_stats.has_value())
+        << "Expected finite CV_32FC1 padded neural output for downsampled inference; type="
+        << result.frame.type() << " size=" << result.frame.cols << 'x'
+        << result.frame.rows;
+    const cv::Mat cropped = inference.crop_to_sensor(result.frame);
+    const auto cropped_stats = neural_frame_stats(cropped, sensor_size);
+    ASSERT_TRUE(cropped_stats.has_value())
+        << "Expected finite sensor-sized crop after downsampled inference; type="
+        << cropped.type() << " size=" << cropped.cols << 'x' << cropped.rows;
+    std::cout << "M7Slice3E2 downsample range=[" << result_stats->min << ','
+              << result_stats->max << "] crop_range=[" << cropped_stats->min
+              << ',' << cropped_stats->max << "] elapsed_ms="
+              << result.elapsed_ms << '\n';
+}
+
+TEST(E2VIDInferenceTest, RealRecurrentModelTrackedRawWindows) {
+    const auto model_path = e2vid_test_model_path();
+    if (!model_path.has_value()) {
+        GTEST_SKIP() << "EBPLUS_E2VID_TEST_MODEL is not set";
+    }
+    std::error_code model_error;
+    ASSERT_TRUE(std::filesystem::is_regular_file(*model_path, model_error))
+        << "EBPLUS_E2VID_TEST_MODEL must name a regular file: "
+        << model_path->string() << " error=" << model_error.message();
+
+    gui_algo_test::RawEventStream stream(tracked_raw_fixture_path().string());
+    ASSERT_TRUE(stream.loaded()) << "Failed to decode tracked RAW fixture: "
+                                 << tracked_raw_fixture_path().string();
+    ASSERT_GE(stream.width(), 128);
+    ASSERT_GE(stream.height(), 128);
+
+    constexpr int kRoiWidth = 128;
+    constexpr int kRoiHeight = 128;
+    constexpr Metavision::timestamp kWindowUs = 33333;
+    const int roi_x = (stream.width() - kRoiWidth) / 2;
+    const int roi_y = (stream.height() - kRoiHeight) / 2;
+    const cv::Size expected_size(kRoiWidth, kRoiHeight);
+
+    gui_algo::E2VIDInference inference(kRoiWidth, kRoiHeight, 2);
+    inference.set_downsample(false);
+    ASSERT_TRUE(inference.load_model(model_path->string()));
+    ASSERT_TRUE(inference.is_model_loaded());
+    ASSERT_EQ(inference.num_bins(), 5);
+
+    for (const Metavision::timestamp start_us :
+         {Metavision::timestamp{0}, kWindowUs, 2 * kWindowUs}) {
+        const auto events = centered_raw_window(stream, start_us, kWindowUs,
+                                                roi_x, roi_y, kRoiWidth, kRoiHeight);
+        ASSERT_FALSE(events.empty()) << "Tracked RAW ROI window [" << start_us << ','
+                                     << (start_us + kWindowUs) << ") is empty";
+        const TimedFrame result = infer_timed(inference, events);
+        const auto stats = neural_frame_stats(result.frame, expected_size);
+        ASSERT_TRUE(stats.has_value())
+            << "Expected finite CV_32FC1 neural output for tracked RAW window at "
+            << start_us << " us; type=" << result.frame.type() << " size="
+            << result.frame.cols << 'x' << result.frame.rows;
+        std::cout << "M7Slice3E3 tracked RAW neural start_us=" << start_us
+                  << " events=" << events.size() << " range=[" << stats->min
+                  << ',' << stats->max << "] elapsed_ms=" << result.elapsed_ms << '\n';
+    }
 }
 
 // --- 4.4.3 FlowStatistics ---
