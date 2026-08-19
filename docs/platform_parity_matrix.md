@@ -12,12 +12,12 @@ validation](macos_upstream_baseline_integration_validation.md)。
 - Milestone 1 静态审计本身未执行 CMake configure、构建、GUI 启动、RAW 回放、真实相机、算法、模型或导出测试。
 - `Linux source status` 描述当前源码和应用接线；`Linux runtime status` 描述运行验证状态。代码存在或已接入应用不等于运行验证通过。
 - 未有后续明确证据的 Linux runtime 状态继续保持 `Requires verification`；证据不足时使用 `Unknown`。
-- 未有后续明确证据的 macOS 项目保持 `Not started`；只有发现明确且已证实的阻塞条件时才使用 `Blocked`。
+- 未有后续明确证据的 macOS 项目保持 `Not started`；只有发现明确且已证实的阻塞条件时才使用 `Blocked`。经维护者明确 scope decision 确认的 generic/optional path 可使用 `Deferred / Optional`；它不表示 runtime qualification。
 - 静态分析无法证明必然错误的事项统一写为“潜在风险，需要运行时验证”，不视为已经复现的 Bug。
 - source/static、automated CTest、Mach-O/linkage、CLI runtime、macOS GUI
   runtime、physical-camera 和 Linux evidence 必须分开解释；风险接受不是验证证据。
 
-状态值限定为：`Implemented in source`、`Wired into application`、`Documented only`、`Previously reported`、`Requires verification`、`Unknown`、`Not started`、`In progress`、`Blocked`、`Verified`、`Not applicable`。
+状态值限定为：`Implemented in source`、`Wired into application`、`Documented only`、`Previously reported`、`Requires verification`、`Unknown`、`Not started`、`In progress`、`Blocked`、`Deferred / Optional`、`Verified`、`Not applicable`。
 
 ## 2. 算法注册计数
 
@@ -202,7 +202,7 @@ output evidence.
 | ID | Feature area | Feature | Linux source status | Linux runtime status | macOS status | Evidence | Required verification | Target milestone | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | ALG-SELF-AN01 | Self analytics | `active_marker` | Wired into application | Requires verification | In progress | M7 Slice 2 retained real-RAW finite annotation evidence; see [M7 Slice 2 validation](macos_milestone_7_file_algorithm_validation.md) | marker detection、tracking、live/RAW | M7 | representative deterministic file-source evidence only |
-| ALG-SELF-AN02 | Self analytics | `event_to_video` | Wired into application | Requires verification | In progress | M7 Slice 3A qualifies the no-model heuristic path; the recurrent sub-phase adds official-checkpoint conversion, arm64 ORT inference/state/reset, tracked-RAW seek/loop replay and bounded Cocoa E2VID observation; see [M7 Slice 3A validation](macos_milestone_7_e2vid_fallback_validation.md) and [M7 recurrent E2VID validation](macos_milestone_7_e2vid_recurrent_validation.md) | complete three-mode parameter coverage, frame quality, performance, long-duration behavior, authoritative plain ONNX fixture and Linux | M7 | recurrent qualification is one fixed model/environment; heuristic fallback is not neural inference |
+| ALG-SELF-AN02 | Self analytics | `event_to_video` | Wired into application | Requires verification | In progress | M7 Slice 3 is complete within its accepted scope: Slice 3A qualifies the no-model heuristic path, and the recurrent sub-phase adds official-checkpoint conversion, arm64 ORT inference/state/reset, tracked-RAW seek/loop replay and bounded Cocoa E2VID observation; see [M7 Slice 3A validation](macos_milestone_7_e2vid_fallback_validation.md), [M7 recurrent E2VID validation](macos_milestone_7_e2vid_recurrent_validation.md), and [plain ONNX disposition](macos_milestone_7_plain_onnx_disposition.md) | complete three-mode parameter coverage, frame quality, performance, long-duration behavior and Linux; a plain-model qualification only if a trusted fixture and actual product requirement emerge | M7 | recurrent qualification is one fixed model/environment; heuristic fallback is not neural inference; plain compatibility remains deferred/optional and unqualified |
 | ALG-SELF-AN03 | Self analytics | `flow_statistics` | Wired into application | Requires verification | Not started | registry + `FlowStatisticsBackend` | ground truth 输入、统计值、显示 | M7 | 当前未发现 GUI 的 external ground-truth 输入路径 |
 | ALG-SELF-AN04 | Self analytics | `isi_analyzer` | Wired into application | Requires verification | In progress | M7 Slice 2 retained real-RAW populated-histogram evidence; see [M7 Slice 2 validation](macos_milestone_7_file_algorithm_validation.md) | per-pixel、histogram、window | M7 | representative deterministic file-source evidence only |
 | ALG-SELF-AN05 | Self analytics | `particle_counter` | Wired into application | Requires verification | In progress | M7 Slice 2 retained real-RAW consistency evidence and bounded GUI enable/disable/re-enable lifecycle; see [M7 Slice 2 validation](macos_milestone_7_file_algorithm_validation.md) | line crossing、min area、count reset | M7 | representative evidence only; count semantics beyond the exercised configuration remain pending |
@@ -220,7 +220,7 @@ output evidence.
 | ID | Feature area | Feature | Linux source status | Linux runtime status | macOS status | Evidence | Required verification | Target milestone | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | MOD-001 | Model | E2VID heuristic fallback | Wired into application | Requires verification | Verified | M7 Slice 3A: current `AUTO`/no-ORT/no-model configuration passed direct synthetic `model_loaded == false` output, repository-local missing-model fallback, reset/bins/downsample, tracked-RAW/playback, deterministic cross-mode-state repair, and one bounded Cocoa session; see [M7 Slice 3A validation](macos_milestone_7_e2vid_fallback_validation.md) | broader image quality, parameter combinations, long-duration/performance behavior and Linux | M7 | qualified no-model heuristic fallback only; heuristic fallback != neural E2VID inference |
-| MOD-002 | Model | Plain ONNX E2VID inference | Implemented in source | Requires verification | Not started | `E2VIDInference::load_model/infer_onnx()` creates an `Ort::Session` on CPU memory | authoritative plain-model fixture, arm64 ONNX Runtime, input shape and output frame | M7 | no authoritative plain-model fixture was qualified; recurrent evidence must not be synthesized into plain-model evidence |
+| MOD-002 | Model | Plain ONNX E2VID inference | Implemented in source | Requires verification | Deferred / Optional | Generic single-input/single-output compatibility remains implemented and is reachable through the GUI generic model-path wiring; see [plain ONNX disposition](macos_milestone_7_plain_onnx_disposition.md) | Only if a trusted plain fixture and actual product requirement emerge: arm64 ONNX Runtime, input/output contract and runtime qualification | Deferred / product decision | Implemented but not qualified. No authoritative plain fixture or frozen-upstream plain workflow/runtime evidence; recurrent fixture/evidence is not plain evidence. |
 | MOD-003 | Model | Recurrent ONNX E2VID state | Implemented in source | Requires verification | Verified | fixed 5-bin/3-encoder ConvLSTM ONNX loaded by arm64 ORT; finite real inference, state effect, reset deterministic replay, tracked-RAW seek/loop replay; see [M7 recurrent E2VID validation](macos_milestone_7_e2vid_recurrent_validation.md) | image quality, long-duration/performance, live camera and Linux | M7 | qualified only for the recorded recurrent artifact/environment |
 | MOD-004 | Model tooling | RPG E2VID model conversion | Implemented in source | Requires verification | Verified | pinned official-source conversion used Python 3.13 / PyTorch 2.10 restricted `weights_only=True`, strict state load, opset-17 ONNX and checker pass; see [M7 recurrent E2VID validation](macos_milestone_7_e2vid_recurrent_validation.md) | other checkpoints/architectures and independent redistribution licence resolution | M7 | checkpoint and derived ONNX remain ignored local artifacts, never tracked or packaged |
 
@@ -271,6 +271,7 @@ output evidence.
 
 - 每个 milestone 开始时更新目标行的 `macOS status`；只有实际开始实施才改为 `In progress`。
 - 只有执行并记录了对应检查，才能把 runtime status 改为 `Verified`。编译成功不能替代 GUI、RAW、相机、算法或导出验证。
+- `Deferred / Optional` 仅用于经明确维护者 scope decision 确认的 generic/optional path，且不得表示 runtime qualification。
 - 若实现存在但没有应用入口，使用 `Implemented in source`；确认已连接到 GUI/controller/data flow 后使用 `Wired into application`。
 - 新增、删除或重命名 registry 项时，必须从 `AlgoBridge::registry_` 写入点重新统计并同步算法各行；M1 的 60 项是历史事实，当前 frozen baseline 的 33 项也不是永久常量。
 - 发现静态风险时记录证据和验证方法；除非源码能证明确定性事实，否则使用“潜在风险，需要运行时验证”。

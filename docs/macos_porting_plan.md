@@ -445,9 +445,10 @@ the frozen integration Linux-risk acceptance does not extend to M6.
 
 ### Milestone 7: Algorithms, models and export
 
-**状态：** `In progress` — Slices 1, 2, 3A, the real recurrent-model
-sub-phase of Slice 3, 4A, and 4B are `Complete / Qualified`; Slice 3 and
-Milestone 7 overall are not complete.
+**状态：** `In progress` — Slices 1–4 are `Complete / Qualified` within their
+accepted scopes. Slice 5 remains pending the M6 live-capture prerequisite;
+Slice 6 remains pending the M6 live-lifecycle prerequisite. Milestone 7
+remains in progress.
 **Slice 1 branch：** `feat/macos-config-persistence-contract`
 **Slice 2 branch：** `feat/macos-file-algorithm-qualification`
 **Slice 3A branch：** `feat/macos-e2vid-fallback-qualification`
@@ -475,8 +476,9 @@ metric.
    category-based representative algorithm lifecycle/numerical evidence,
    including nine shared noise modes, KNoise, Arc and current Time Surface
    modes; see [macOS Milestone 7 Slice 2 File-Source Algorithm Validation](macos_milestone_7_file_algorithm_validation.md).
-3. **In progress:** E2VID/model qualification. **Slice 3A is Complete /
-   Qualified** for the no-successfully-loaded-model heuristic fallback,
+3. **Complete / Qualified within the maintainer-accepted scope:** E2VID/model
+   qualification. **Slice 3A is Complete / Qualified** for the
+   no-successfully-loaded-model heuristic fallback,
    deterministic cross-mode temporal-state invalidation, bounded real-RAW and
    playback evidence, and one Cocoa wiring/lifecycle session; see [macOS
    Milestone 7 Slice 3A E2VID Heuristic Fallback Validation](macos_milestone_7_e2vid_fallback_validation.md).
@@ -485,8 +487,13 @@ metric.
    a restricted loader, recurrent ONNX conversion/checking, C++ inference,
    state/reset replay, tracked-RAW seek/loop evidence, and one bounded Cocoa
    RAW E2VID session are recorded in [macOS Milestone 7 recurrent E2VID
-   validation](macos_milestone_7_e2vid_recurrent_validation.md). Plain ONNX
-   inference remains a separate unqualified sub-phase;
+   validation](macos_milestone_7_e2vid_recurrent_validation.md). The generic
+   plain single-input/single-output ONNX compatibility path remains implemented
+   and reachable through the generic GUI model-path wiring, but is **Deferred /
+   Optional — implemented but not qualified** by maintainer scope decision. It
+   has no authoritative plain-model fixture or frozen-upstream plain
+   workflow/runtime evidence, and recurrent-model evidence is not plain-model
+   evidence; see [macOS M7 plain ONNX disposition](macos_milestone_7_plain_onnx_disposition.md);
 4. **Complete / Qualified:** bounded offline source-event export. **Slice 4A**
    qualifies tracked-RAW CSV source-event export and RAW clip
    creation/readback; see [macOS Milestone 7 Slice 4A Offline Export
@@ -498,17 +505,23 @@ metric.
 5. calibration solve/YAML/undistort after the M6 live-capture prerequisite;
 6. processed-recording semantics and output integrity after M6 live lifecycle.
 
-Slice 3 remains **In progress**: its 3A no-model heuristic-fallback sub-phase
-and real recurrent-model/conversion sub-phase are qualified, but `MOD-002`
-plain ONNX inference has no authoritative qualified fixture. Slice 4 is
-**Complete / Qualified** within its bounded CSV, RAW-clip, and AVI
-source-event-export scope. Slices 5 and 6 remain pending. Slice 1 qualifies
-the current catalog and algorithm-parameter persistence contract; Slice 2
-qualifies bounded deterministic file-source preprocessing and representative
-algorithm evidence. These slices, including Slices 3A, the recurrent
-sub-phase, 4A, and 4B, do not establish broader algorithm runtime, neural
-model behavior beyond the stated recurrent fixture, general algorithm-result
-export, calibration, or processed-recording behavior.
+Slice 3 is **Complete / Qualified within the maintainer-accepted scope**: its
+3A no-model heuristic-fallback sub-phase and real recurrent-model/conversion
+sub-phase are qualified. `MOD-002` plain ONNX inference remains **Deferred /
+Optional — implemented but unqualified**. This is a maintainer scope decision,
+not new plain runtime evidence: no authoritative plain-model fixture or
+frozen-upstream plain workflow/runtime evidence exists, and the recurrent
+fixture must not be used as plain evidence. A trusted plain fixture or an
+actual product requirement can reopen a separately bounded qualification.
+Slice 4 is **Complete / Qualified** within its bounded CSV, RAW-clip, and AVI
+source-event-export scope. Slice 5 remains pending the M6 live-capture
+prerequisite; Slice 6 remains pending the M6 live-lifecycle prerequisite.
+Slice 1 qualifies the current catalog and algorithm-parameter persistence
+contract; Slice 2 qualifies bounded deterministic file-source preprocessing and
+representative algorithm evidence. These slices, including Slices 3A, the
+recurrent sub-phase, 4A, and 4B, do not establish broader algorithm runtime,
+neural model behavior beyond the stated recurrent fixture, general
+algorithm-result export, calibration, or processed-recording behavior.
 
 General `AlgoResult` export remains a deferred product decision, not an
 assumed current feature. M7 must separate current source inventory, automated
