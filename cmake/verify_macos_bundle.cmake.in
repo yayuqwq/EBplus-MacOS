@@ -1,0 +1,303 @@
+# Static post-install verifier for the M8-A bundle. It deliberately checks
+# loader metadata and symlinks only; it does not launch Cocoa or touch hardware.
+cmake_minimum_required(VERSION 3.16)
+
+if(NOT APPLE)
+    message(FATAL_ERROR "verify_macos_bundle.cmake was invoked on a non-Apple host.")
+endif()
+
+if(NOT DEFINED EBPLUS_BUNDLE_PATH OR EBPLUS_BUNDLE_PATH STREQUAL "")
+    message(FATAL_ERROR "Set EBPLUS_BUNDLE_PATH to the .app bundle to verify.")
+endif()
+
+get_filename_component(_bundle "${EBPLUS_BUNDLE_PATH}" ABSOLUTE)
+if(NOT IS_DIRECTORY "${_bundle}" OR NOT _bundle MATCHES "\\.app$")
+    message(FATAL_ERROR "Expected an existing .app bundle, got: ${_bundle}")
+endif()
+
+set(_contents "${_bundle}/Contents")
+set(_main_executable
+    "${_contents}/MacOS/@EBPLUS_MACOS_BUNDLE_EXECUTABLE_NAME@")
+set(_required_files
+    "${_contents}/Info.plist"
+    "${_main_executable}"
+    "${_contents}/PlugIns/platforms/libqcocoa.dylib"
+    "${_contents}/PlugIns/imageformats/libqsvg.dylib"
+    "${_contents}/PlugIns/iconengines/libqsvgicon.dylib"
+    "${_contents}/Frameworks/QtSvg.framework/Versions/A/QtSvg"
+    "${_contents}/Frameworks/metavision/hal/plugins/libhal_plugin_prophesee.dylib"
+    "${_contents}/Frameworks/metavision/hal/plugins/libhal_plugin_centuryarks.dylib"
+    "${_contents}/Frameworks/metavision/hal/plugins/libmetavision_psee_hw_layer.dylib"
+    "${_contents}/Frameworks/hdf5/plugin/libH5Zecf.dylib")
+foreach(_required_file IN LISTS _required_files)
+    if(NOT EXISTS "${_required_file}")
+        message(FATAL_ERROR "Required bundle component is missing: ${_required_file}")
+    endif()
+endforeach()
+
+# CMake 4.1's BundleUtilities::verify_bundle_symlinks is a stub. Validate all
+# links here so a framework link cannot escape the installed application.
+file(GLOB_RECURSE _bundle_entries LIST_DIRECTORIES TRUE "${_bundle}/*")
+foreach(_entry IN LISTS _bundle_entries)
+    if(IS_SYMLINK "${_entry}")
+        file(READ_SYMLINK "${_entry}" _link_target)
+        get_filename_component(_entry_directory "${_entry}" DIRECTORY)
+        if(IS_ABSOLUTE "${_link_target}")
+            get_filename_component(_link_resolved "${_link_target}" REALPATH)
+        else()
+            get_filename_component(
+                _link_resolved
+                "${_entry_directory}/${_link_target}"
+                REALPATH)
+        endif()
+        if(NOT EXISTS "${_link_resolved}")
+            message(FATAL_ERROR "Bundle symlink is dangling: ${_entry}")
+        endif()
+        file(RELATIVE_PATH _link_relative "${_bundle}" "${_link_resolved}")
+        if(_link_relative STREQUAL ".." OR _link_relative MATCHES "^\\.\\./")
+            message(FATAL_ERROR
+                "Bundle symlink escapes the application: ${_entry} -> ${_link_resolved}")
+        endif()
+    endif()
+endforeach()
+
+# BundleUtilities verifies resolved, non-system prerequisites. Run it in
+# addition to the explicit metadata checks below.
+include(BundleUtilities)
+verify_app("${_bundle}")
+
+set(_forbidden_loader_fragments
+    "/Users/"
+    "/.build/"
+    "/.deps/"
+    "/usr/local/"
+    "/opt/homebrew/")
+
+function(_ebplus_assert_path_is_in_bundle context path)
+    if(NOT EXISTS "${path}")
+        message(FATAL_ERROR "${context} resolves to a missing path: ${path}")
+    endif()
+    get_filename_component(_resolved_path "${path}" REALPATH)
+    file(RELATIVE_PATH _relative_path "${_bundle}" "${_resolved_path}")
+    if(_relative_path STREQUAL ".." OR _relative_path MATCHES "^\\.\\./")
+        message(FATAL_ERROR
+            "${context} escapes the application bundle: ${_resolved_path}")
+    endif()
+endfunction()
+
+function(_ebplus_assert_relative_loader_path_is_in_bundle
+        bundle_file loader_path loader_kind)
+    _ebplus_resolve_relative_loader_path(
+        _resolved_loader_path "${bundle_file}" "${loader_path}" "${loader_kind}")
+endfunction()
+
+function(_ebplus_resolve_relative_loader_path
+        output bundle_file loader_path loader_kind)
+    get_filename_component(_bundle_file_directory "${bundle_file}" DIRECTORY)
+    if(loader_path MATCHES "^@loader_path(/|$)")
+        string(REGEX REPLACE "^@loader_path" "" _loader_suffix "${loader_path}")
+        set(_candidate_path "${_bundle_file_directory}${_loader_suffix}")
+    elseif(loader_path MATCHES "^@executable_path(/|$)")
+        string(REGEX REPLACE "^@executable_path" "" _loader_suffix "${loader_path}")
+        get_filename_component(_executable_directory "${_main_executable}" DIRECTORY)
+        set(_candidate_path "${_executable_directory}${_loader_suffix}")
+    else()
+        message(FATAL_ERROR
+            "Unexpected relative ${loader_kind} in ${bundle_file}: ${loader_path}")
+    endif()
+    _ebplus_assert_path_is_in_bundle(
+        "${loader_kind} in ${bundle_file} (${loader_path})"
+        "${_candidate_path}")
+    get_filename_component(_resolved_candidate_path "${_candidate_path}" REALPATH)
+    set(${output} "${_resolved_candidate_path}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_assert_rpath_load_is_in_bundle bundle_file loader_path)
+    string(REGEX REPLACE "^@rpath/" "" _rpath_suffix "${loader_path}")
+    set(_found_rpath_destination FALSE)
+    foreach(_rpath_directory IN LISTS _bundle_file_rpath_directories)
+        set(_rpath_candidate "${_rpath_directory}/${_rpath_suffix}")
+        if(EXISTS "${_rpath_candidate}")
+            _ebplus_assert_path_is_in_bundle(
+                "LC_LOAD_DYLIB in ${bundle_file} (${loader_path})"
+                "${_rpath_candidate}")
+            set(_found_rpath_destination TRUE)
+        endif()
+    endforeach()
+    if(NOT _found_rpath_destination)
+        message(FATAL_ERROR
+            "No bundle-relative LC_RPATH resolves ${loader_path} in ${bundle_file}")
+    endif()
+endfunction()
+
+function(_ebplus_read_macho_load_metadata bundle_file output_id output_loads output_rpaths)
+    execute_process(
+        COMMAND /usr/bin/otool -l "${bundle_file}"
+        RESULT_VARIABLE _otool_lc_result
+        OUTPUT_VARIABLE _otool_lc_output
+        ERROR_VARIABLE _otool_lc_error)
+    if(NOT _otool_lc_result EQUAL 0)
+        message(FATAL_ERROR
+            "Could not inspect loader metadata for ${bundle_file}: ${_otool_lc_error}")
+    endif()
+
+    # Parse otool -l one line at a time. This intentionally avoids treating
+    # otool's first diagnostic line (the inspected filesystem path) as an
+    # LC_LOAD_DYLIB record.
+    string(REPLACE "\n" ";" _load_command_lines "${_otool_lc_output}")
+    set(_next_value_kind "")
+    set(_dylib_id "")
+    set(_load_paths "")
+    set(_rpath_paths "")
+    foreach(_load_command_line IN LISTS _load_command_lines)
+        string(STRIP "${_load_command_line}" _load_command_line)
+        if(_load_command_line MATCHES "^cmd (.+)$")
+            set(_load_command "${CMAKE_MATCH_1}")
+            if(_load_command STREQUAL "LC_ID_DYLIB")
+                set(_next_value_kind "id")
+            elseif(_load_command MATCHES
+                   "^LC_(LOAD|LOAD_WEAK|REEXPORT|LOAD_UPWARD|LAZY_LOAD)_DYLIB$")
+                set(_next_value_kind "load")
+            elseif(_load_command STREQUAL "LC_RPATH")
+                set(_next_value_kind "rpath")
+            else()
+                set(_next_value_kind "")
+            endif()
+            continue()
+        endif()
+
+        if((_next_value_kind STREQUAL "id" OR
+            _next_value_kind STREQUAL "load") AND
+           _load_command_line MATCHES "^name (.*) \\(offset [0-9]+\\)$")
+            if(_next_value_kind STREQUAL "id")
+                set(_dylib_id "${CMAKE_MATCH_1}")
+            else()
+                list(APPEND _load_paths "${CMAKE_MATCH_1}")
+            endif()
+            set(_next_value_kind "")
+        elseif(_next_value_kind STREQUAL "rpath" AND
+               _load_command_line MATCHES "^path (.*) \\(offset [0-9]+\\)$")
+            list(APPEND _rpath_paths "${CMAKE_MATCH_1}")
+            set(_next_value_kind "")
+        endif()
+    endforeach()
+
+    set(${output_id} "${_dylib_id}" PARENT_SCOPE)
+    set(${output_loads} "${_load_paths}" PARENT_SCOPE)
+    set(${output_rpaths} "${_rpath_paths}" PARENT_SCOPE)
+endfunction()
+
+set(_macho_count 0)
+file(GLOB_RECURSE _bundle_files LIST_DIRECTORIES FALSE "${_bundle}/*")
+foreach(_bundle_file IN LISTS _bundle_files)
+    execute_process(
+        COMMAND /usr/bin/file -b "${_bundle_file}"
+        RESULT_VARIABLE _file_result
+        OUTPUT_VARIABLE _file_description
+        ERROR_VARIABLE _file_error)
+    if(NOT _file_result EQUAL 0)
+        message(FATAL_ERROR
+            "Could not inspect bundle file ${_bundle_file}: ${_file_error}")
+    endif()
+    if(NOT _file_description MATCHES "Mach-O")
+        continue()
+    endif()
+
+    math(EXPR _macho_count "${_macho_count} + 1")
+    execute_process(
+        COMMAND /usr/bin/lipo -archs "${_bundle_file}"
+        RESULT_VARIABLE _lipo_result
+        OUTPUT_VARIABLE _architectures
+        ERROR_VARIABLE _lipo_error)
+    string(STRIP "${_architectures}" _architectures)
+    if(NOT _lipo_result EQUAL 0 OR NOT _architectures STREQUAL "arm64")
+        message(FATAL_ERROR
+            "Bundle Mach-O must be arm64-only: ${_bundle_file} (${_architectures}; ${_lipo_error})")
+    endif()
+
+    _ebplus_read_macho_load_metadata("${_bundle_file}"
+        _dylib_id _load_paths _rpath_paths)
+    foreach(_loader_metadata_path IN LISTS _dylib_id _load_paths _rpath_paths)
+        foreach(_fragment IN LISTS _forbidden_loader_fragments)
+            string(FIND "${_loader_metadata_path}" "${_fragment}"
+                _fragment_position)
+            if(NOT _fragment_position EQUAL -1)
+                message(FATAL_ERROR
+                    "Forbidden loader reference '${_fragment}' in ${_bundle_file}: "
+                    "${_loader_metadata_path}")
+            endif()
+        endforeach()
+    endforeach()
+
+    # Resolve every rpath, then use the resolved directory list when checking
+    # @rpath load commands and shared-library identities.
+    set(_bundle_file_rpath_directories "")
+    foreach(_rpath_path IN LISTS _rpath_paths)
+        if(_rpath_path MATCHES "^@loader_path(/|$)" OR
+           _rpath_path MATCHES "^@executable_path(/|$)")
+            _ebplus_resolve_relative_loader_path(
+                _resolved_rpath_directory "${_bundle_file}" "${_rpath_path}" "LC_RPATH")
+            list(APPEND _bundle_file_rpath_directories
+                "${_resolved_rpath_directory}")
+        else()
+            message(FATAL_ERROR
+                "LC_RPATH must be bundle-relative in ${_bundle_file}: ${_rpath_path}")
+        endif()
+    endforeach()
+
+    if(_dylib_id MATCHES "^@loader_path(/|$)" OR
+       _dylib_id MATCHES "^@executable_path(/|$)")
+        _ebplus_assert_relative_loader_path_is_in_bundle(
+            "${_bundle_file}" "${_dylib_id}" "LC_ID_DYLIB")
+    elseif(_dylib_id MATCHES "^@rpath/")
+        _ebplus_assert_rpath_load_is_in_bundle("${_bundle_file}" "${_dylib_id}")
+    elseif(_dylib_id)
+        message(FATAL_ERROR
+            "LC_ID_DYLIB must be bundle-relative in ${_bundle_file}: ${_dylib_id}")
+    endif()
+
+    foreach(_load_path IN LISTS _load_paths)
+        if(_load_path MATCHES "^@loader_path(/|$)" OR
+           _load_path MATCHES "^@executable_path(/|$)")
+            _ebplus_assert_relative_loader_path_is_in_bundle(
+                "${_bundle_file}" "${_load_path}" "LC_LOAD_DYLIB")
+        elseif(_load_path MATCHES "^@rpath/")
+            _ebplus_assert_rpath_load_is_in_bundle(
+                "${_bundle_file}" "${_load_path}")
+        elseif(_load_path MATCHES "^/System/Library/" OR
+               _load_path MATCHES "^/usr/lib/")
+            # Apple system frameworks/libraries are intentionally not copied.
+        else()
+            message(FATAL_ERROR
+                "External or nonstandard LC_LOAD_DYLIB in ${_bundle_file}: ${_load_path}")
+        endif()
+    endforeach()
+endforeach()
+
+if(_macho_count EQUAL 0)
+    message(FATAL_ERROR "The bundle has no Mach-O files: ${_bundle}")
+endif()
+message(STATUS
+    "M8-A bundle verification passed: ${_macho_count} arm64 Mach-O files; no forbidden loader paths.")
+
+# Loader metadata checks above are necessary but do not prove that final
+# install-time Mach-O mutations left a valid local code signature.  Signing is
+# performed by macos_bundle_fixup.cmake; this invocation is verification only.
+find_program(_ebplus_codesign NAMES codesign)
+if(NOT _ebplus_codesign)
+    message(FATAL_ERROR
+        "M8-A bundle signature verification requires the macOS codesign tool.")
+endif()
+execute_process(
+    COMMAND "${_ebplus_codesign}" --verify --deep --strict --verbose=4
+        "${_bundle}"
+    RESULT_VARIABLE _bundle_signature_result
+    OUTPUT_VARIABLE _bundle_signature_output
+    ERROR_VARIABLE _bundle_signature_error)
+if(NOT _bundle_signature_result EQUAL 0)
+    message(FATAL_ERROR
+        "M8-A bundle code-signature verification failed for ${_bundle}:\n"
+        "${_bundle_signature_output}${_bundle_signature_error}")
+endif()
+message(STATUS
+    "M8-A bundle code-signature verification passed (local ad-hoc or equivalent).")

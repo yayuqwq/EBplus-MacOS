@@ -1,0 +1,696 @@
+# Install-time closure for the macOS GUI bundle. This file is configured into
+# the build tree so selected local dependency prefixes never enter tracked
+# source. It runs after the bundle target has been installed.
+cmake_minimum_required(VERSION 3.16)
+
+if(NOT APPLE)
+    message(FATAL_ERROR "macos_bundle_fixup.cmake was invoked on a non-Apple host.")
+endif()
+
+# A standalone application must contain files, not symlinks back to the
+# producer prefixes. CMake's install-mode override is intentionally rejected
+# here instead of silently producing a bundle whose closure depends on the
+# machine that created it.
+if(DEFINED ENV{CMAKE_INSTALL_MODE} AND
+   NOT "$ENV{CMAKE_INSTALL_MODE}" STREQUAL "" AND
+   NOT "$ENV{CMAKE_INSTALL_MODE}" STREQUAL "COPY")
+    message(FATAL_ERROR
+        "M8-A bundle installation requires CMAKE_INSTALL_MODE to be unset or COPY; "
+        "got '$ENV{CMAKE_INSTALL_MODE}'.")
+endif()
+
+set(_bundle "${CMAKE_INSTALL_PREFIX}/@EBPLUS_MACOS_BUNDLE_DIRECTORY_NAME@")
+if(NOT IS_DIRECTORY "${_bundle}")
+    message(FATAL_ERROR "Expected installed application bundle is missing: ${_bundle}")
+endif()
+
+set(_openeb_library_directory "@EBPLUS_MACOS_OPENEB_LIBRARY_DIR@")
+set(_hal_plugin_sources
+    "${_openeb_library_directory}/metavision/hal/plugins/libhal_plugin_prophesee.dylib"
+    "${_openeb_library_directory}/metavision/hal/plugins/libhal_plugin_centuryarks.dylib"
+    "${_openeb_library_directory}/metavision/hal/plugins/libmetavision_psee_hw_layer.dylib")
+set(_hdf5_plugin_source
+    "${_openeb_library_directory}/hdf5/plugin/libH5Zecf.dylib")
+set(_qt_cocoa_plugin_source "@EBPLUS_MACOS_QT_COCOA_PLUGIN@")
+set(_qt_mac_style_plugin_source "@EBPLUS_MACOS_QT_MAC_STYLE_PLUGIN@")
+set(_qt_gif_plugin_source "@EBPLUS_MACOS_QT_GIF_PLUGIN@")
+set(_qt_ico_plugin_source "@EBPLUS_MACOS_QT_ICO_PLUGIN@")
+set(_qt_jpeg_plugin_source "@EBPLUS_MACOS_QT_JPEG_PLUGIN@")
+set(_qtsvg_image_plugin_source "@EBPLUS_MACOS_QTSVG_IMAGE_PLUGIN@")
+set(_qtsvg_icon_plugin_source "@EBPLUS_MACOS_QTSVG_ICON_PLUGIN@")
+
+foreach(_source IN LISTS
+        _hal_plugin_sources
+        _hdf5_plugin_source
+        _qt_cocoa_plugin_source
+        _qt_mac_style_plugin_source
+        _qt_gif_plugin_source
+        _qt_ico_plugin_source
+        _qt_jpeg_plugin_source
+        _qtsvg_image_plugin_source
+        _qtsvg_icon_plugin_source)
+    if(NOT EXISTS "${_source}")
+        message(FATAL_ERROR "Required OpenEB runtime plugin is missing: ${_source}")
+    endif()
+endforeach()
+
+set(_frameworks_directory "${_bundle}/Contents/Frameworks")
+set(_hal_plugin_destination
+    "${_frameworks_directory}/metavision/hal/plugins")
+set(_hdf5_plugin_destination "${_frameworks_directory}/hdf5/plugin")
+set(_qt_imageformats_destination "${_bundle}/Contents/PlugIns/imageformats")
+set(_qt_iconengines_destination "${_bundle}/Contents/PlugIns/iconengines")
+set(_qt_platforms_destination "${_bundle}/Contents/PlugIns/platforms")
+set(_qt_styles_destination "${_bundle}/Contents/PlugIns/styles")
+file(MAKE_DIRECTORY
+    "${_hal_plugin_destination}"
+    "${_hdf5_plugin_destination}"
+    "${_qt_imageformats_destination}"
+    "${_qt_iconengines_destination}"
+    "${_qt_platforms_destination}"
+    "${_qt_styles_destination}")
+file(INSTALL
+    DESTINATION "${_hal_plugin_destination}"
+    TYPE SHARED_LIBRARY
+    FILES ${_hal_plugin_sources})
+file(INSTALL
+    DESTINATION "${_hdf5_plugin_destination}"
+    TYPE SHARED_LIBRARY
+    FILES "${_hdf5_plugin_source}")
+file(INSTALL
+    DESTINATION "${_qt_imageformats_destination}"
+    TYPE SHARED_LIBRARY
+    FILES
+        "${_qt_gif_plugin_source}"
+        "${_qt_ico_plugin_source}"
+        "${_qt_jpeg_plugin_source}"
+        "${_qtsvg_image_plugin_source}")
+file(INSTALL
+    DESTINATION "${_qt_iconengines_destination}"
+    TYPE SHARED_LIBRARY
+    FILES "${_qtsvg_icon_plugin_source}")
+file(INSTALL
+    DESTINATION "${_qt_platforms_destination}"
+    TYPE SHARED_LIBRARY
+    FILES "${_qt_cocoa_plugin_source}")
+file(INSTALL
+    DESTINATION "${_qt_styles_destination}"
+    TYPE SHARED_LIBRARY
+    FILES "${_qt_mac_style_plugin_source}")
+
+# BundleUtilities may normalize plugin dependencies to Contents/Frameworks.
+# The post-install verifier proves every resulting rpath and direct relative
+# load reference remains inside this application bundle.
+set(_dynamic_plugins
+    "${_hal_plugin_destination}/libhal_plugin_prophesee.dylib"
+    "${_hal_plugin_destination}/libhal_plugin_centuryarks.dylib"
+    "${_hal_plugin_destination}/libmetavision_psee_hw_layer.dylib"
+    "${_hdf5_plugin_destination}/libH5Zecf.dylib"
+    "${_qt_platforms_destination}/libqcocoa.dylib"
+    "${_qt_styles_destination}/libqmacstyle.dylib"
+    "${_qt_imageformats_destination}/libqgif.dylib"
+    "${_qt_imageformats_destination}/libqico.dylib"
+    "${_qt_imageformats_destination}/libqjpeg.dylib"
+    "${_qt_imageformats_destination}/libqsvg.dylib"
+    "${_qt_iconengines_destination}/libqsvgicon.dylib")
+
+set(_runtime_search_directories "@EBPLUS_MACOS_BUNDLE_SEARCH_DIRECTORIES@")
+set(_runtime_seed_libraries "@EBPLUS_MACOS_BUNDLE_RUNTIME_SEED_LIBRARIES@")
+
+# Resolve the closure from the selected imported libraries before BundleUtilities
+# begins rewriting install names. This discovers transitive toolchain runtimes
+# (for example, an OpenCV-selected Fortran runtime) from the actual dependency
+# graph instead of recording a machine-specific prefix in project source.
+if(_runtime_seed_libraries)
+    file(GET_RUNTIME_DEPENDENCIES
+        LIBRARIES ${_runtime_seed_libraries}
+        DIRECTORIES ${_runtime_search_directories}
+        RESOLVED_DEPENDENCIES_VAR _resolved_runtime_dependencies
+        UNRESOLVED_DEPENDENCIES_VAR _unresolved_runtime_dependencies)
+    if(_unresolved_runtime_dependencies)
+        message(FATAL_ERROR
+            "Could not resolve selected macOS runtime dependencies: "
+            "${_unresolved_runtime_dependencies}")
+    endif()
+    foreach(_resolved_runtime_dependency IN LISTS _resolved_runtime_dependencies)
+        get_filename_component(_resolved_runtime_directory
+            "${_resolved_runtime_dependency}" DIRECTORY)
+        list(APPEND _runtime_search_directories
+            "${_resolved_runtime_directory}")
+    endforeach()
+    list(REMOVE_DUPLICATES _runtime_search_directories)
+endif()
+include(BundleUtilities)
+set(BU_CHMOD_BUNDLE_ITEMS TRUE)
+set(BU_COPY_FULL_FRAMEWORK_CONTENTS TRUE)
+fixup_bundle("${_bundle}" "${_dynamic_plugins}" "${_runtime_search_directories}")
+
+# CMake's full-framework copy follows the producer's root compatibility links.
+# The resulting staged Qt framework can therefore contain a duplicate regular
+# root executable and Headers directory instead of the standard relative
+# links. Aside from leaving a duplicate Mach-O for later normalization, that
+# layout makes current macOS codesign reject the framework root as ambiguous.
+# Restore only the two known Qt compatibility links in the final staged bundle
+# before any load-command mutation or signing. Every guard below is deliberate:
+# this never follows or modifies a producer framework, and it refuses an
+# unexpected framework topology instead of silently replacing it.
+function(_ebplus_restore_staged_qt_framework_links)
+    file(GLOB _qt_framework_candidates LIST_DIRECTORIES TRUE
+        "${_frameworks_directory}/Qt*.framework")
+    list(SORT _qt_framework_candidates)
+
+    set(_restored_framework_count 0)
+    foreach(_framework IN LISTS _qt_framework_candidates)
+        if(NOT IS_DIRECTORY "${_framework}" OR IS_SYMLINK "${_framework}")
+            message(FATAL_ERROR
+                "Expected a real staged Qt framework directory: ${_framework}")
+        endif()
+
+        get_filename_component(_framework_name "${_framework}" NAME_WE)
+        set(_current_version_link "${_framework}/Versions/Current")
+        if(NOT IS_SYMLINK "${_current_version_link}")
+            message(FATAL_ERROR
+                "Expected a versioned Qt framework Current link: "
+                "${_current_version_link}")
+        endif()
+        get_filename_component(_current_version_real
+            "${_current_version_link}" REALPATH)
+        file(RELATIVE_PATH _current_version_relative "${_framework}"
+            "${_current_version_real}")
+        if(_current_version_relative STREQUAL ".." OR
+           _current_version_relative MATCHES "^\\.\\./" OR
+           NOT _current_version_relative MATCHES "^Versions/[^/]+$")
+            message(FATAL_ERROR
+                "Qt framework Current link escapes its staged framework: "
+                "${_current_version_link}")
+        endif()
+
+        set(_canonical_executable
+            "${_current_version_real}/${_framework_name}")
+        set(_canonical_headers "${_current_version_real}/Headers")
+        set(_canonical_info_plist
+            "${_current_version_real}/Resources/Info.plist")
+        if(NOT EXISTS "${_canonical_executable}" OR
+           NOT IS_DIRECTORY "${_canonical_headers}" OR
+           NOT EXISTS "${_canonical_info_plist}")
+            message(FATAL_ERROR
+                "Staged Qt framework has no canonical versioned code/resources: "
+                "${_framework}")
+        endif()
+
+        set(_resources_link "${_framework}/Resources")
+        if(NOT IS_SYMLINK "${_resources_link}")
+            message(FATAL_ERROR
+                "Expected a staged Qt framework Resources link: ${_resources_link}")
+        endif()
+        file(READ_SYMLINK "${_resources_link}" _resources_target)
+        if(NOT _resources_target STREQUAL "Versions/Current/Resources")
+            message(FATAL_ERROR
+                "Unexpected staged Qt framework Resources link target: "
+                "${_resources_link} -> ${_resources_target}")
+        endif()
+
+        set(_root_executable "${_framework}/${_framework_name}")
+        if(IS_SYMLINK "${_root_executable}")
+            file(READ_SYMLINK "${_root_executable}" _root_executable_target)
+            if(NOT _root_executable_target STREQUAL
+               "Versions/Current/${_framework_name}")
+                message(FATAL_ERROR
+                    "Unexpected staged Qt framework executable link target: "
+                    "${_root_executable} -> ${_root_executable_target}")
+            endif()
+        elseif(EXISTS "${_root_executable}" AND
+               NOT IS_DIRECTORY "${_root_executable}")
+            file(REMOVE "${_root_executable}")
+            file(CREATE_LINK "Versions/Current/${_framework_name}"
+                "${_root_executable}" SYMBOLIC RESULT _root_link_result)
+            if(NOT _root_link_result STREQUAL "0")
+                message(FATAL_ERROR
+                    "Could not restore staged Qt framework executable link "
+                    "${_root_executable}: ${_root_link_result}")
+            endif()
+        else()
+            message(FATAL_ERROR
+                "Expected a regular staged Qt framework executable copy: "
+                "${_root_executable}")
+        endif()
+
+        set(_root_headers "${_framework}/Headers")
+        if(IS_SYMLINK "${_root_headers}")
+            file(READ_SYMLINK "${_root_headers}" _root_headers_target)
+            if(NOT _root_headers_target STREQUAL "Versions/Current/Headers")
+                message(FATAL_ERROR
+                    "Unexpected staged Qt framework Headers link target: "
+                    "${_root_headers} -> ${_root_headers_target}")
+            endif()
+        elseif(IS_DIRECTORY "${_root_headers}")
+            # This exact directory is a duplicate of the canonical versioned
+            # headers inside the final generated bundle, never a producer path.
+            file(REMOVE_RECURSE "${_root_headers}")
+            file(CREATE_LINK "Versions/Current/Headers" "${_root_headers}"
+                SYMBOLIC RESULT _headers_link_result)
+            if(NOT _headers_link_result STREQUAL "0")
+                message(FATAL_ERROR
+                    "Could not restore staged Qt framework Headers link "
+                    "${_root_headers}: ${_headers_link_result}")
+            endif()
+        else()
+            message(FATAL_ERROR
+                "Expected a regular staged Qt framework Headers directory: "
+                "${_root_headers}")
+        endif()
+
+        math(EXPR _restored_framework_count
+            "${_restored_framework_count} + 1")
+    endforeach()
+
+    if(_restored_framework_count EQUAL 0)
+        message(FATAL_ERROR
+            "No staged Qt frameworks were found for signature-safe layout repair.")
+    endif()
+    message(STATUS
+        "M8-A1 restored standard compatibility links in "
+        "${_restored_framework_count} staged Qt frameworks")
+endfunction()
+
+_ebplus_restore_staged_qt_framework_links()
+
+# BundleUtilities resolves and fixes the normal dependency graph, and it can
+# miss dynamically loaded nested OpenEB plugins when their basename collides
+# with a runtime copy under Contents/Frameworks. Normalize every actual bundle
+# Mach-O after BundleUtilities has staged the complete closure. This operates
+# only on the installed .app and maps every repaired non-system load to an
+# existing component under Contents/Frameworks; it never uses a DYLD
+# environment workaround or writes to a producer prefix.
+function(_ebplus_bundle_relative_loader_path loader_path referencing_file output)
+    if("${loader_path}" MATCHES "^@rpath/(.+)$")
+        set(_bundle_relative_item "${CMAKE_MATCH_1}")
+    elseif("${loader_path}" MATCHES "^/")
+        string(REGEX MATCH "([^/]+\\.framework/.*)$"
+            _framework_relative_item "${loader_path}")
+        if(_framework_relative_item)
+            set(_bundle_relative_item "${_framework_relative_item}")
+        else()
+            get_filename_component(_bundle_relative_item "${loader_path}" NAME)
+        endif()
+    else()
+        message(FATAL_ERROR
+            "Cannot make a bundle-relative loader reference from: ${loader_path}")
+    endif()
+
+    if(_bundle_relative_item MATCHES "(^|/)\\.\\.(/|$)")
+        message(FATAL_ERROR
+            "Refusing a loader reference with parent traversal: ${loader_path}")
+    endif()
+
+    set(_candidate "${_frameworks_directory}/${_bundle_relative_item}")
+    if(NOT EXISTS "${_candidate}")
+        message(FATAL_ERROR
+            "No staged bundle component matches loader reference ${loader_path}: "
+            "${_candidate}")
+    endif()
+    get_filename_component(_candidate_real "${_candidate}" REALPATH)
+    file(RELATIVE_PATH _candidate_relative_to_bundle "${_bundle}"
+        "${_candidate_real}")
+    if(_candidate_relative_to_bundle STREQUAL ".." OR
+       _candidate_relative_to_bundle MATCHES "^\\.\\./")
+        message(FATAL_ERROR
+            "Resolved loader destination escapes the app bundle: ${loader_path}")
+    endif()
+
+    get_filename_component(_referencing_directory "${referencing_file}" DIRECTORY)
+    file(RELATIVE_PATH _loader_relative_to_item
+        "${_referencing_directory}" "${_candidate}")
+    if(_loader_relative_to_item STREQUAL "." OR
+       _loader_relative_to_item MATCHES "^/")
+        message(FATAL_ERROR
+            "Invalid bundle-relative loader destination: ${_candidate}")
+    endif()
+    set(${output} "@loader_path/${_loader_relative_to_item}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_bundle_self_loader_path loader_path output)
+    get_filename_component(_loader_name "${loader_path}" NAME)
+    if(_loader_name STREQUAL "")
+        message(FATAL_ERROR "Cannot derive an LC_ID_DYLIB name from: ${loader_path}")
+    endif()
+    set(${output} "@loader_path/${_loader_name}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_dylib_id_matches_file dylib_id bundle_file output)
+    if("${dylib_id}" MATCHES "^@loader_path(/|$)")
+        string(REGEX REPLACE "^@loader_path" "" _id_suffix "${dylib_id}")
+        get_filename_component(_id_base_directory "${bundle_file}" DIRECTORY)
+        set(_id_candidate "${_id_base_directory}${_id_suffix}")
+    elseif("${dylib_id}" MATCHES "^@executable_path(/|$)")
+        string(REGEX REPLACE "^@executable_path" "" _id_suffix "${dylib_id}")
+        set(_id_candidate "${_bundle}/Contents/MacOS${_id_suffix}")
+    else()
+        # @rpath identities are checked by the static verifier against the
+        # item's bundle-relative LC_RPATH and do not need a direct rewrite.
+        set(${output} TRUE PARENT_SCOPE)
+        return()
+    endif()
+
+    if(EXISTS "${_id_candidate}")
+        get_filename_component(_id_candidate_real "${_id_candidate}" REALPATH)
+        get_filename_component(_bundle_file_real "${bundle_file}" REALPATH)
+        if(_id_candidate_real STREQUAL _bundle_file_real)
+            set(${output} TRUE PARENT_SCOPE)
+            return()
+        endif()
+    endif()
+    set(${output} FALSE PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_is_forbidden_producer_path candidate output)
+    if("${candidate}" MATCHES "^/Users/" OR
+       "${candidate}" MATCHES "/\\.build/" OR
+       "${candidate}" MATCHES "/\\.deps/" OR
+       "${candidate}" MATCHES "^/usr/local/" OR
+       "${candidate}" MATCHES "^/opt/homebrew/")
+        set(${output} TRUE PARENT_SCOPE)
+    else()
+        set(${output} FALSE PARENT_SCOPE)
+    endif()
+endfunction()
+
+function(_ebplus_read_macho_load_metadata bundle_file output_id output_loads output_rpaths)
+    execute_process(
+        COMMAND /usr/bin/otool -l "${bundle_file}"
+        RESULT_VARIABLE _otool_lc_result
+        OUTPUT_VARIABLE _otool_lc_output
+        ERROR_VARIABLE _otool_lc_error)
+    if(NOT _otool_lc_result EQUAL 0)
+        message(FATAL_ERROR
+            "Could not inspect loader metadata for ${bundle_file}: ${_otool_lc_error}")
+    endif()
+
+    string(REPLACE "\n" ";" _load_command_lines "${_otool_lc_output}")
+    set(_next_value_kind "")
+    set(_dylib_id "")
+    set(_load_paths "")
+    set(_rpath_paths "")
+    foreach(_load_command_line IN LISTS _load_command_lines)
+        string(STRIP "${_load_command_line}" _load_command_line)
+        if(_load_command_line MATCHES "^cmd (.+)$")
+            set(_load_command "${CMAKE_MATCH_1}")
+            if(_load_command STREQUAL "LC_ID_DYLIB")
+                set(_next_value_kind "id")
+            elseif(_load_command MATCHES
+                   "^LC_(LOAD|LOAD_WEAK|REEXPORT|LOAD_UPWARD|LAZY_LOAD)_DYLIB$")
+                set(_next_value_kind "load")
+            elseif(_load_command STREQUAL "LC_RPATH")
+                set(_next_value_kind "rpath")
+            else()
+                set(_next_value_kind "")
+            endif()
+            continue()
+        endif()
+
+        if((_next_value_kind STREQUAL "id" OR
+            _next_value_kind STREQUAL "load") AND
+           _load_command_line MATCHES "^name (.*) \\(offset [0-9]+\\)$")
+            if(_next_value_kind STREQUAL "id")
+                set(_dylib_id "${CMAKE_MATCH_1}")
+            else()
+                list(APPEND _load_paths "${CMAKE_MATCH_1}")
+            endif()
+            set(_next_value_kind "")
+        elseif(_next_value_kind STREQUAL "rpath" AND
+               _load_command_line MATCHES "^path (.*) \\(offset [0-9]+\\)$")
+            list(APPEND _rpath_paths "${CMAKE_MATCH_1}")
+            set(_next_value_kind "")
+        endif()
+    endforeach()
+
+    set(${output_id} "${_dylib_id}" PARENT_SCOPE)
+    set(${output_loads} "${_load_paths}" PARENT_SCOPE)
+    set(${output_rpaths} "${_rpath_paths}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_normalize_bundle_load_commands)
+    # Keep this explicit check compatible with the project's CMake 3.16
+    # minimum; find_program(... REQUIRED) was introduced later.
+    find_program(_ebplus_install_name_tool NAMES install_name_tool)
+    if(NOT _ebplus_install_name_tool)
+        message(FATAL_ERROR
+            "M8-A bundle normalization requires install_name_tool on macOS.")
+    endif()
+    file(GLOB_RECURSE _bundle_files LIST_DIRECTORIES FALSE
+        "${_bundle}/Contents/*")
+    set(_changed_macho_count 0)
+
+    foreach(_bundle_file IN LISTS _bundle_files)
+        if(IS_SYMLINK "${_bundle_file}")
+            continue()
+        endif()
+        execute_process(
+            COMMAND /usr/bin/file -b "${_bundle_file}"
+            RESULT_VARIABLE _file_result
+            OUTPUT_VARIABLE _file_description
+            ERROR_VARIABLE _file_error)
+        if(NOT _file_result EQUAL 0)
+            message(FATAL_ERROR
+                "Could not inspect bundle file ${_bundle_file}: ${_file_error}")
+        endif()
+        if(NOT _file_description MATCHES "Mach-O")
+            continue()
+        endif()
+
+        _ebplus_read_macho_load_metadata("${_bundle_file}"
+            _dylib_id _dependency_paths _rpath_paths)
+        set(_changes "")
+        _ebplus_is_forbidden_producer_path("${_dylib_id}" _rewrite_dylib_id)
+        if(_dylib_id AND NOT _rewrite_dylib_id)
+            _ebplus_dylib_id_matches_file("${_dylib_id}" "${_bundle_file}"
+                _dylib_id_matches_file)
+            if(NOT _dylib_id_matches_file)
+                set(_rewrite_dylib_id TRUE)
+            endif()
+        endif()
+        if(_rewrite_dylib_id)
+            _ebplus_bundle_self_loader_path("${_dylib_id}" _bundle_dylib_id)
+            list(APPEND _changes -id "${_bundle_dylib_id}")
+        endif()
+
+        set(_requires_framework_rpath FALSE)
+        foreach(_dependency_path IN LISTS _dependency_paths)
+            _ebplus_is_forbidden_producer_path("${_dependency_path}" _rewrite_dependency)
+            if(_dependency_path MATCHES "^@rpath/")
+                set(_requires_framework_rpath TRUE)
+            elseif(_rewrite_dependency)
+                _ebplus_bundle_relative_loader_path("${_dependency_path}"
+                    "${_bundle_file}" _bundle_dependency_path)
+                if(NOT _dependency_path STREQUAL _bundle_dependency_path)
+                    list(APPEND _changes -change "${_dependency_path}"
+                        "${_bundle_dependency_path}")
+                endif()
+            elseif(_dependency_path MATCHES "^/")
+                if(NOT _dependency_path MATCHES "^/System/Library/" AND
+                   NOT _dependency_path MATCHES "^/usr/lib/")
+                    message(FATAL_ERROR
+                        "Non-system absolute loader reference remains in ${_bundle_file}: "
+                        "${_dependency_path}")
+                endif()
+            endif()
+        endforeach()
+
+        # Keep @rpath dependencies only when their loader can resolve them
+        # through this bundle's Frameworks directory. This avoids growing short
+        # existing Mach-O load commands (notably OpenEB's nested plugins) while
+        # still closing every rpath inside the .app.
+        if(_requires_framework_rpath)
+            get_filename_component(_bundle_file_directory "${_bundle_file}" DIRECTORY)
+            file(RELATIVE_PATH _frameworks_relative_to_item
+                "${_bundle_file_directory}" "${_frameworks_directory}")
+            if(_frameworks_relative_to_item STREQUAL ".")
+                set(_frameworks_rpath "@loader_path")
+            else()
+                set(_frameworks_rpath
+                    "@loader_path/${_frameworks_relative_to_item}")
+            endif()
+            if(NOT _rpath_paths)
+                message(FATAL_ERROR
+                    "An @rpath dependency has no LC_RPATH in ${_bundle_file}")
+            endif()
+            foreach(_existing_rpath IN LISTS _rpath_paths)
+                if(NOT _existing_rpath STREQUAL _frameworks_rpath)
+                    list(APPEND _changes -rpath "${_existing_rpath}"
+                        "${_frameworks_rpath}")
+                endif()
+            endforeach()
+        endif()
+
+        if(_changes)
+            execute_process(COMMAND chmod u+w "${_bundle_file}")
+            execute_process(
+                COMMAND "${_ebplus_install_name_tool}" ${_changes}
+                    "${_bundle_file}"
+                RESULT_VARIABLE _install_name_tool_result
+                OUTPUT_VARIABLE _install_name_tool_output
+                ERROR_VARIABLE _install_name_tool_error)
+            if(NOT _install_name_tool_result EQUAL 0)
+                string(REPLACE ";" " " _install_name_tool_command
+                    "${_ebplus_install_name_tool};${_changes};${_bundle_file}")
+                message(FATAL_ERROR
+                    "install_name_tool failed for ${_bundle_file}: "
+                    "${_install_name_tool_command}\n${_install_name_tool_output}"
+                    "${_install_name_tool_error}")
+            endif()
+            math(EXPR _changed_macho_count "${_changed_macho_count} + 1")
+        endif()
+    endforeach()
+    message(STATUS
+        "M8-A normalized loader metadata in ${_changed_macho_count} bundled Mach-O files")
+endfunction()
+
+_ebplus_normalize_bundle_load_commands()
+
+# The linker and install-time fixups may leave ad-hoc signatures embedded in
+# Mach-O files, but every install_name_tool/fixup_bundle mutation above can
+# invalidate those signatures.  Sign only the final staged bundle, after the
+# last Mach-O mutation, using an explicit inside-out order.  This is a local
+# execution signature, not a distribution signing step.
+find_program(_ebplus_codesign NAMES codesign)
+if(NOT _ebplus_codesign)
+    message(FATAL_ERROR
+        "M8-A1 local bundle signing requires the macOS codesign tool.")
+endif()
+
+function(_ebplus_sign_local_code_object code_object)
+    if(IS_SYMLINK "${code_object}")
+        message(FATAL_ERROR
+            "M8-A1 signer was given a symlink instead of a final code object: "
+            "${code_object}")
+    endif()
+    execute_process(
+        COMMAND "${_ebplus_codesign}" --force --sign - "${code_object}"
+        RESULT_VARIABLE _sign_result
+        OUTPUT_VARIABLE _sign_output
+        ERROR_VARIABLE _sign_error)
+    if(NOT _sign_result EQUAL 0)
+        message(FATAL_ERROR
+            "M8-A1 ad-hoc signing failed for ${code_object}:\n"
+            "${_sign_output}${_sign_error}")
+    endif()
+endfunction()
+
+# Identify bundle-style code containers from the final app.  The list is
+# deliberately data-driven so a future nested plugin/framework is ordered
+# before its containing bundle without signing producer-prefix files.
+set(_ebplus_code_container_suffix_regex
+    "\\.(framework|bundle|plugin|appex|xpc|app|kext)$")
+file(GLOB_RECURSE _ebplus_container_candidates LIST_DIRECTORIES TRUE
+    "${_bundle}/Contents/*")
+set(_ebplus_code_containers "")
+foreach(_candidate IN LISTS _ebplus_container_candidates)
+    if(IS_DIRECTORY "${_candidate}" AND NOT IS_SYMLINK "${_candidate}" AND
+       "${_candidate}" MATCHES "${_ebplus_code_container_suffix_regex}")
+        list(APPEND _ebplus_code_containers "${_candidate}")
+    endif()
+endforeach()
+list(REMOVE_DUPLICATES _ebplus_code_containers)
+list(SORT _ebplus_code_containers)
+
+# Sort containers by descending path depth.  CMake 3.16 has no custom list
+# comparator, so select the deepest remaining path in each iteration and use
+# lexical order as the deterministic tie-breaker supplied by list(SORT).
+set(_ebplus_pending_containers "${_ebplus_code_containers}")
+set(_ebplus_ordered_containers "")
+while(_ebplus_pending_containers)
+    set(_ebplus_deepest_container "")
+    set(_ebplus_deepest_depth -1)
+    foreach(_candidate IN LISTS _ebplus_pending_containers)
+        string(REGEX REPLACE "[^/]" "" _candidate_slashes "${_candidate}")
+        string(LENGTH "${_candidate_slashes}" _candidate_depth)
+        if(_candidate_depth GREATER _ebplus_deepest_depth)
+            set(_ebplus_deepest_container "${_candidate}")
+            set(_ebplus_deepest_depth "${_candidate_depth}")
+        endif()
+    endforeach()
+    if(_ebplus_deepest_container STREQUAL "")
+        message(FATAL_ERROR "M8-A1 could not order bundle code containers.")
+    endif()
+    list(APPEND _ebplus_ordered_containers "${_ebplus_deepest_container}")
+    list(REMOVE_ITEM _ebplus_pending_containers "${_ebplus_deepest_container}")
+endwhile()
+
+# First sign every regular Mach-O leaf outside a bundle-style container.  This
+# covers the main executable and flat Frameworks/PlugIns dylibs.  Symlink
+# aliases are skipped; their real final file is signed exactly once.
+file(GLOB_RECURSE _ebplus_bundle_files LIST_DIRECTORIES FALSE
+    "${_bundle}/Contents/*")
+list(SORT _ebplus_bundle_files)
+set(_ebplus_signed_flat_count 0)
+foreach(_bundle_file IN LISTS _ebplus_bundle_files)
+    if(IS_SYMLINK "${_bundle_file}")
+        continue()
+    endif()
+
+    set(_inside_code_container FALSE)
+    foreach(_container IN LISTS _ebplus_code_containers)
+        file(RELATIVE_PATH _relative_to_container
+            "${_container}" "${_bundle_file}")
+        if(NOT _relative_to_container STREQUAL "" AND
+           NOT _relative_to_container MATCHES "^\\.\\.")
+            set(_inside_code_container TRUE)
+            break()
+        endif()
+    endforeach()
+    if(_inside_code_container)
+        continue()
+    endif()
+
+    execute_process(
+        COMMAND /usr/bin/file -b "${_bundle_file}"
+        RESULT_VARIABLE _file_result
+        OUTPUT_VARIABLE _file_description
+        ERROR_VARIABLE _file_error)
+    if(NOT _file_result EQUAL 0)
+        message(FATAL_ERROR
+            "Could not inspect final bundle file ${_bundle_file}: ${_file_error}")
+    endif()
+    if(_file_description MATCHES "Mach-O")
+        _ebplus_sign_local_code_object("${_bundle_file}")
+        math(EXPR _ebplus_signed_flat_count
+            "${_ebplus_signed_flat_count} + 1")
+    endif()
+endforeach()
+
+# Then sign each bundle-style container as its own code unit.  This is
+# deliberately not a flat signing pass over direct framework children:
+# codesign resolves a framework's canonical executable and seals its resources
+# from the framework root, while a direct non-symlink compatibility copy at a
+# framework root is ambiguous when signed as a standalone pathname.
+set(_ebplus_signed_container_count 0)
+foreach(_container IN LISTS _ebplus_ordered_containers)
+    _ebplus_sign_local_code_object("${_container}")
+    math(EXPR _ebplus_signed_container_count
+        "${_ebplus_signed_container_count} + 1")
+endforeach()
+
+# The application bundle is last so its resource envelope records the final
+# nested-code signatures and no later Mach-O mutation can invalidate it.
+_ebplus_sign_local_code_object("${_bundle}")
+
+# This is verification only; --deep is intentionally absent from every signing
+# command above.  Fail the install if the final nested-code envelope is not
+# valid before the loader verifier runs.
+execute_process(
+    COMMAND "${_ebplus_codesign}" --verify --deep --strict --verbose=4
+        "${_bundle}"
+    RESULT_VARIABLE _bundle_signature_result
+    OUTPUT_VARIABLE _bundle_signature_output
+    ERROR_VARIABLE _bundle_signature_error)
+if(NOT _bundle_signature_result EQUAL 0)
+    message(FATAL_ERROR
+        "M8-A1 final ad-hoc signature verification failed for ${_bundle}:\n"
+        "${_bundle_signature_output}${_bundle_signature_error}")
+endif()
+message(STATUS
+    "M8-A1 signed final bundle inside-out: ${_ebplus_signed_flat_count} flat "
+    "Mach-O leaves, ${_ebplus_signed_container_count} containers, then the app")
+
+set(EBPLUS_BUNDLE_PATH "${_bundle}")
+include("@EBPLUS_MACOS_BUNDLE_VERIFY_SCRIPT@")

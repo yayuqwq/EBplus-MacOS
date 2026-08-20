@@ -31,6 +31,12 @@ endif()
 
 # --- External dependencies -------------------------------------------------
 find_package(Qt6 REQUIRED COMPONENTS Widgets OpenGL OpenGLWidgets)
+if(APPLE)
+    # SVG icons are decoded through Qt's runtime image plugin. The app does
+    # not link QtSvg, but the macOS bundle must stage the matching plugin and
+    # framework selected by this package lookup.
+    find_package(Qt6 REQUIRED COMPONENTS Svg)
+endif()
 find_package(
     MetavisionSDK 5.2.0
     CONFIG

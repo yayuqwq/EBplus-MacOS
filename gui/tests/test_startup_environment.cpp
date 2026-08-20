@@ -10,9 +10,13 @@ namespace {
 
 using gui::startup_environment::Environment;
 using gui::startup_environment::Platform;
+using gui::startup_environment::BundleRuntimePaths;
+using gui::startup_environment::compute_bundle_runtime_updates;
 using gui::startup_environment::compute_default_updates;
+using gui::startup_environment::find_bundle_runtime_paths;
 
 constexpr const char* kHalPluginPath = "MV_HAL_PLUGIN_PATH";
+constexpr const char* kHalPluginSearchMode = "MV_HAL_PLUGIN_SEARCH_MODE";
 constexpr const char* kHdf5PluginPath = "HDF5_PLUGIN_PATH";
 constexpr const char* kQtPlatform = "QT_QPA_PLATFORM";
 constexpr const char* kRhiBackend = "QSG_RHI_BACKEND";
@@ -152,6 +156,49 @@ TEST(StartupEnvironmentPolicy, OtherAddsNoDefaultsOrOverrides) {
 
     EXPECT_TRUE(compute_default_updates(Platform::Other, current).empty());
     EXPECT_EQ(current, original);
+}
+
+TEST(StartupEnvironmentBundle, MacOSUsesOnlyValidatedBundlePaths) {
+    const BundleRuntimePaths paths = {
+        "/bundle/Contents/Frameworks/metavision/hal/plugins",
+        "/bundle/Contents/Frameworks/hdf5/plugin",
+    };
+
+    const Environment updates =
+        compute_bundle_runtime_updates(Platform::MacOS, paths);
+
+    ASSERT_EQ(updates.size(), 3U);
+    EXPECT_EQ(updates.at(kHalPluginPath), paths.hal_plugin_path);
+    EXPECT_EQ(updates.at(kHalPluginSearchMode), "PLUGIN_PATH_ONLY");
+    EXPECT_EQ(updates.at(kHdf5PluginPath), paths.hdf5_plugin_path);
+}
+
+TEST(StartupEnvironmentBundle, OtherPlatformsDoNotReceiveBundleUpdates) {
+    const BundleRuntimePaths paths = {
+        "/bundle/Contents/Frameworks/metavision/hal/plugins",
+        "/bundle/Contents/Frameworks/hdf5/plugin",
+    };
+
+    EXPECT_TRUE(compute_bundle_runtime_updates(Platform::Linux, paths).empty());
+    EXPECT_TRUE(compute_bundle_runtime_updates(Platform::Other, paths).empty());
+}
+
+TEST(StartupEnvironmentBundle, EmptyPathsDoNotOverrideTheEnvironment) {
+    EXPECT_TRUE(compute_bundle_runtime_updates(
+                    Platform::MacOS,
+                    BundleRuntimePaths{"", "/bundle/hdf5"})
+                    .empty());
+    EXPECT_TRUE(compute_bundle_runtime_updates(
+                    Platform::MacOS,
+                    BundleRuntimePaths{"/bundle/hal", ""})
+                    .empty());
+}
+
+TEST(StartupEnvironmentBundle, NonMacOSNeverAcceptsAnApplicationDirectory) {
+    EXPECT_FALSE(find_bundle_runtime_paths(
+                     Platform::Linux,
+                     "/not-an-app/Contents/MacOS")
+                     .has_value());
 }
 
 TEST(StartupEnvironmentPolicy, EmitsOnlyApprovedKeys) {
