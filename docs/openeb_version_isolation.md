@@ -46,12 +46,21 @@ prepared profile, not the historical generic M2B profile:
 
 | 用途 | 当前路径 / provenance |
 |---|---|
-| Canonical tracked OpenEB | `$REPO_ROOT/openeb` at imported OpenEB 5.2 commit `9003b5416676e78ba994d912087486cfa94fae73` |
+| Canonical tracked OpenEB | `$REPO_ROOT/openeb` at current tracked tree `b407c407aa46d3b97edc9b2096fb120a96c8b465`; imported upstream OpenEB 5.2 release commit `9003b5416676e78ba994d912087486cfa94fae73` |
 | Prepared OpenEB source | `$REPO_ROOT/.tmp/openeb-5.2.0-centuryarks-source` |
 | OpenEB build | `$REPO_ROOT/.build/openeb-5.2.0-centuryarks-macos` |
 | OpenEB install | `$REPO_ROOT/.deps/openeb-5.2.0-centuryarks-macos` |
 | EBplus GUI build | `$REPO_ROOT/.build/ebplus-macos` |
 | HDF5 ECF | locked/checked-out `b982d908a0bc0afd9104d226607bedb1a11b2a95` |
+
+`9003b5416676e78ba994d912087486cfa94fae73` is the imported upstream release
+commit, not the current tracked subtree object. At the current EBplus HEAD,
+`git ls-tree HEAD openeb` resolves to tree
+`b407c407aa46d3b97edc9b2096fb120a96c8b465`; the upstream release commit's tree
+is `2fc75cdd`. The tracked subtree includes subsequent repository changes from
+`014f245` (GCC 15 portability) and `708a36e` (macOS install RPATHs). This
+distinction preserves provenance without treating the upstream release object
+as the final producer tree.
 
 The CenturyArks overlay is materialized only in the prepared source; it does
 not patch the canonical tracked `openeb/` tree. The old generic

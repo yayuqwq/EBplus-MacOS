@@ -1,6 +1,7 @@
 // gui/main.cpp — application entry point.
 
 #include <QApplication>
+#include <QCoreApplication>
 #include <QFont>
 #include <QSurfaceFormat>
 
@@ -18,6 +19,8 @@ int main(int argc, char* argv[]) {
     QSurfaceFormat::setDefaultFormat(fmt);
 
     QApplication app(argc, argv);
+    gui::startup_environment::apply_bundle_runtime_environment_for_current_platform(
+        QCoreApplication::applicationDirPath().toStdString());
     QApplication::setApplicationName("GUI for openEB");
     QApplication::setOrganizationName("GUI-for-openEB");
     QApplication::setApplicationVersion("1.9.0");

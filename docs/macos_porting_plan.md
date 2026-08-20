@@ -538,7 +538,10 @@ acceptance.
 
 ### Milestone 8: Packaging and CI
 
-**状态：** `Planned`
+**状态：** `In progress` — M8-A is `Complete / Qualified` for a local
+ad-hoc-signed macOS arm64 packaged offline Cocoa runtime within its documented
+scope. CI, Finder launch, Developer ID signing, Gatekeeper, notarization and
+DMG remain `Not run`.
 **独立分支：** `build/macos-packaging-ci`
 
 **范围**
@@ -567,6 +570,25 @@ acceptance.
 - CI 能阻止 macOS 构建回归，同时 Linux job 保持通过。
 - 打包文档列出支持范围、硬件限制、签名/notarization 状态和可复现命令。
 - 仅在对应功能 milestone 已完成后，才可对外声明相应 macOS 能力。
+
+#### M8-A: packaged offline Cocoa runtime
+
+M8-A is complete within the bounded package/runtime scope. The closure record
+is [macOS Milestone 8-A Validation](macos_milestone_8a_validation.md).
+
+The evidence chain includes the `.app` foundation and staged dependency
+closure, the first pre-window `CODESIGNING / Invalid Page` launch failure, the
+M8-A1 diagnosis that post-fixup Mach-O mutations invalidated pre-existing
+signatures, final inside-out local ad-hoc signing, recursive signature and
+loader verification, one successful Terminal-direct Cocoa RAW session, and
+the final configured CTest result of `399 discovered / 391 passed / 8 skipped /
+0 failed / exit 0`.
+
+This disposition does not qualify Finder launch, physical camera operation,
+M6/M7 live-camera slices, model runtime in the final regression, Linux native
+runtime, CI, Developer ID signing, Gatekeeper, notarization or DMG. The full
+CTest shell inherited `HDF5_PLUGIN_PATH`; it is regression evidence and not a
+substitute for dependency-isolation evidence.
 
 ## 跨平台实施原则
 
