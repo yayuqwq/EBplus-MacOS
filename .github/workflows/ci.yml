@@ -72,7 +72,7 @@ jobs:
             pkgconf \
             qtbase \
             qtsvg \
-            opencv \
+            opencv@4 \
             boost \
             hdf5 \
             libusb \
@@ -82,11 +82,47 @@ jobs:
             glfw
           brew config
           for formula in \
-            make pkgconf qtbase qtsvg opencv boost hdf5 libusb protobuf googletest glew glfw; do
+            make pkgconf qtbase qtsvg opencv@4 boost hdf5 libusb protobuf googletest glew glfw; do
             printf '%s=%s\n' "$formula" "$(brew --prefix "$formula")"
             brew list --versions "$formula"
           done
           df -h "$GITHUB_WORKSPACE"
+
+      - name: Resolve and verify Homebrew OpenCV 4
+        shell: bash
+        run: |
+          set -euo pipefail
+          opencv4_prefix="$(brew --prefix opencv@4)"
+          opencv_config="$(find "$opencv4_prefix" -type f -name OpenCVConfig.cmake -print -quit)"
+          test -n "$opencv_config"
+          test -f "$opencv_config"
+          opencv_dir="$(dirname "$opencv_config")"
+          brew list --versions opencv@4
+          printf 'opencv4_prefix=%s\n' "$opencv4_prefix"
+          printf 'OpenCVConfig.cmake=%s\n' "$opencv_config"
+          probe_dir="$RUNNER_TEMP/ebplus-opencv4-calib3d-probe"
+          mkdir -p "$probe_dir"
+          cat > "$probe_dir/CMakeLists.txt" <<'EOF'
+          cmake_minimum_required(VERSION 3.20)
+          project(ebplus_opencv4_calib3d_probe NONE)
+          find_package(OpenCV REQUIRED COMPONENTS calib3d)
+          if(NOT OpenCV_VERSION MATCHES "^4\\.")
+              message(FATAL_ERROR "OpenCV 4 is required, but found ${OpenCV_VERSION}.")
+          endif()
+          if(NOT OpenCV_calib3d_FOUND OR NOT TARGET opencv_calib3d)
+              message(FATAL_ERROR "OpenCV calib3d is not resolvable from ${OpenCV_DIR}.")
+          endif()
+          message(STATUS "OpenCV_VERSION=${OpenCV_VERSION}")
+          message(STATUS "OpenCV_DIR=${OpenCV_DIR}")
+          EOF
+          cmake \
+            -S "$probe_dir" \
+            -B "$probe_dir/build" \
+            "-DOpenCV_DIR=$opencv_dir"
+          {
+            printf 'EBPLUS_OPENCV4_PREFIX=%s\n' "$opencv4_prefix"
+            printf 'EBPLUS_OPENCV4_DIR=%s\n' "$opencv_dir"
+          } >> "$GITHUB_ENV"
 
       - name: Enforce the OpenEB disk reserve
         shell: bash
@@ -116,11 +152,12 @@ jobs:
           set -euo pipefail
           homebrew_prefix="$(brew --prefix)"
           make_program="$(brew --prefix make)/bin/gmake"
+          test -f "$EBPLUS_OPENCV4_DIR/OpenCVConfig.cmake"
           dependency_prefixes=(
+            "$EBPLUS_OPENCV4_PREFIX"
             "$homebrew_prefix"
             "$(brew --prefix qtbase)"
             "$(brew --prefix qtsvg)"
-            "$(brew --prefix opencv)"
             "$(brew --prefix boost)"
             "$(brew --prefix hdf5)"
             "$(brew --prefix libusb)"
@@ -143,6 +180,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_INSTALL_PREFIX="$EBPLUS_OPENEB_PREFIX" \
             "-DCMAKE_PREFIX_PATH=$cmake_prefix_path" \
+            "-DOpenCV_DIR=$EBPLUS_OPENCV4_DIR" \
             -DBUILD_TESTING=OFF \
             -DBUILD_SAMPLES=ON \
             -DCOMPILE_PYTHON3_BINDINGS=OFF \
@@ -154,6 +192,12 @@ jobs:
             '-DMETAVISION_SELECTED_MODULES=base;core;stream;ui' \
             -DUSE_PROTOBUF=ON \
             -DUSE_OPENGL_ES3=OFF
+
+      - name: Report the OpenEB OpenCV selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep '^OpenCV_DIR:' "$EBPLUS_OPENEB_BUILD/CMakeCache.txt"
 
       - name: Build and install OpenEB 5.2.0
         shell: bash
@@ -200,12 +244,13 @@ jobs:
           set -euo pipefail
           homebrew_prefix="$(brew --prefix)"
           make_program="$(brew --prefix make)/bin/gmake"
+          test -f "$EBPLUS_OPENCV4_DIR/OpenCVConfig.cmake"
           dependency_prefixes=(
             "$EBPLUS_OPENEB_PREFIX"
+            "$EBPLUS_OPENCV4_PREFIX"
             "$homebrew_prefix"
             "$(brew --prefix qtbase)"
             "$(brew --prefix qtsvg)"
-            "$(brew --prefix opencv)"
             "$(brew --prefix boost)"
             "$(brew --prefix hdf5)"
             "$(brew --prefix libusb)"
@@ -225,6 +270,7 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_INSTALL_PREFIX="$EBPLUS_PREFIX" \
             "-DCMAKE_PREFIX_PATH=$cmake_prefix_path" \
+            "-DOpenCV_DIR=$EBPLUS_OPENCV4_DIR" \
             -DMetavisionSDK_DIR="$EBPLUS_OPENEB_PREFIX/share/cmake/MetavisionSDK" \
             -DEBPLUS_ONNXRUNTIME_MODE=OFF \
             -DBUILD_TESTING=ON \
