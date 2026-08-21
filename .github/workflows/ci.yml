@@ -93,10 +93,22 @@ jobs:
         run: |
           set -euo pipefail
           opencv4_prefix="$(brew --prefix opencv@4)"
-          opencv_config="$(find "$opencv4_prefix" -type f -name OpenCVConfig.cmake -print -quit)"
-          test -n "$opencv_config"
-          test -f "$opencv_config"
-          opencv_dir="$(dirname "$opencv_config")"
+          opencv_dir="$opencv4_prefix/lib/cmake/opencv4"
+          opencv_config="$opencv_dir/OpenCVConfig.cmake"
+          if [[ ! -f "$opencv_config" ]]; then
+            opencv_config="$(find -L "$opencv4_prefix" -type f -name OpenCVConfig.cmake -print -quit || true)"
+            if [[ -n "$opencv_config" && -f "$opencv_config" ]]; then
+              opencv_dir="$(dirname "$opencv_config")"
+            else
+              printf 'Unable to locate OpenCVConfig.cmake below opencv@4 prefix: %s\n' "$opencv4_prefix" >&2
+              ls -ld "$opencv4_prefix" >&2 || true
+              ls -la "$opencv4_prefix/lib" >&2 || true
+              ls -la "$opencv4_prefix/lib/cmake" >&2 || true
+              exit 1
+            fi
+          fi
+          test -f "$opencv_dir/OpenCVConfig.cmake"
+          opencv_config="$opencv_dir/OpenCVConfig.cmake"
           brew list --versions opencv@4
           printf 'opencv4_prefix=%s\n' "$opencv4_prefix"
           printf 'OpenCVConfig.cmake=%s\n' "$opencv_config"
@@ -105,13 +117,22 @@ jobs:
           cat > "$probe_dir/CMakeLists.txt" <<'EOF'
           cmake_minimum_required(VERSION 3.20)
           project(ebplus_opencv4_calib3d_probe NONE)
-          find_package(OpenCV REQUIRED COMPONENTS calib3d)
-          if(NOT OpenCV_VERSION MATCHES "^4\\.")
+          find_package(OpenCV REQUIRED COMPONENTS
+              core
+              highgui
+              imgproc
+              videoio
+              imgcodecs
+              calib3d
+              objdetect)
+          if(NOT OpenCV_VERSION_MAJOR STREQUAL "4")
               message(FATAL_ERROR "OpenCV 4 is required, but found ${OpenCV_VERSION}.")
           endif()
-          if(NOT OpenCV_calib3d_FOUND OR NOT TARGET opencv_calib3d)
-              message(FATAL_ERROR "OpenCV calib3d is not resolvable from ${OpenCV_DIR}.")
-          endif()
+          foreach(component IN ITEMS core highgui imgproc videoio imgcodecs calib3d objdetect)
+              if(NOT OpenCV_${component}_FOUND OR NOT TARGET opencv_${component})
+                  message(FATAL_ERROR "OpenCV ${component} is not resolvable from ${OpenCV_DIR}.")
+              endif()
+          endforeach()
           message(STATUS "OpenCV_VERSION=${OpenCV_VERSION}")
           message(STATUS "OpenCV_DIR=${OpenCV_DIR}")
           EOF
