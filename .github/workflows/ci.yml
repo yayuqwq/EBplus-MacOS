@@ -162,28 +162,130 @@ jobs:
             exit 1
           fi
 
-      - name: Bootstrap pinned HDF5 1.14.6
+      - name: Download and verify HDF5 1.14.6
         shell: bash
         run: |
           set -euo pipefail
+          die() {
+            printf 'ERROR: %s\n' "$*" >&2
+            exit 1
+          }
           readonly hdf5_url="https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.6/hdf5-1.14.6.tar.gz"
           readonly expected_sha256="e4defbac30f50d64e1556374aa49e574417c9e72c6b1de7a4ff88c4b1bea6e9b"
-          test ! -e "$EBPLUS_HDF5_ARCHIVE"
-          test ! -e "$EBPLUS_HDF5_SOURCE"
-          test ! -e "$EBPLUS_HDF5_BUILD"
-          test ! -e "$EBPLUS_HDF5_PREFIX"
-          mkdir -p \
-            "$(dirname "$EBPLUS_HDF5_ARCHIVE")" \
-            "$EBPLUS_HDF5_SOURCE" \
-            "$EBPLUS_HDF5_BUILD" \
-            "$EBPLUS_HDF5_PREFIX"
-          curl --fail --location --retry 3 --output "$EBPLUS_HDF5_ARCHIVE" "$hdf5_url"
-          actual_sha256="$(shasum -a 256 "$EBPLUS_HDF5_ARCHIVE" | awk '{print $1}')"
-          test "$actual_sha256" = "$expected_sha256"
-          tar -xzf "$EBPLUS_HDF5_ARCHIVE" --strip-components=1 -C "$EBPLUS_HDF5_SOURCE"
-          test -f "$EBPLUS_HDF5_SOURCE/CMakeLists.txt"
-          make_program="$(brew --prefix make)/bin/gmake"
-          test -x "$make_program"
+          if [[ -e "$EBPLUS_HDF5_ARCHIVE" ]]; then
+            die "HDF5 archive target already exists: $EBPLUS_HDF5_ARCHIVE"
+          fi
+          archive_parent="$(dirname "$EBPLUS_HDF5_ARCHIVE")"
+          if ! mkdir -p "$archive_parent"; then
+            die "Unable to create HDF5 archive directory: $archive_parent"
+          fi
+          if ! curl --fail --location --retry 3 --show-error --output "$EBPLUS_HDF5_ARCHIVE" "$hdf5_url"; then
+            die "HDF5 download failed: $hdf5_url"
+          fi
+          if [[ ! -f "$EBPLUS_HDF5_ARCHIVE" ]]; then
+            die "HDF5 archive was not created: $EBPLUS_HDF5_ARCHIVE"
+          fi
+          if ! archive_bytes="$(stat -f '%z' "$EBPLUS_HDF5_ARCHIVE")"; then
+            die "Unable to determine HDF5 archive byte size: $EBPLUS_HDF5_ARCHIVE"
+          fi
+          if ! actual_sha256="$(shasum -a 256 "$EBPLUS_HDF5_ARCHIVE" | awk '{print $1}')"; then
+            die "Unable to calculate HDF5 archive SHA-256: $EBPLUS_HDF5_ARCHIVE"
+          fi
+          printf 'HDF5 archive path=%s\n' "$EBPLUS_HDF5_ARCHIVE"
+          printf 'HDF5 archive bytes=%s\n' "$archive_bytes"
+          printf 'HDF5 archive actual SHA-256=%s\n' "$actual_sha256"
+          printf 'HDF5 archive expected SHA-256=%s\n' "$expected_sha256"
+          if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+            printf 'HDF5 SHA-256 mismatch: expected=%s actual=%s\n' "$expected_sha256" "$actual_sha256" >&2
+            exit 1
+          fi
+          printf 'HDF5 archive SHA-256 verified.\n'
+
+      - name: Validate and extract HDF5 1.14.6 source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          die() {
+            printf 'ERROR: %s\n' "$*" >&2
+            exit 1
+          }
+          if [[ ! -f "$EBPLUS_HDF5_ARCHIVE" ]]; then
+            die "HDF5 archive is unavailable for validation: $EBPLUS_HDF5_ARCHIVE"
+          fi
+          if ! tar -tzf "$EBPLUS_HDF5_ARCHIVE" >/dev/null; then
+            die "HDF5 source archive is not a readable gzip tar archive: $EBPLUS_HDF5_ARCHIVE"
+          fi
+          printf 'HDF5 archive first entries:\n'
+          if ! tar -tzf "$EBPLUS_HDF5_ARCHIVE" | awk 'NR <= 12 { print }'; then
+            die "Unable to list HDF5 archive entries: $EBPLUS_HDF5_ARCHIVE"
+          fi
+          if [[ -e "$EBPLUS_HDF5_SOURCE" ]]; then
+            die "HDF5 source target already exists: $EBPLUS_HDF5_SOURCE"
+          fi
+          if ! mkdir -p "$EBPLUS_HDF5_SOURCE"; then
+            die "Unable to create HDF5 source directory: $EBPLUS_HDF5_SOURCE"
+          fi
+          if ! tar -xzf "$EBPLUS_HDF5_ARCHIVE" --strip-components=1 -C "$EBPLUS_HDF5_SOURCE"; then
+            die "Unable to extract HDF5 source archive into: $EBPLUS_HDF5_SOURCE"
+          fi
+          if [[ ! -f "$EBPLUS_HDF5_SOURCE/CMakeLists.txt" ]]; then
+            printf 'HDF5 source root listing (%s):\n' "$EBPLUS_HDF5_SOURCE" >&2
+            ls -la "$EBPLUS_HDF5_SOURCE" >&2 || true
+            die "HDF5 source CMakeLists.txt is absent after extraction."
+          fi
+          printf 'HDF5 source CMakeLists.txt=%s\n' "$EBPLUS_HDF5_SOURCE/CMakeLists.txt"
+
+      - name: Resolve HDF5 build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          die() {
+            printf 'ERROR: %s\n' "$*" >&2
+            exit 1
+          }
+          if ! make_prefix="$(brew --prefix make)"; then
+            die "Unable to resolve the Homebrew make prefix."
+          fi
+          make_program="$make_prefix/bin/gmake"
+          printf 'Homebrew make prefix=%s\n' "$make_prefix"
+          printf 'HDF5 make program=%s\n' "$make_program"
+          if [[ ! -x "$make_program" ]]; then
+            die "HDF5 build requires an executable gmake at: $make_program"
+          fi
+          "$make_program" --version
+          cmake --version
+          clang --version
+          architecture="$(uname -m)"
+          printf 'runner architecture=%s\n' "$architecture"
+          if [[ "$architecture" != arm64 ]]; then
+            die "HDF5 build requires arm64, but runner reported: $architecture"
+          fi
+          printf 'EBPLUS_HDF5_MAKE_PROGRAM=%s\n' "$make_program" >> "$GITHUB_ENV"
+
+      - name: Configure HDF5 1.14.6
+        shell: bash
+        run: |
+          set -euo pipefail
+          die() {
+            printf 'ERROR: %s\n' "$*" >&2
+            exit 1
+          }
+          if [[ -e "$EBPLUS_HDF5_BUILD" ]]; then
+            die "HDF5 build directory already exists: $EBPLUS_HDF5_BUILD"
+          fi
+          if [[ -e "$EBPLUS_HDF5_PREFIX" ]]; then
+            die "HDF5 install prefix already exists: $EBPLUS_HDF5_PREFIX"
+          fi
+          if ! mkdir -p "$EBPLUS_HDF5_BUILD" "$EBPLUS_HDF5_PREFIX"; then
+            die "Unable to create HDF5 build or install directories."
+          fi
+          make_program="${EBPLUS_HDF5_MAKE_PROGRAM:-}"
+          if [[ -z "$make_program" ]]; then
+            die "HDF5 build tool was not exported by the preceding resolution step."
+          fi
+          if [[ ! -x "$make_program" ]]; then
+            die "HDF5 build requires an executable gmake at: $make_program"
+          fi
           cmake \
             -S "$EBPLUS_HDF5_SOURCE" \
             -B "$EBPLUS_HDF5_BUILD" \
@@ -201,16 +303,36 @@ jobs:
             -DHDF5_BUILD_JAVA=OFF \
             -DHDF5_BUILD_TOOLS=OFF \
             -DHDF5_BUILD_EXAMPLES=OFF
+          printf 'HDF5 1.14.6 configuration completed.\n'
+
+      - name: Build and install HDF5 1.14.6
+        shell: bash
+        run: |
+          set -euo pipefail
+          die() {
+            printf 'ERROR: %s\n' "$*" >&2
+            exit 1
+          }
           cmake --build "$EBPLUS_HDF5_BUILD" --parallel 3
           cmake --install "$EBPLUS_HDF5_BUILD"
-          test -f "$EBPLUS_HDF5_PREFIX/lib/libhdf5.dylib"
-          test -f "$EBPLUS_HDF5_PREFIX/lib/libhdf5_cpp.dylib"
-          test -f "$EBPLUS_HDF5_PREFIX/lib/libhdf5_hl.dylib"
+          hdf5_libdir="$EBPLUS_HDF5_PREFIX/lib"
+          for library in libhdf5.dylib libhdf5_cpp.dylib libhdf5_hl.dylib; do
+            if [[ ! -f "$hdf5_libdir/$library" ]]; then
+              printf 'HDF5 install library directory (%s):\n' "$hdf5_libdir" >&2
+              ls -la "$hdf5_libdir" >&2 || true
+              die "Expected HDF5 library is absent: $hdf5_libdir/$library"
+            fi
+          done
+          printf 'HDF5 shared libraries verified under: %s\n' "$hdf5_libdir"
 
       - name: Resolve and verify runner-local HDF5 1.14.6
         shell: bash
         run: |
           set -euo pipefail
+          die() {
+            printf 'ERROR: %s\n' "$*" >&2
+            exit 1
+          }
           hdf5_dir="$EBPLUS_HDF5_PREFIX/lib/cmake/hdf5"
           hdf5_config="$hdf5_dir/hdf5-config.cmake"
           if [[ ! -f "$hdf5_config" ]]; then
@@ -221,10 +343,12 @@ jobs:
               printf 'Unable to locate the HDF5 CMake package below: %s\n' "$EBPLUS_HDF5_PREFIX" >&2
               ls -la "$EBPLUS_HDF5_PREFIX/lib" >&2 || true
               ls -la "$EBPLUS_HDF5_PREFIX/lib/cmake" >&2 || true
-              exit 1
+              die "Unable to locate the HDF5 CMake package below: $EBPLUS_HDF5_PREFIX"
             fi
           fi
-          test -f "$hdf5_config"
+          if [[ ! -f "$hdf5_config" ]]; then
+            die "Resolved HDF5 CMake package does not exist: $hdf5_config"
+          fi
           printf 'HDF5 source URL=%s\n' "https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.6/hdf5-1.14.6.tar.gz"
           printf 'HDF5 SHA-256=%s\n' "$(shasum -a 256 "$EBPLUS_HDF5_ARCHIVE" | awk '{print $1}')"
           printf 'HDF5 prefix=%s\n' "$EBPLUS_HDF5_PREFIX"
@@ -261,10 +385,10 @@ jobs:
           } >> "$GITHUB_ENV"
           df -h "$GITHUB_WORKSPACE"
           for path in \
-            "$GITHUB_WORKSPACE/.downloads" \
-            "$GITHUB_WORKSPACE/.tmp" \
-            "$GITHUB_WORKSPACE/.build" \
-            "$GITHUB_WORKSPACE/.deps"; do
+            "$GITHUB_WORKSPACE/.downloads/ci" \
+            "$GITHUB_WORKSPACE/.tmp/ci" \
+            "$GITHUB_WORKSPACE/.build/ci" \
+            "$GITHUB_WORKSPACE/.deps/ci"; do
             if [[ -e "$path" ]]; then
               du -sh "$path"
             else
