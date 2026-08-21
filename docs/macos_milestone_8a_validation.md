@@ -3,14 +3,15 @@
 ## Status and scope
 
 **Status:** `Complete / Qualified` for a local ad-hoc-signed macOS arm64
-packaged offline Cocoa runtime within the scope recorded here.
+packaged runtime, including bounded Terminal-direct and Finder-launched offline
+RAW workflows, within the scope recorded here.
 
-Milestone 8 overall remains **In progress**. Apple Silicon CI, Finder launch,
-Developer ID signing, Gatekeeper, notarization and DMG work remain outside this
-closure. This document records the complete M8-A evidence chain, including the
-initial launch failure and its M8-A1 repair. It does not qualify physical-camera
-operation, Linux runtime behavior, model runtime in the final regression, or
-distribution readiness.
+Milestone 8 overall remains **In progress**. Apple Silicon CI, Developer ID
+signing, Gatekeeper distribution qualification, notarization, DMG and
+cross-machine distribution remain outside this closure. This document records
+the complete M8-A evidence chain, including the initial launch failure and its
+M8-A1 repair. It does not qualify physical-camera operation, Linux runtime
+behavior, model runtime in the final regression, or distribution readiness.
 
 No GUI redesign was part of M8-A. The application currently uses a deliberate
 frameless window with a custom title bar; the absence of native macOS traffic
@@ -165,7 +166,29 @@ The process exit code was `0`. Session metadata and stdout/stderr are retained
 under `.logs/m8-a-gui-qualification/20260820-194707/`. The only reported
 messages were non-fatal font/IMK diagnostics; no fatal marker was found.
 
-### 7. Full regression CTest
+### 7. M8-A2 supplementary Finder launch qualification
+
+**Status:** Passed for the bounded local Finder-launched RAW playback scope.
+
+One separately authorized local Finder double-click launch used the same final
+arm64, local-ad-hoc-signed app. Main strict signature verification, recursive
+app verification and the `289`-entry zero-prohibited-path bundle verifier had
+passed before launch.
+
+Using the tracked `algo/tests/sparklers.raw` fixture
+(`e84afbecdc07d2910ae846a4ae0ee246f5b9c97a53816c637d4f85c023d7c234`), human
+observation confirmed the `EB plus` main window without an error dialog, RAW
+open with an event/playback view, automatic playback, `Pause`, `Play`/resume,
+an approximately 50% seek, an unchecked `Loop` control, responsive EOF
+behavior, and normal `File` -> `Exit`. The Finder-launched PID was observed,
+and no `gui_for_openeb` process remained after the window closed.
+
+Finder launch intentionally produced no app stdout/stderr or shell exit code.
+No error, crash or hang was observed by the operator; this session supplies no
+machine fatal-marker scan. Metadata is retained in
+`.logs/m8-a-finder-qualification/20260821-134242/session_meta.txt`.
+
+### 8. Full regression CTest
 
 The final configured suite ran once from the existing Release/arm64 build tree:
 
@@ -198,24 +221,31 @@ and the earlier scrubbed focused tests.
 ### Machine evidence
 
 Bundle structure, Mach-O architecture and UUID, `LC_LOAD_DYLIB`/`LC_RPATH`,
-code-signature verification, the 289-entry loader audit, fixture hash, process
-exit code, CTest counts and fatal-marker scans are machine evidence.
+code-signature verification, the 289-entry loader audit, fixture hash,
+Terminal-direct process exit code, CTest counts and Terminal-direct
+fatal-marker scans are machine evidence. M8-A2 additionally recorded the
+Finder-launched PID and confirmed that no matching process remained after
+normal exit.
 
 ### Human observation
 
 Window appearance, RAW view, visible playback, pause/resume, approximate seek,
 EOF responsiveness and normal `File -> Exit` are human observations. They are
 not numerical event-count, pixel-correctness, algorithm-correctness or model
-qualification claims.
+qualification claims. The M8-A2 Finder session has no stdout/stderr or shell
+exit code; its no-error/no-crash/no-hang result is human observation, not
+fatal-marker evidence.
 
 ## Not run and limitations
 
-- Finder launch: **Not run**; Terminal-direct launch does not qualify Finder.
+- Finder launch: **Passed** for the bounded local Finder-double-click RAW
+  scope; it does not qualify Gatekeeper or cross-machine distribution.
 - Developer ID signing: **Not run**.
-- Gatekeeper: **Not run**.
+- Gatekeeper distribution qualification: **Not run**.
 - Notarization: **Not run**.
 - DMG: **Not run**.
 - CI: **Not run**.
+- Cross-machine distribution: **Not run**.
 - Physical camera, M6 and M7 Slice 5/6: **Blocked / Not run**.
 - Model runtime in the final regression: **Not run**; eight conditional skips.
 - Linux native configure/build/CTest/runtime: **Not run / unverified**.
@@ -227,8 +257,9 @@ recurrent ONNX artifact was copied into the app or added to Git.
 ## Final disposition
 
 M8-A is **Complete / Qualified for local ad-hoc-signed macOS arm64 packaged
-offline Cocoa runtime within this documented scope**. M8 overall remains
-**In progress** pending CI and distribution work. M6 remains
+runtime, including both Terminal-direct and Finder launch, within the
+documented offline RAW scope**. M8 overall remains **In progress** pending CI
+and distribution work. M6 remains
 **Planned / Paused — physical CenturyArks camera unavailable**; M7 remains
 **In progress / paused pending M6 hardware prerequisites** for its live-camera
 dependent slices.
