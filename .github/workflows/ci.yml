@@ -172,7 +172,7 @@ jobs:
           }
           readonly hdf5_url="https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.6/hdf5-1.14.6.tar.gz"
           readonly expected_sha256="e4defbac30f50d64e1556374aa49e574417c9e72c6b1de7a4ff88c4b1bea6e9b"
-          if [[ -e "$EBPLUS_HDF5_ARCHIVE" ]]; then
+          if [[ -e "$EBPLUS_HDF5_ARCHIVE" || -L "$EBPLUS_HDF5_ARCHIVE" ]]; then
             die "HDF5 archive target already exists: $EBPLUS_HDF5_ARCHIVE"
           fi
           archive_parent="$(dirname "$EBPLUS_HDF5_ARCHIVE")"
@@ -219,20 +219,68 @@ jobs:
           if ! tar -tzf "$EBPLUS_HDF5_ARCHIVE" | awk 'NR <= 12 { print }'; then
             die "Unable to list HDF5 archive entries: $EBPLUS_HDF5_ARCHIVE"
           fi
-          if [[ -e "$EBPLUS_HDF5_SOURCE" ]]; then
+          if ! unsafe_members="$(tar -tzf "$EBPLUS_HDF5_ARCHIVE" | awk '/^\// || /(^|\/)\.\.(\/|$)/ { if (++count <= 20) print }')"; then
+            die "Unable to audit HDF5 archive member names: $EBPLUS_HDF5_ARCHIVE"
+          fi
+          if [[ -n "$unsafe_members" ]]; then
+            printf 'Unsafe HDF5 archive member names:\n%s\n' "$unsafe_members" >&2
+            die "HDF5 archive contains absolute or parent-traversal member names."
+          fi
+          if [[ -e "$EBPLUS_HDF5_SOURCE" || -L "$EBPLUS_HDF5_SOURCE" ]]; then
             die "HDF5 source target already exists: $EBPLUS_HDF5_SOURCE"
           fi
-          if ! mkdir -p "$EBPLUS_HDF5_SOURCE"; then
-            die "Unable to create HDF5 source directory: $EBPLUS_HDF5_SOURCE"
+          extract_root="${EBPLUS_HDF5_SOURCE}.extract"
+          if [[ -e "$extract_root" || -L "$extract_root" ]]; then
+            die "HDF5 temporary extraction root already exists: $extract_root"
           fi
-          if ! tar -xzf "$EBPLUS_HDF5_ARCHIVE" --strip-components=1 -C "$EBPLUS_HDF5_SOURCE"; then
-            die "Unable to extract HDF5 source archive into: $EBPLUS_HDF5_SOURCE"
+          if ! mkdir -p "$extract_root"; then
+            die "Unable to create HDF5 temporary extraction root: $extract_root"
+          fi
+          if ! tar -xzf "$EBPLUS_HDF5_ARCHIVE" -C "$extract_root"; then
+            die "Unable to extract HDF5 source archive into: $extract_root"
+          fi
+          shopt -s nullglob
+          source_candidates=("$extract_root"/*/CMakeLists.txt)
+          shopt -u nullglob
+          if (( ${#source_candidates[@]} == 0 )); then
+            printf 'HDF5 extraction root listing (%s):\n' "$extract_root" >&2
+            find "$extract_root" -maxdepth 2 -mindepth 1 -print | sed -n '1,40p' >&2 || true
+            die "No top-level HDF5 source directory with CMakeLists.txt was found."
+          fi
+          if (( ${#source_candidates[@]} != 1 )); then
+            printf 'Ambiguous HDF5 source-root candidates:\n' >&2
+            for candidate in "${source_candidates[@]}"; do
+              printf '%s\n' "$candidate" >&2
+            done
+            die "Exactly one top-level HDF5 source directory is required."
+          fi
+          actual_source_root="$(dirname "${source_candidates[0]}")"
+          if [[ "$(dirname "$actual_source_root")" != "$extract_root" || ! -d "$actual_source_root" || -L "$actual_source_root" || ! -f "${source_candidates[0]}" || -L "${source_candidates[0]}" ]]; then
+            die "HDF5 source-root candidate is invalid: $actual_source_root"
+          fi
+          if ! extract_root_absolute="$(cd "$extract_root" && pwd -P)"; then
+            die "Unable to resolve HDF5 temporary extraction root: $extract_root"
+          fi
+          if ! actual_source_root_absolute="$(cd "$actual_source_root" && pwd -P)"; then
+            die "Unable to resolve HDF5 extracted source root: $actual_source_root"
+          fi
+          case "$actual_source_root_absolute" in
+            "$extract_root_absolute"/*) ;;
+            *) die "HDF5 source-root candidate escapes the extraction root: $actual_source_root_absolute" ;;
+          esac
+          printf 'HDF5 extracted source root=%s\n' "$actual_source_root_absolute"
+          if ! mv "$actual_source_root_absolute" "$EBPLUS_HDF5_SOURCE"; then
+            die "Unable to normalize HDF5 source root into: $EBPLUS_HDF5_SOURCE"
           fi
           if [[ ! -f "$EBPLUS_HDF5_SOURCE/CMakeLists.txt" ]]; then
-            printf 'HDF5 source root listing (%s):\n' "$EBPLUS_HDF5_SOURCE" >&2
-            ls -la "$EBPLUS_HDF5_SOURCE" >&2 || true
-            die "HDF5 source CMakeLists.txt is absent after extraction."
+            die "HDF5 normalized source CMakeLists.txt is absent: $EBPLUS_HDF5_SOURCE/CMakeLists.txt"
           fi
+          if ! rmdir "$extract_root"; then
+            printf 'HDF5 temporary extraction root is not empty (%s):\n' "$extract_root" >&2
+            find "$extract_root" -maxdepth 2 -mindepth 1 -print | sed -n '1,40p' >&2 || true
+            die "Refusing to remove a non-empty HDF5 temporary extraction root."
+          fi
+          printf 'HDF5 normalized source root=%s\n' "$EBPLUS_HDF5_SOURCE"
           printf 'HDF5 source CMakeLists.txt=%s\n' "$EBPLUS_HDF5_SOURCE/CMakeLists.txt"
 
       - name: Resolve HDF5 build tools
