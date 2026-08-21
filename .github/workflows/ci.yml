@@ -18,6 +18,10 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     env:
+      EBPLUS_HDF5_ARCHIVE: ${{ github.workspace }}/.downloads/ci/hdf5-1.14.6.tar.gz
+      EBPLUS_HDF5_SOURCE: ${{ github.workspace }}/.tmp/ci/hdf5-1.14.6-source
+      EBPLUS_HDF5_BUILD: ${{ github.workspace }}/.build/ci/hdf5-1.14.6
+      EBPLUS_HDF5_PREFIX: ${{ github.workspace }}/.deps/ci/hdf5-1.14.6
       EBPLUS_OPENEB_SOURCE: ${{ github.workspace }}/.tmp/openeb-5.2.0-centuryarks-source
       EBPLUS_OPENEB_BUILD: ${{ github.workspace }}/.build/openeb-5.2.0-centuryarks-macos
       EBPLUS_OPENEB_PREFIX: ${{ github.workspace }}/.deps/openeb-5.2.0-centuryarks-macos
@@ -53,6 +57,7 @@ jobs:
           brew --version
           df -h "$GITHUB_WORKSPACE"
           for path in \
+            "$GITHUB_WORKSPACE/.downloads" \
             "$GITHUB_WORKSPACE/.tmp" \
             "$GITHUB_WORKSPACE/.build" \
             "$GITHUB_WORKSPACE/.deps"; do
@@ -74,7 +79,6 @@ jobs:
             qtsvg \
             opencv@4 \
             boost \
-            hdf5 \
             libusb \
             protobuf \
             googletest \
@@ -82,7 +86,7 @@ jobs:
             glfw
           brew config
           for formula in \
-            make pkgconf qtbase qtsvg opencv@4 boost hdf5 libusb protobuf googletest glew glfw; do
+            make pkgconf qtbase qtsvg opencv@4 boost libusb protobuf googletest glew glfw; do
             printf '%s=%s\n' "$formula" "$(brew --prefix "$formula")"
             brew list --versions "$formula"
           done
@@ -145,7 +149,7 @@ jobs:
             printf 'EBPLUS_OPENCV4_DIR=%s\n' "$opencv_dir"
           } >> "$GITHUB_ENV"
 
-      - name: Enforce the OpenEB disk reserve
+      - name: Enforce the HDF5 and OpenEB disk reserve
         shell: bash
         run: |
           set -euo pipefail
@@ -157,6 +161,116 @@ jobs:
             echo 'Insufficient disk reserve for the OpenEB build.' >&2
             exit 1
           fi
+
+      - name: Bootstrap pinned HDF5 1.14.6
+        shell: bash
+        run: |
+          set -euo pipefail
+          readonly hdf5_url="https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.6/hdf5-1.14.6.tar.gz"
+          readonly expected_sha256="e4defbac30f50d64e1556374aa49e574417c9e72c6b1de7a4ff88c4b1bea6e9b"
+          test ! -e "$EBPLUS_HDF5_ARCHIVE"
+          test ! -e "$EBPLUS_HDF5_SOURCE"
+          test ! -e "$EBPLUS_HDF5_BUILD"
+          test ! -e "$EBPLUS_HDF5_PREFIX"
+          mkdir -p \
+            "$(dirname "$EBPLUS_HDF5_ARCHIVE")" \
+            "$EBPLUS_HDF5_SOURCE" \
+            "$EBPLUS_HDF5_BUILD" \
+            "$EBPLUS_HDF5_PREFIX"
+          curl --fail --location --retry 3 --output "$EBPLUS_HDF5_ARCHIVE" "$hdf5_url"
+          actual_sha256="$(shasum -a 256 "$EBPLUS_HDF5_ARCHIVE" | awk '{print $1}')"
+          test "$actual_sha256" = "$expected_sha256"
+          tar -xzf "$EBPLUS_HDF5_ARCHIVE" --strip-components=1 -C "$EBPLUS_HDF5_SOURCE"
+          test -f "$EBPLUS_HDF5_SOURCE/CMakeLists.txt"
+          make_program="$(brew --prefix make)/bin/gmake"
+          test -x "$make_program"
+          cmake \
+            -S "$EBPLUS_HDF5_SOURCE" \
+            -B "$EBPLUS_HDF5_BUILD" \
+            -G "Unix Makefiles" \
+            -DCMAKE_MAKE_PROGRAM="$make_program" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_INSTALL_PREFIX="$EBPLUS_HDF5_PREFIX" \
+            -DBUILD_SHARED_LIBS=ON \
+            -DBUILD_STATIC_LIBS=OFF \
+            -DBUILD_TESTING=OFF \
+            -DHDF5_BUILD_CPP_LIB=ON \
+            -DHDF5_BUILD_FORTRAN=OFF \
+            -DHDF5_BUILD_HL_LIB=ON \
+            -DHDF5_BUILD_JAVA=OFF \
+            -DHDF5_BUILD_TOOLS=OFF \
+            -DHDF5_BUILD_EXAMPLES=OFF
+          cmake --build "$EBPLUS_HDF5_BUILD" --parallel 3
+          cmake --install "$EBPLUS_HDF5_BUILD"
+          test -f "$EBPLUS_HDF5_PREFIX/lib/libhdf5.dylib"
+          test -f "$EBPLUS_HDF5_PREFIX/lib/libhdf5_cpp.dylib"
+          test -f "$EBPLUS_HDF5_PREFIX/lib/libhdf5_hl.dylib"
+
+      - name: Resolve and verify runner-local HDF5 1.14.6
+        shell: bash
+        run: |
+          set -euo pipefail
+          hdf5_dir="$EBPLUS_HDF5_PREFIX/lib/cmake/hdf5"
+          hdf5_config="$hdf5_dir/hdf5-config.cmake"
+          if [[ ! -f "$hdf5_config" ]]; then
+            hdf5_config="$(find "$EBPLUS_HDF5_PREFIX" -type f \( -name hdf5-config.cmake -o -name HDF5Config.cmake \) -print -quit || true)"
+            if [[ -n "$hdf5_config" && -f "$hdf5_config" ]]; then
+              hdf5_dir="$(dirname "$hdf5_config")"
+            else
+              printf 'Unable to locate the HDF5 CMake package below: %s\n' "$EBPLUS_HDF5_PREFIX" >&2
+              ls -la "$EBPLUS_HDF5_PREFIX/lib" >&2 || true
+              ls -la "$EBPLUS_HDF5_PREFIX/lib/cmake" >&2 || true
+              exit 1
+            fi
+          fi
+          test -f "$hdf5_config"
+          printf 'HDF5 source URL=%s\n' "https://github.com/HDFGroup/hdf5/releases/download/hdf5_1.14.6/hdf5-1.14.6.tar.gz"
+          printf 'HDF5 SHA-256=%s\n' "$(shasum -a 256 "$EBPLUS_HDF5_ARCHIVE" | awk '{print $1}')"
+          printf 'HDF5 prefix=%s\n' "$EBPLUS_HDF5_PREFIX"
+          printf 'HDF5 CMake package=%s\n' "$hdf5_config"
+          probe_dir="$RUNNER_TEMP/ebplus-hdf5-1.14.6-probe"
+          mkdir -p "$probe_dir"
+          cat > "$probe_dir/CMakeLists.txt" <<'EOF'
+          cmake_minimum_required(VERSION 3.20)
+          project(ebplus_hdf5_compatibility_probe LANGUAGES C CXX)
+          find_package(HDF5 CONFIG REQUIRED COMPONENTS shared C CXX HL)
+          if(NOT HDF5_VERSION_STRING STREQUAL "1.14.6")
+              message(FATAL_ERROR "HDF5 1.14.6 is required, but found ${HDF5_VERSION_STRING}.")
+          endif()
+          foreach(component IN ITEMS HDF5_shared_C_FOUND HDF5_shared_CXX_FOUND HDF5_shared_HL_FOUND)
+              if(NOT ${component})
+                  message(FATAL_ERROR "Required HDF5 shared component is unavailable: ${component}.")
+              endif()
+          endforeach()
+          foreach(target IN ITEMS hdf5-shared hdf5_cpp-shared hdf5_hl-shared)
+              if(NOT TARGET ${target})
+                  message(FATAL_ERROR "Required HDF5 shared target is unavailable: ${target}.")
+              endif()
+          endforeach()
+          message(STATUS "HDF5_VERSION=${HDF5_VERSION_STRING}")
+          message(STATUS "HDF5_DIR=${HDF5_DIR}")
+          EOF
+          cmake \
+            -S "$probe_dir" \
+            -B "$probe_dir/build" \
+            "-DHDF5_DIR=$hdf5_dir" \
+            "-DHDF5_ROOT=$EBPLUS_HDF5_PREFIX"
+          {
+            printf 'EBPLUS_HDF5_DIR=%s\n' "$hdf5_dir"
+          } >> "$GITHUB_ENV"
+          df -h "$GITHUB_WORKSPACE"
+          for path in \
+            "$GITHUB_WORKSPACE/.downloads" \
+            "$GITHUB_WORKSPACE/.tmp" \
+            "$GITHUB_WORKSPACE/.build" \
+            "$GITHUB_WORKSPACE/.deps"; do
+            if [[ -e "$path" ]]; then
+              du -sh "$path"
+            else
+              printf '%s: absent\n' "$path"
+            fi
+          done
 
       - name: Prepare the audited CenturyArks OpenEB source
         shell: bash
@@ -174,13 +288,17 @@ jobs:
           homebrew_prefix="$(brew --prefix)"
           make_program="$(brew --prefix make)/bin/gmake"
           test -f "$EBPLUS_OPENCV4_DIR/OpenCVConfig.cmake"
+          if [[ ! -f "$EBPLUS_HDF5_DIR/hdf5-config.cmake" && ! -f "$EBPLUS_HDF5_DIR/HDF5Config.cmake" ]]; then
+            printf 'Runner-local HDF5 CMake package is missing: %s\n' "$EBPLUS_HDF5_DIR" >&2
+            exit 1
+          fi
           dependency_prefixes=(
             "$EBPLUS_OPENCV4_PREFIX"
+            "$EBPLUS_HDF5_PREFIX"
             "$homebrew_prefix"
             "$(brew --prefix qtbase)"
             "$(brew --prefix qtsvg)"
             "$(brew --prefix boost)"
-            "$(brew --prefix hdf5)"
             "$(brew --prefix libusb)"
             "$(brew --prefix protobuf)"
             "$(brew --prefix googletest)"
@@ -188,7 +306,7 @@ jobs:
             "$(brew --prefix glfw)"
           )
           cmake_prefix_path="$(IFS=';'; printf '%s' "${dependency_prefixes[*]}")"
-          pkg_config_libdir="$homebrew_prefix/lib/pkgconfig:$homebrew_prefix/share/pkgconfig"
+          pkg_config_libdir="$EBPLUS_HDF5_PREFIX/lib/pkgconfig:$EBPLUS_HDF5_PREFIX/share/pkgconfig:$homebrew_prefix/lib/pkgconfig:$homebrew_prefix/share/pkgconfig"
           test -x "$make_program"
           PKG_CONFIG_PATH= \
           PKG_CONFIG_LIBDIR="$pkg_config_libdir" \
@@ -202,6 +320,9 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$EBPLUS_OPENEB_PREFIX" \
             "-DCMAKE_PREFIX_PATH=$cmake_prefix_path" \
             "-DOpenCV_DIR=$EBPLUS_OPENCV4_DIR" \
+            "-DHDF5_DIR=$EBPLUS_HDF5_DIR" \
+            "-DHDF5_ROOT=$EBPLUS_HDF5_PREFIX" \
+            -DHDF5_USE_STATIC_LIBRARIES=FALSE \
             -DBUILD_TESTING=OFF \
             -DBUILD_SAMPLES=ON \
             -DCOMPILE_PYTHON3_BINDINGS=OFF \
@@ -214,11 +335,15 @@ jobs:
             -DUSE_PROTOBUF=ON \
             -DUSE_OPENGL_ES3=OFF
 
-      - name: Report the OpenEB OpenCV selection
+      - name: Report the OpenEB OpenCV and HDF5 selections
         shell: bash
         run: |
           set -euo pipefail
           grep '^OpenCV_DIR:' "$EBPLUS_OPENEB_BUILD/CMakeCache.txt"
+          actual_hdf5_dir="$(sed -n 's/^HDF5_DIR:PATH=//p' "$EBPLUS_OPENEB_BUILD/CMakeCache.txt")"
+          test "$actual_hdf5_dir" = "$EBPLUS_HDF5_DIR"
+          grep -F '[hdf5-shared]' "$EBPLUS_OPENEB_BUILD/CMakeCache.txt"
+          grep -F 'v1.14.6' "$EBPLUS_OPENEB_BUILD/CMakeCache.txt"
 
       - name: Build and install OpenEB 5.2.0
         shell: bash
@@ -236,6 +361,7 @@ jobs:
           set -euo pipefail
           df -h "$GITHUB_WORKSPACE"
           for path in \
+            "$GITHUB_WORKSPACE/.downloads" \
             "$GITHUB_WORKSPACE/.tmp" \
             "$GITHUB_WORKSPACE/.build" \
             "$GITHUB_WORKSPACE/.deps"; do
@@ -266,14 +392,18 @@ jobs:
           homebrew_prefix="$(brew --prefix)"
           make_program="$(brew --prefix make)/bin/gmake"
           test -f "$EBPLUS_OPENCV4_DIR/OpenCVConfig.cmake"
+          if [[ ! -f "$EBPLUS_HDF5_DIR/hdf5-config.cmake" && ! -f "$EBPLUS_HDF5_DIR/HDF5Config.cmake" ]]; then
+            printf 'Runner-local HDF5 CMake package is missing: %s\n' "$EBPLUS_HDF5_DIR" >&2
+            exit 1
+          fi
           dependency_prefixes=(
             "$EBPLUS_OPENEB_PREFIX"
             "$EBPLUS_OPENCV4_PREFIX"
+            "$EBPLUS_HDF5_PREFIX"
             "$homebrew_prefix"
             "$(brew --prefix qtbase)"
             "$(brew --prefix qtsvg)"
             "$(brew --prefix boost)"
-            "$(brew --prefix hdf5)"
             "$(brew --prefix libusb)"
             "$(brew --prefix protobuf)"
             "$(brew --prefix googletest)"
@@ -292,6 +422,9 @@ jobs:
             -DCMAKE_INSTALL_PREFIX="$EBPLUS_PREFIX" \
             "-DCMAKE_PREFIX_PATH=$cmake_prefix_path" \
             "-DOpenCV_DIR=$EBPLUS_OPENCV4_DIR" \
+            "-DHDF5_DIR=$EBPLUS_HDF5_DIR" \
+            "-DHDF5_ROOT=$EBPLUS_HDF5_PREFIX" \
+            -DHDF5_USE_STATIC_LIBRARIES=FALSE \
             -DMetavisionSDK_DIR="$EBPLUS_OPENEB_PREFIX/share/cmake/MetavisionSDK" \
             -DEBPLUS_ONNXRUNTIME_MODE=OFF \
             -DBUILD_TESTING=ON \
@@ -342,6 +475,7 @@ jobs:
           set -euo pipefail
           df -h "$GITHUB_WORKSPACE"
           for path in \
+            "$GITHUB_WORKSPACE/.downloads" \
             "$GITHUB_WORKSPACE/.tmp" \
             "$GITHUB_WORKSPACE/.build" \
             "$GITHUB_WORKSPACE/.deps"; do
