@@ -539,9 +539,10 @@ acceptance.
 ### Milestone 8: Packaging and CI
 
 **状态：** `In progress` — M8-A is `Complete / Qualified` for a local
-ad-hoc-signed macOS arm64 packaged offline Cocoa runtime within its documented
-scope. CI, Finder launch, Developer ID signing, Gatekeeper, notarization and
-DMG remain `Not run`.
+ad-hoc-signed macOS arm64 packaged runtime, including both Terminal-direct and
+Finder-launched offline RAW workflows within its documented scope. CI,
+Developer ID signing, Gatekeeper distribution qualification, notarization, DMG
+and cross-machine distribution remain `Not run`.
 **独立分支：** `build/macos-packaging-ci`
 
 **范围**
@@ -580,14 +581,22 @@ The evidence chain includes the `.app` foundation and staged dependency
 closure, the first pre-window `CODESIGNING / Invalid Page` launch failure, the
 M8-A1 diagnosis that post-fixup Mach-O mutations invalidated pre-existing
 signatures, final inside-out local ad-hoc signing, recursive signature and
-loader verification, one successful Terminal-direct Cocoa RAW session, and
-the final configured CTest result of `399 discovered / 391 passed / 8 skipped /
-0 failed / exit 0`.
+loader verification, one successful Terminal-direct Cocoa RAW session, the
+supplementary M8-A2 Finder double-click session, and the final configured CTest
+result of `399 discovered / 391 passed / 8 skipped / 0 failed / exit 0`.
 
-This disposition does not qualify Finder launch, physical camera operation,
-M6/M7 live-camera slices, model runtime in the final regression, Linux native
-runtime, CI, Developer ID signing, Gatekeeper, notarization or DMG. The full
-CTest shell inherited `HDF5_PLUGIN_PATH`; it is regression evidence and not a
+M8-A2 used the final arm64, local-ad-hoc-signed app and the tracked
+`algo/tests/sparklers.raw` fixture. Human observation confirmed `EB plus`, RAW
+open, automatic playback, `Pause`, `Play`/resume, an approximately 50% seek,
+responsive EOF and normal `File` -> `Exit`; the Finder-launched process then
+disappeared. Finder supplied no app stdout/stderr or shell exit code, so this
+is human-observation/process-disappearance evidence, not fatal-marker evidence.
+
+This disposition does not qualify broader package workflows, physical camera
+operation, M6/M7 live-camera slices, model runtime in the final regression,
+Linux native runtime, CI, Developer ID signing, Gatekeeper distribution
+qualification, notarization, DMG or cross-machine distribution. The full CTest
+shell inherited `HDF5_PLUGIN_PATH`; it is regression evidence and not a
 substitute for dependency-isolation evidence.
 
 ## 跨平台实施原则
