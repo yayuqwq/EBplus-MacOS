@@ -1,0 +1,286 @@
+name: macOS arm64 CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-arm64:
+    name: macOS 15 arm64
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      EBPLUS_OPENEB_SOURCE: ${{ github.workspace }}/.tmp/openeb-5.2.0-centuryarks-source
+      EBPLUS_OPENEB_BUILD: ${{ github.workspace }}/.build/openeb-5.2.0-centuryarks-macos
+      EBPLUS_OPENEB_PREFIX: ${{ github.workspace }}/.deps/openeb-5.2.0-centuryarks-macos
+      EBPLUS_BUILD: ${{ github.workspace }}/.build/ebplus-macos
+      EBPLUS_PREFIX: ${{ github.workspace }}/.deps/ebplus-macos
+
+    steps:
+      - name: Check out the complete source and submodules
+        uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Attach a CI-local branch for CenturyArks provenance checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          ci_branch="ci/macos-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git switch --create "$ci_branch"
+          test "$(git branch --show-current)" = "$ci_branch"
+          test "$(git rev-parse --is-shallow-repository)" = false
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          git cat-file -e 9003b5416676e78ba994d912087486cfa94fae73^{commit}
+
+      - name: Report initial runner and disk telemetry
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          cmake --version
+          xcodebuild -version
+          brew --version
+          df -h "$GITHUB_WORKSPACE"
+          for path in \
+            "$GITHUB_WORKSPACE/.tmp" \
+            "$GITHUB_WORKSPACE/.build" \
+            "$GITHUB_WORKSPACE/.deps"; do
+            if [[ -e "$path" ]]; then
+              du -sh "$path"
+            else
+              printf '%s: absent\n' "$path"
+            fi
+          done
+
+      - name: Install macOS build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          HOMEBREW_NO_AUTO_UPDATE=1 brew install \
+            make \
+            pkgconf \
+            qtbase \
+            qtsvg \
+            opencv \
+            boost \
+            hdf5 \
+            libusb \
+            protobuf \
+            googletest \
+            glew \
+            glfw
+          brew config
+          for formula in \
+            make pkgconf qtbase qtsvg opencv boost hdf5 libusb protobuf googletest glew glfw; do
+            printf '%s=%s\n' "$formula" "$(brew --prefix "$formula")"
+            brew list --versions "$formula"
+          done
+          df -h "$GITHUB_WORKSPACE"
+
+      - name: Enforce the OpenEB disk reserve
+        shell: bash
+        run: |
+          set -euo pipefail
+          available_kib="$(df -k "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
+          reserve_kib=$((3 * 1024 * 1024))
+          test -n "$available_kib"
+          printf 'available_kib=%s reserve_kib=%s\n' "$available_kib" "$reserve_kib"
+          if (( available_kib < reserve_kib )); then
+            echo 'Insufficient disk reserve for the OpenEB build.' >&2
+            exit 1
+          fi
+
+      - name: Prepare the audited CenturyArks OpenEB source
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/prepare_centuryarks_openeb_source.sh
+          scripts/prepare_centuryarks_openeb_source.sh
+          test -d "$EBPLUS_OPENEB_SOURCE"
+          test ! -d "$EBPLUS_OPENEB_SOURCE/.git"
+
+      - name: Configure OpenEB 5.2.0 for macOS arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          homebrew_prefix="$(brew --prefix)"
+          make_program="$(brew --prefix make)/bin/gmake"
+          dependency_prefixes=(
+            "$homebrew_prefix"
+            "$(brew --prefix qtbase)"
+            "$(brew --prefix qtsvg)"
+            "$(brew --prefix opencv)"
+            "$(brew --prefix boost)"
+            "$(brew --prefix hdf5)"
+            "$(brew --prefix libusb)"
+            "$(brew --prefix protobuf)"
+            "$(brew --prefix googletest)"
+            "$(brew --prefix glew)"
+            "$(brew --prefix glfw)"
+          )
+          cmake_prefix_path="$(IFS=';'; printf '%s' "${dependency_prefixes[*]}")"
+          pkg_config_libdir="$homebrew_prefix/lib/pkgconfig:$homebrew_prefix/share/pkgconfig"
+          test -x "$make_program"
+          PKG_CONFIG_PATH= \
+          PKG_CONFIG_LIBDIR="$pkg_config_libdir" \
+          cmake \
+            -S "$EBPLUS_OPENEB_SOURCE" \
+            -B "$EBPLUS_OPENEB_BUILD" \
+            -G "Unix Makefiles" \
+            -DCMAKE_MAKE_PROGRAM="$make_program" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_INSTALL_PREFIX="$EBPLUS_OPENEB_PREFIX" \
+            "-DCMAKE_PREFIX_PATH=$cmake_prefix_path" \
+            -DBUILD_TESTING=OFF \
+            -DBUILD_SAMPLES=ON \
+            -DCOMPILE_PYTHON3_BINDINGS=OFF \
+            -DGENERATE_DOC=OFF \
+            -DGENERATE_DOC_PYTHON_BINDINGS=OFF \
+            -DCODE_COVERAGE=OFF \
+            -DLFS_DOWNLOAD_COMPILATION_RESOURCES=OFF \
+            -DLFS_DOWNLOAD_VALIDATION_RESOURCES=OFF \
+            '-DMETAVISION_SELECTED_MODULES=base;core;stream;ui' \
+            -DUSE_PROTOBUF=ON \
+            -DUSE_OPENGL_ES3=OFF
+
+      - name: Build and install OpenEB 5.2.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build "$EBPLUS_OPENEB_BUILD" --parallel 3
+          cmake --install "$EBPLUS_OPENEB_BUILD"
+          test -f "$EBPLUS_OPENEB_PREFIX/share/cmake/MetavisionSDK/MetavisionSDKConfig.cmake"
+          test -d "$EBPLUS_OPENEB_PREFIX/lib/metavision/hal/plugins"
+          test -f "$EBPLUS_OPENEB_PREFIX/lib/hdf5/plugin/libH5Zecf.dylib"
+
+      - name: Report OpenEB disk telemetry
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h "$GITHUB_WORKSPACE"
+          for path in \
+            "$GITHUB_WORKSPACE/.tmp" \
+            "$GITHUB_WORKSPACE/.build" \
+            "$GITHUB_WORKSPACE/.deps"; do
+            if [[ -e "$path" ]]; then
+              du -sh "$path"
+            else
+              printf '%s: absent\n' "$path"
+            fi
+          done
+
+      - name: Enforce the EBplus disk reserve
+        shell: bash
+        run: |
+          set -euo pipefail
+          available_kib="$(df -k "$GITHUB_WORKSPACE" | awk 'NR == 2 { print $4 }')"
+          reserve_kib=$((2 * 1024 * 1024))
+          test -n "$available_kib"
+          printf 'available_kib=%s reserve_kib=%s\n' "$available_kib" "$reserve_kib"
+          if (( available_kib < reserve_kib )); then
+            echo 'Insufficient disk reserve for the EBplus build and package.' >&2
+            exit 1
+          fi
+
+      - name: Configure EBplus Release for macOS arm64
+        shell: bash
+        run: |
+          set -euo pipefail
+          homebrew_prefix="$(brew --prefix)"
+          make_program="$(brew --prefix make)/bin/gmake"
+          dependency_prefixes=(
+            "$EBPLUS_OPENEB_PREFIX"
+            "$homebrew_prefix"
+            "$(brew --prefix qtbase)"
+            "$(brew --prefix qtsvg)"
+            "$(brew --prefix opencv)"
+            "$(brew --prefix boost)"
+            "$(brew --prefix hdf5)"
+            "$(brew --prefix libusb)"
+            "$(brew --prefix protobuf)"
+            "$(brew --prefix googletest)"
+            "$(brew --prefix glew)"
+            "$(brew --prefix glfw)"
+          )
+          cmake_prefix_path="$(IFS=';'; printf '%s' "${dependency_prefixes[*]}")"
+          test -x "$make_program"
+          cmake \
+            -S "$GITHUB_WORKSPACE" \
+            -B "$EBPLUS_BUILD" \
+            -G "Unix Makefiles" \
+            -DCMAKE_MAKE_PROGRAM="$make_program" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_INSTALL_PREFIX="$EBPLUS_PREFIX" \
+            "-DCMAKE_PREFIX_PATH=$cmake_prefix_path" \
+            -DMetavisionSDK_DIR="$EBPLUS_OPENEB_PREFIX/share/cmake/MetavisionSDK" \
+            -DEBPLUS_ONNXRUNTIME_MODE=OFF \
+            -DBUILD_TESTING=ON \
+            -DGUI_BUILD_TESTS=ON
+
+      - name: Build EBplus
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build "$EBPLUS_BUILD" --parallel 3
+
+      - name: Run the full configured CTest suite
+        shell: bash
+        env:
+          MV_HAL_PLUGIN_PATH: ${{ env.EBPLUS_OPENEB_PREFIX }}/lib/metavision/hal/plugins
+          MV_HAL_PLUGIN_SEARCH_MODE: PLUGIN_PATH_ONLY
+          HDF5_PLUGIN_PATH: ${{ env.EBPLUS_OPENEB_PREFIX }}/lib/hdf5/plugin
+        run: |
+          set -euo pipefail
+          test -f "$HDF5_PLUGIN_PATH/libH5Zecf.dylib"
+          ctest --test-dir "$EBPLUS_BUILD" --output-on-failure --parallel 2
+
+      - name: Install and package the app bundle
+        shell: bash
+        env:
+          CMAKE_INSTALL_MODE: COPY
+        run: |
+          set -euo pipefail
+          cmake --install "$EBPLUS_BUILD"
+          test -x "$EBPLUS_PREFIX/gui_for_openeb.app/Contents/MacOS/gui_for_openeb"
+
+      - name: Verify the packaged bundle and local signatures
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$EBPLUS_PREFIX/gui_for_openeb.app"
+          main_executable="$app/Contents/MacOS/gui_for_openeb"
+          cmake \
+            -DEBPLUS_BUNDLE_PATH="$app" \
+            -P "$EBPLUS_BUILD/gui/verify_macos_bundle.cmake"
+          /usr/bin/codesign -d --verbose=4 "$app"
+          /usr/bin/codesign --verify --strict --verbose=4 "$main_executable"
+          /usr/bin/codesign --verify --deep --strict --verbose=4 "$app"
+
+      - name: Report final disk telemetry
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h "$GITHUB_WORKSPACE"
+          for path in \
+            "$GITHUB_WORKSPACE/.tmp" \
+            "$GITHUB_WORKSPACE/.build" \
+            "$GITHUB_WORKSPACE/.deps"; do
+            if [[ -e "$path" ]]; then
+              du -sh "$path"
+            else
+              printf '%s: absent\n' "$path"
+            fi
+          done
