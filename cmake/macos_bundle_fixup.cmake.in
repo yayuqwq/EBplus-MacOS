@@ -114,31 +114,363 @@ set(_dynamic_plugins
     "${_qt_imageformats_destination}/libqsvg.dylib"
     "${_qt_iconengines_destination}/libqsvgicon.dylib")
 
+function(_ebplus_read_macho_load_metadata bundle_file output_id output_loads output_rpaths)
+    execute_process(
+        COMMAND /usr/bin/otool -l "${bundle_file}"
+        RESULT_VARIABLE _otool_lc_result
+        OUTPUT_VARIABLE _otool_lc_output
+        ERROR_VARIABLE _otool_lc_error)
+    if(NOT _otool_lc_result EQUAL 0)
+        message(FATAL_ERROR
+            "Could not inspect loader metadata for ${bundle_file}: ${_otool_lc_error}")
+    endif()
+
+    string(REPLACE "\n" ";" _load_command_lines "${_otool_lc_output}")
+    set(_next_value_kind "")
+    set(_dylib_id "")
+    set(_load_paths "")
+    set(_rpath_paths "")
+    foreach(_load_command_line IN LISTS _load_command_lines)
+        string(STRIP "${_load_command_line}" _load_command_line)
+        if(_load_command_line MATCHES "^cmd (.+)$")
+            set(_load_command "${CMAKE_MATCH_1}")
+            if(_load_command STREQUAL "LC_ID_DYLIB")
+                set(_next_value_kind "id")
+            elseif(_load_command MATCHES
+                   "^LC_(LOAD|LOAD_WEAK|REEXPORT|LOAD_UPWARD|LAZY_LOAD)_DYLIB$")
+                set(_next_value_kind "load")
+            elseif(_load_command STREQUAL "LC_RPATH")
+                set(_next_value_kind "rpath")
+            else()
+                set(_next_value_kind "")
+            endif()
+            continue()
+        endif()
+
+        if((_next_value_kind STREQUAL "id" OR
+            _next_value_kind STREQUAL "load") AND
+           _load_command_line MATCHES "^name (.*) \\(offset [0-9]+\\)$")
+            if(_next_value_kind STREQUAL "id")
+                set(_dylib_id "${CMAKE_MATCH_1}")
+            else()
+                list(APPEND _load_paths "${CMAKE_MATCH_1}")
+            endif()
+            set(_next_value_kind "")
+        elseif(_next_value_kind STREQUAL "rpath" AND
+               _load_command_line MATCHES "^path (.*) \\(offset [0-9]+\\)$")
+            list(APPEND _rpath_paths "${CMAKE_MATCH_1}")
+            set(_next_value_kind "")
+        endif()
+    endforeach()
+
+    set(${output_id} "${_dylib_id}" PARENT_SCOPE)
+    set(${output_loads} "${_load_paths}" PARENT_SCOPE)
+    set(${output_rpaths} "${_rpath_paths}" PARENT_SCOPE)
+endfunction()
+
 set(_runtime_search_directories "@EBPLUS_MACOS_BUNDLE_SEARCH_DIRECTORIES@")
 set(_runtime_seed_libraries "@EBPLUS_MACOS_BUNDLE_RUNTIME_SEED_LIBRARIES@")
+
+# `file(GET_RUNTIME_DEPENDENCIES)` deliberately does not consult DIRECTORIES on
+# Apple. Freeze the configured producer roots for the narrow fallback below;
+# native-resolved directories may later extend only the BundleUtilities input.
+set(_trusted_producer_directories "")
+foreach(_configured_runtime_search_directory IN LISTS _runtime_search_directories)
+    if("${_configured_runtime_search_directory}" STREQUAL "" OR
+       NOT IS_ABSOLUTE "${_configured_runtime_search_directory}" OR
+       NOT IS_DIRECTORY "${_configured_runtime_search_directory}")
+        continue()
+    endif()
+    get_filename_component(_trusted_producer_directory
+        "${_configured_runtime_search_directory}" REALPATH)
+    if(_trusted_producer_directory STREQUAL "/" OR
+       _trusted_producer_directory MATCHES "^/(System/Library|usr/lib)(/|$)")
+        continue()
+    endif()
+    list(APPEND _trusted_producer_directories "${_trusted_producer_directory}")
+endforeach()
+list(REMOVE_DUPLICATES _trusted_producer_directories)
+message(STATUS
+    "Apple runtime fallback trusted producer directories: ${_trusted_producer_directories}")
+
+function(_ebplus_normalize_apple_fallback_identity raw_identity output_leaf)
+    set(_fallback_leaf "")
+    if("${raw_identity}" MATCHES "^@rpath/([^/]+)$")
+        set(_fallback_leaf "${CMAKE_MATCH_1}")
+    elseif("${raw_identity}" MATCHES "^[^/@][^/]*$")
+        # CMake releases have differed in whether this is emitted with @rpath.
+        set(_fallback_leaf "${raw_identity}")
+    else()
+        message(FATAL_ERROR
+            "Apple runtime fallback rejected unresolved identity: ${raw_identity}")
+    endif()
+
+    if(_fallback_leaf STREQUAL "" OR
+       NOT "${_fallback_leaf}" MATCHES "\\.dylib$" OR
+       "${_fallback_leaf}" MATCHES "\\.\\." OR
+       "${_fallback_leaf}" MATCHES "\\.framework" OR
+       "${_fallback_leaf}" MATCHES "\\$<")
+        message(FATAL_ERROR
+            "Apple runtime fallback rejected non-leaf dylib identity: ${raw_identity}")
+    endif()
+
+    # Apple system dylibs must remain the native resolver's domain. This is an
+    # exact deny check, never a system-directory fallback search.
+    if(EXISTS "/usr/lib/${_fallback_leaf}" OR
+       "${_fallback_leaf}" MATCHES
+       "^lib(System\\.B|objc\\.A|c\\+\\+.*|dispatch|dyld|xpc|swift.*)\\.dylib$")
+        message(FATAL_ERROR
+            "Apple runtime fallback rejected system-like identity: ${raw_identity}")
+    endif()
+
+    set(${output_leaf} "${_fallback_leaf}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_validate_apple_fallback_candidate candidate requested_leaf output_id)
+    execute_process(
+        COMMAND /usr/bin/otool -D "${candidate}"
+        RESULT_VARIABLE _otool_id_result
+        OUTPUT_VARIABLE _otool_id_output
+        ERROR_VARIABLE _otool_id_error)
+    if(NOT _otool_id_result EQUAL 0)
+        message(FATAL_ERROR
+            "Apple runtime fallback candidate is not a Mach-O dylib: ${candidate}: "
+            "${_otool_id_error}")
+    endif()
+    string(STRIP "${_otool_id_output}" _otool_id_output)
+    message(STATUS
+        "Apple runtime fallback otool -D for ${candidate}:\n${_otool_id_output}")
+
+    string(REPLACE "\n" ";" _otool_id_lines "${_otool_id_output}")
+    set(_candidate_dylib_id "")
+    foreach(_otool_id_line IN LISTS _otool_id_lines)
+        string(STRIP "${_otool_id_line}" _otool_id_line)
+        if(_otool_id_line STREQUAL "" OR _otool_id_line MATCHES ":$")
+            continue()
+        endif()
+        if(NOT _candidate_dylib_id STREQUAL "")
+            message(FATAL_ERROR
+                "Apple runtime fallback candidate has multiple LC_ID_DYLIB values: "
+                "${candidate}")
+        endif()
+        set(_candidate_dylib_id "${_otool_id_line}")
+    endforeach()
+    if(_candidate_dylib_id STREQUAL "")
+        message(FATAL_ERROR
+            "Apple runtime fallback candidate has no LC_ID_DYLIB: ${candidate}")
+    endif()
+
+    get_filename_component(_candidate_id_leaf "${_candidate_dylib_id}" NAME)
+    if(NOT _candidate_id_leaf STREQUAL "${requested_leaf}")
+        message(FATAL_ERROR
+            "Apple runtime fallback LC_ID_DYLIB basename mismatch for ${candidate}: "
+            "requested=${requested_leaf} actual=${_candidate_dylib_id}")
+    endif()
+    if(_candidate_dylib_id MATCHES "^@rpath/" AND
+       NOT _candidate_dylib_id STREQUAL "@rpath/${requested_leaf}")
+        message(FATAL_ERROR
+            "Apple runtime fallback LC_ID_DYLIB has an unexpected @rpath identity: "
+            "${candidate}: ${_candidate_dylib_id}")
+    endif()
+    if(_candidate_dylib_id MATCHES "^/(System/Library|usr/lib)(/|$)")
+        message(FATAL_ERROR
+            "Apple runtime fallback rejected a system LC_ID_DYLIB: ${candidate}: "
+            "${_candidate_dylib_id}")
+    endif()
+
+    _ebplus_read_macho_load_metadata("${candidate}"
+        _candidate_metadata_id _candidate_loads _candidate_rpaths)
+    if(NOT _candidate_metadata_id STREQUAL "${_candidate_dylib_id}")
+        message(FATAL_ERROR
+            "Apple runtime fallback LC_ID_DYLIB inspection disagrees for ${candidate}: "
+            "otool -D=${_candidate_dylib_id} otool -l=${_candidate_metadata_id}")
+    endif()
+
+    execute_process(
+        COMMAND /usr/bin/otool -L "${candidate}"
+        RESULT_VARIABLE _otool_l_result
+        OUTPUT_VARIABLE _otool_l_output
+        ERROR_VARIABLE _otool_l_error)
+    if(NOT _otool_l_result EQUAL 0)
+        message(FATAL_ERROR
+            "Could not inspect Apple runtime fallback dependencies for ${candidate}: "
+            "${_otool_l_error}")
+    endif()
+    string(STRIP "${_otool_l_output}" _otool_l_output)
+    message(STATUS
+        "Apple runtime fallback otool -L for ${candidate}:\n${_otool_l_output}")
+    if(_candidate_rpaths)
+        message(STATUS
+            "Apple runtime fallback LC_RPATH for ${candidate}: ${_candidate_rpaths}")
+    else()
+        message(STATUS "Apple runtime fallback LC_RPATH for ${candidate}: <none>")
+    endif()
+
+    set(${output_id} "${_candidate_dylib_id}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_resolve_apple_runtime_fallback raw_identity requested_leaf output_candidate)
+    set(_fallback_candidates "")
+    foreach(_trusted_producer_directory IN LISTS _trusted_producer_directories)
+        set(_fallback_candidate "${_trusted_producer_directory}/${requested_leaf}")
+        if(NOT EXISTS "${_fallback_candidate}")
+            continue()
+        endif()
+
+        get_filename_component(_fallback_candidate_real
+            "${_fallback_candidate}" REALPATH)
+        if(NOT EXISTS "${_fallback_candidate_real}" OR
+           IS_DIRECTORY "${_fallback_candidate_real}")
+            message(FATAL_ERROR
+                "Apple runtime fallback candidate is not a real file: "
+                "${_fallback_candidate}")
+        endif()
+        file(RELATIVE_PATH _fallback_candidate_relative
+            "${_trusted_producer_directory}" "${_fallback_candidate_real}")
+        if(_fallback_candidate_relative STREQUAL ".." OR
+           _fallback_candidate_relative MATCHES "^\\.\\./" OR
+           IS_ABSOLUTE "${_fallback_candidate_relative}")
+            message(FATAL_ERROR
+                "Apple runtime fallback candidate escapes its trusted producer directory: "
+                "${_fallback_candidate} -> ${_fallback_candidate_real}")
+        endif()
+        if(_fallback_candidate_real MATCHES "^/(System/Library|usr/lib)(/|$)")
+            message(FATAL_ERROR
+                "Apple runtime fallback candidate resolves to a system path: "
+                "${_fallback_candidate_real}")
+        endif()
+        list(APPEND _fallback_candidates "${_fallback_candidate_real}")
+    endforeach()
+
+    list(REMOVE_DUPLICATES _fallback_candidates)
+    list(LENGTH _fallback_candidates _fallback_candidate_count)
+    if(_fallback_candidate_count EQUAL 0)
+        message(FATAL_ERROR
+            "Apple runtime fallback found no trusted producer candidate for "
+            "${raw_identity} (leaf=${requested_leaf})")
+    endif()
+    if(NOT _fallback_candidate_count EQUAL 1)
+        message(FATAL_ERROR
+            "Apple runtime fallback found ambiguous trusted producer candidates for "
+            "${raw_identity}: ${_fallback_candidates}")
+    endif()
+
+    list(GET _fallback_candidates 0 _fallback_candidate)
+    _ebplus_validate_apple_fallback_candidate("${_fallback_candidate}"
+        "${requested_leaf}" _fallback_candidate_id)
+    message(STATUS
+        "Apple runtime fallback: unresolved=${raw_identity} "
+        "producer=${_fallback_candidate} LC_ID_DYLIB=${_fallback_candidate_id}")
+    set(${output_candidate} "${_fallback_candidate}" PARENT_SCOPE)
+endfunction()
+
+macro(_ebplus_append_runtime_dependency_directories dependency_list_name)
+    foreach(_resolved_runtime_dependency IN LISTS ${dependency_list_name})
+        get_filename_component(_resolved_runtime_directory
+            "${_resolved_runtime_dependency}" DIRECTORY)
+        list(APPEND _runtime_search_directories "${_resolved_runtime_directory}")
+    endforeach()
+    list(REMOVE_DUPLICATES _runtime_search_directories)
+endmacro()
+
+macro(_ebplus_process_apple_runtime_unresolved_dependencies unresolved_list_name)
+    foreach(_unresolved_runtime_dependency IN LISTS ${unresolved_list_name})
+        message(STATUS
+            "Apple native runtime unresolved identity: ${_unresolved_runtime_dependency}")
+        _ebplus_normalize_apple_fallback_identity(
+            "${_unresolved_runtime_dependency}" _fallback_leaf)
+        list(FIND _fallback_resolved_runtime_leaves "${_fallback_leaf}"
+            _fallback_leaf_index)
+        if(_fallback_leaf_index EQUAL -1)
+            list(LENGTH _fallback_resolved_runtime_leaves _fallback_admission_count)
+            if(_fallback_admission_count GREATER_EQUAL 128)
+                message(FATAL_ERROR
+                    "Apple runtime fallback exceeded its 128-dylib admission limit.")
+            endif()
+            _ebplus_resolve_apple_runtime_fallback(
+                "${_unresolved_runtime_dependency}" "${_fallback_leaf}"
+                _fallback_candidate)
+            list(APPEND _fallback_resolved_runtime_leaves "${_fallback_leaf}")
+            list(APPEND _fallback_resolved_runtime_candidates
+                "${_fallback_candidate}")
+            list(APPEND _fallback_resolved_runtime_mappings
+                "${_fallback_leaf}=${_fallback_candidate}")
+            list(APPEND _pending_fallback_scans "${_fallback_candidate}")
+            get_filename_component(_fallback_candidate_directory
+                "${_fallback_candidate}" DIRECTORY)
+            list(APPEND _runtime_search_directories
+                "${_fallback_candidate_directory}")
+            list(REMOVE_DUPLICATES _runtime_search_directories)
+        else()
+            list(GET _fallback_resolved_runtime_candidates
+                ${_fallback_leaf_index} _known_fallback_candidate)
+            message(STATUS
+                "Apple runtime fallback already admitted: "
+                "unresolved=${_unresolved_runtime_dependency} "
+                "producer=${_known_fallback_candidate}")
+        endif()
+    endforeach()
+endmacro()
 
 # Resolve the closure from the selected imported libraries before BundleUtilities
 # begins rewriting install names. This discovers transitive toolchain runtimes
 # (for example, an OpenCV-selected Fortran runtime) from the actual dependency
-# graph instead of recording a machine-specific prefix in project source.
+# graph instead of recording a machine-specific prefix in project source. The
+# native resolver remains authoritative; the Apple-only fallback below admits
+# only its explicitly unresolved, uniquely matched producer dylibs.
 if(_runtime_seed_libraries)
+    message(STATUS "Apple native runtime seeds: ${_runtime_seed_libraries}")
     file(GET_RUNTIME_DEPENDENCIES
         LIBRARIES ${_runtime_seed_libraries}
         DIRECTORIES ${_runtime_search_directories}
-        RESOLVED_DEPENDENCIES_VAR _resolved_runtime_dependencies
-        UNRESOLVED_DEPENDENCIES_VAR _unresolved_runtime_dependencies)
-    if(_unresolved_runtime_dependencies)
-        message(FATAL_ERROR
-            "Could not resolve selected macOS runtime dependencies: "
-            "${_unresolved_runtime_dependencies}")
+        RESOLVED_DEPENDENCIES_VAR _initial_native_resolved_dependencies
+        UNRESOLVED_DEPENDENCIES_VAR _initial_native_unresolved_dependencies)
+    set(_native_resolved_runtime_dependencies
+        "${_initial_native_resolved_dependencies}")
+    _ebplus_append_runtime_dependency_directories(
+        _initial_native_resolved_dependencies)
+
+    set(_fallback_resolved_runtime_leaves "")
+    set(_fallback_resolved_runtime_candidates "")
+    set(_fallback_resolved_runtime_mappings "")
+    set(_pending_fallback_scans "")
+    set(_fallback_scanned_runtime_candidates "")
+    _ebplus_process_apple_runtime_unresolved_dependencies(
+        _initial_native_unresolved_dependencies)
+
+    while(_pending_fallback_scans)
+        list(POP_FRONT _pending_fallback_scans _pending_fallback_candidate)
+        list(FIND _fallback_scanned_runtime_candidates
+            "${_pending_fallback_candidate}" _fallback_scanned_index)
+        if(NOT _fallback_scanned_index EQUAL -1)
+            continue()
+        endif()
+        list(APPEND _fallback_scanned_runtime_candidates
+            "${_pending_fallback_candidate}")
+
+        unset(_candidate_native_resolved_dependencies)
+        unset(_candidate_native_unresolved_dependencies)
+        file(GET_RUNTIME_DEPENDENCIES
+            LIBRARIES "${_pending_fallback_candidate}"
+            DIRECTORIES ${_runtime_search_directories}
+            RESOLVED_DEPENDENCIES_VAR _candidate_native_resolved_dependencies
+            UNRESOLVED_DEPENDENCIES_VAR _candidate_native_unresolved_dependencies)
+        list(APPEND _native_resolved_runtime_dependencies
+            ${_candidate_native_resolved_dependencies})
+        _ebplus_append_runtime_dependency_directories(
+            _candidate_native_resolved_dependencies)
+        _ebplus_process_apple_runtime_unresolved_dependencies(
+            _candidate_native_unresolved_dependencies)
+    endwhile()
+
+    list(REMOVE_DUPLICATES _native_resolved_runtime_dependencies)
+    if(_fallback_resolved_runtime_mappings)
+        message(STATUS
+            "Apple runtime fallback resolved dependencies: "
+            "${_fallback_resolved_runtime_mappings}")
+    else()
+        message(STATUS "Apple runtime fallback resolved dependencies: <none>")
     endif()
-    foreach(_resolved_runtime_dependency IN LISTS _resolved_runtime_dependencies)
-        get_filename_component(_resolved_runtime_directory
-            "${_resolved_runtime_dependency}" DIRECTORY)
-        list(APPEND _runtime_search_directories
-            "${_resolved_runtime_directory}")
-    endforeach()
-    list(REMOVE_DUPLICATES _runtime_search_directories)
 endif()
 include(BundleUtilities)
 set(BU_CHMOD_BUNDLE_ITEMS TRUE)
@@ -373,60 +705,6 @@ function(_ebplus_is_forbidden_producer_path candidate output)
     else()
         set(${output} FALSE PARENT_SCOPE)
     endif()
-endfunction()
-
-function(_ebplus_read_macho_load_metadata bundle_file output_id output_loads output_rpaths)
-    execute_process(
-        COMMAND /usr/bin/otool -l "${bundle_file}"
-        RESULT_VARIABLE _otool_lc_result
-        OUTPUT_VARIABLE _otool_lc_output
-        ERROR_VARIABLE _otool_lc_error)
-    if(NOT _otool_lc_result EQUAL 0)
-        message(FATAL_ERROR
-            "Could not inspect loader metadata for ${bundle_file}: ${_otool_lc_error}")
-    endif()
-
-    string(REPLACE "\n" ";" _load_command_lines "${_otool_lc_output}")
-    set(_next_value_kind "")
-    set(_dylib_id "")
-    set(_load_paths "")
-    set(_rpath_paths "")
-    foreach(_load_command_line IN LISTS _load_command_lines)
-        string(STRIP "${_load_command_line}" _load_command_line)
-        if(_load_command_line MATCHES "^cmd (.+)$")
-            set(_load_command "${CMAKE_MATCH_1}")
-            if(_load_command STREQUAL "LC_ID_DYLIB")
-                set(_next_value_kind "id")
-            elseif(_load_command MATCHES
-                   "^LC_(LOAD|LOAD_WEAK|REEXPORT|LOAD_UPWARD|LAZY_LOAD)_DYLIB$")
-                set(_next_value_kind "load")
-            elseif(_load_command STREQUAL "LC_RPATH")
-                set(_next_value_kind "rpath")
-            else()
-                set(_next_value_kind "")
-            endif()
-            continue()
-        endif()
-
-        if((_next_value_kind STREQUAL "id" OR
-            _next_value_kind STREQUAL "load") AND
-           _load_command_line MATCHES "^name (.*) \\(offset [0-9]+\\)$")
-            if(_next_value_kind STREQUAL "id")
-                set(_dylib_id "${CMAKE_MATCH_1}")
-            else()
-                list(APPEND _load_paths "${CMAKE_MATCH_1}")
-            endif()
-            set(_next_value_kind "")
-        elseif(_next_value_kind STREQUAL "rpath" AND
-               _load_command_line MATCHES "^path (.*) \\(offset [0-9]+\\)$")
-            list(APPEND _rpath_paths "${CMAKE_MATCH_1}")
-            set(_next_value_kind "")
-        endif()
-    endforeach()
-
-    set(${output_id} "${_dylib_id}" PARENT_SCOPE)
-    set(${output_loads} "${_load_paths}" PARENT_SCOPE)
-    set(${output_rpaths} "${_rpath_paths}" PARENT_SCOPE)
 endfunction()
 
 function(_ebplus_normalize_bundle_load_commands)
