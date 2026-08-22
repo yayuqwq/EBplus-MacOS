@@ -20,8 +20,9 @@ if(DEFINED ENV{CMAKE_INSTALL_MODE} AND
 endif()
 
 set(_bundle "${CMAKE_INSTALL_PREFIX}/@EBPLUS_MACOS_BUNDLE_DIRECTORY_NAME@")
-if(NOT IS_DIRECTORY "${_bundle}")
-    message(FATAL_ERROR "Expected installed application bundle is missing: ${_bundle}")
+if(NOT IS_DIRECTORY "${_bundle}" OR IS_SYMLINK "${_bundle}")
+    message(FATAL_ERROR
+        "Expected a real installed application bundle directory: ${_bundle}")
 endif()
 
 set(_openeb_library_directory "@EBPLUS_MACOS_OPENEB_LIBRARY_DIR@")
@@ -482,16 +483,102 @@ fixup_bundle("${_bundle}" "${_dynamic_plugins}" "${_runtime_search_directories}"
 # root executable and Headers directory instead of the standard relative
 # links. Aside from leaving a duplicate Mach-O for later normalization, that
 # layout makes current macOS codesign reject the framework root as ambiguous.
-# Restore only the two known Qt compatibility links in the final staged bundle
+# Restore only the known Qt compatibility links in the final staged bundle
 # before any load-command mutation or signing. Every guard below is deliberate:
 # this never follows or modifies a producer framework, and it refuses an
 # unexpected framework topology instead of silently replacing it.
+function(_ebplus_is_canonical_staged_qt_framework_version
+         versions_directory framework_name version_directory output_variable)
+    set(${output_variable} FALSE PARENT_SCOPE)
+
+    if(NOT IS_DIRECTORY "${version_directory}" OR
+       IS_SYMLINK "${version_directory}")
+        return()
+    endif()
+
+    get_filename_component(_version_real "${version_directory}" REALPATH)
+    file(RELATIVE_PATH _version_relative "${versions_directory}"
+        "${_version_real}")
+    if(_version_relative STREQUAL "." OR
+       _version_relative STREQUAL ".." OR
+       _version_relative MATCHES "^\\.\\./" OR
+       IS_ABSOLUTE "${_version_relative}" OR
+       NOT _version_relative MATCHES "^[^/]+$")
+        return()
+    endif()
+
+    set(_canonical_executable "${_version_real}/${framework_name}")
+    set(_canonical_headers "${_version_real}/Headers")
+    set(_canonical_resources "${_version_real}/Resources")
+    set(_canonical_info_plist "${_canonical_resources}/Info.plist")
+    if(NOT EXISTS "${_canonical_executable}" OR
+       IS_DIRECTORY "${_canonical_executable}" OR
+       NOT IS_DIRECTORY "${_canonical_headers}" OR
+       NOT IS_DIRECTORY "${_canonical_resources}" OR
+       NOT EXISTS "${_canonical_info_plist}" OR
+       IS_DIRECTORY "${_canonical_info_plist}")
+        return()
+    endif()
+
+    get_filename_component(_canonical_executable_real
+        "${_canonical_executable}" REALPATH)
+    get_filename_component(_canonical_headers_real
+        "${_canonical_headers}" REALPATH)
+    get_filename_component(_canonical_resources_real
+        "${_canonical_resources}" REALPATH)
+    get_filename_component(_canonical_info_plist_real
+        "${_canonical_info_plist}" REALPATH)
+    file(RELATIVE_PATH _canonical_executable_relative "${_version_real}"
+        "${_canonical_executable_real}")
+    file(RELATIVE_PATH _canonical_headers_relative "${_version_real}"
+        "${_canonical_headers_real}")
+    file(RELATIVE_PATH _canonical_resources_relative "${_version_real}"
+        "${_canonical_resources_real}")
+    file(RELATIVE_PATH _canonical_info_plist_relative
+        "${_canonical_resources_real}" "${_canonical_info_plist_real}")
+    if(NOT _canonical_executable_relative STREQUAL "${framework_name}" OR
+       NOT _canonical_headers_relative STREQUAL "Headers" OR
+       NOT _canonical_resources_relative STREQUAL "Resources" OR
+       NOT _canonical_info_plist_relative STREQUAL "Info.plist")
+        return()
+    endif()
+
+    execute_process(
+        COMMAND /usr/bin/otool -L "${_canonical_executable_real}"
+        RESULT_VARIABLE _canonical_otool_result
+        OUTPUT_QUIET
+        ERROR_QUIET)
+    if(NOT _canonical_otool_result EQUAL 0)
+        return()
+    endif()
+
+    set(${output_variable} TRUE PARENT_SCOPE)
+endfunction()
+
 function(_ebplus_restore_staged_qt_framework_links)
+    if(NOT IS_DIRECTORY "${_frameworks_directory}" OR
+       IS_SYMLINK "${_frameworks_directory}")
+        message(FATAL_ERROR
+            "Expected a real staged Frameworks directory: "
+            "${_frameworks_directory}")
+    endif()
+    get_filename_component(_bundle_real "${_bundle}" REALPATH)
+    get_filename_component(_frameworks_directory_real
+        "${_frameworks_directory}" REALPATH)
+    file(RELATIVE_PATH _frameworks_relative_to_bundle "${_bundle_real}"
+        "${_frameworks_directory_real}")
+    if(NOT _frameworks_relative_to_bundle STREQUAL "Contents/Frameworks")
+        message(FATAL_ERROR
+            "Staged Frameworks directory escapes its application bundle: "
+            "${_frameworks_directory}")
+    endif()
+
     file(GLOB _qt_framework_candidates LIST_DIRECTORIES TRUE
         "${_frameworks_directory}/Qt*.framework")
     list(SORT _qt_framework_candidates)
 
     set(_restored_framework_count 0)
+    set(_restored_current_link_count 0)
     foreach(_framework IN LISTS _qt_framework_candidates)
         if(NOT IS_DIRECTORY "${_framework}" OR IS_SYMLINK "${_framework}")
             message(FATAL_ERROR
@@ -499,36 +586,150 @@ function(_ebplus_restore_staged_qt_framework_links)
         endif()
 
         get_filename_component(_framework_name "${_framework}" NAME_WE)
-        set(_current_version_link "${_framework}/Versions/Current")
+        get_filename_component(_framework_real "${_framework}" REALPATH)
+        file(RELATIVE_PATH _framework_relative_to_frameworks
+            "${_frameworks_directory_real}" "${_framework_real}")
+        if(NOT _framework_relative_to_frameworks STREQUAL
+           "${_framework_name}.framework")
+            message(FATAL_ERROR
+                "Staged Qt framework escapes its Frameworks directory: "
+                "${_framework}")
+        endif()
+
+        set(_versions_directory "${_framework}/Versions")
+        if(NOT IS_DIRECTORY "${_versions_directory}" OR
+           IS_SYMLINK "${_versions_directory}")
+            message(FATAL_ERROR
+                "Expected a real staged Qt framework Versions directory: "
+                "${_versions_directory}")
+        endif()
+
+        set(_current_version_link "${_versions_directory}/Current")
+        set(_restored_current_link FALSE)
+        if(IS_SYMLINK "${_current_version_link}")
+            # Validate it below. A dangling symlink is not an absent Current.
+        elseif(EXISTS "${_current_version_link}")
+            message(FATAL_ERROR
+                "Expected staged Qt framework Current to be a symlink or absent: "
+                "${_current_version_link}")
+        else()
+            file(GLOB _version_entries LIST_DIRECTORIES TRUE
+                "${_versions_directory}/*")
+            list(SORT _version_entries)
+            set(_version_entry_names "")
+            set(_canonical_version_directories "")
+            set(_canonical_version_names "")
+            foreach(_version_entry IN LISTS _version_entries)
+                get_filename_component(_version_entry_name "${_version_entry}" NAME)
+                list(APPEND _version_entry_names "${_version_entry_name}")
+                if(_version_entry_name STREQUAL "Current")
+                    continue()
+                endif()
+
+                _ebplus_is_canonical_staged_qt_framework_version(
+                    "${_versions_directory}" "${_framework_name}"
+                    "${_version_entry}" _is_canonical_version)
+                if(_is_canonical_version)
+                    get_filename_component(_version_entry_real
+                        "${_version_entry}" REALPATH)
+                    list(APPEND _canonical_version_directories
+                        "${_version_entry_real}")
+                    list(APPEND _canonical_version_names
+                        "${_version_entry_name}")
+                endif()
+            endforeach()
+
+            if(_version_entry_names)
+                set(_versions_directory_listing "${_version_entry_names}")
+            else()
+                set(_versions_directory_listing "<empty>")
+            endif()
+            list(LENGTH _canonical_version_directories
+                _canonical_version_count)
+            if(_canonical_version_count EQUAL 0)
+                message(FATAL_ERROR
+                    "No canonical staged Qt framework version directory for "
+                    "${_framework_name}.framework; immediate Versions entries: "
+                    "${_versions_directory_listing}")
+            elseif(_canonical_version_count GREATER 1)
+                message(FATAL_ERROR
+                    "Ambiguous staged Qt framework version directories for "
+                    "${_framework_name}.framework: ${_canonical_version_names}")
+            endif()
+
+            list(GET _canonical_version_directories 0 _selected_version_directory)
+            list(GET _canonical_version_names 0 _selected_version_name)
+            message(STATUS
+                "Staged Qt framework ${_framework_name}.framework has no "
+                "Versions/Current link; immediate Versions entries: "
+                "${_versions_directory_listing}; selected version: "
+                "${_selected_version_name}")
+            file(CREATE_LINK "${_selected_version_name}" "${_current_version_link}"
+                SYMBOLIC RESULT _current_link_result)
+            if(NOT _current_link_result STREQUAL "0")
+                message(FATAL_ERROR
+                    "Could not restore staged Qt framework Current link "
+                    "${_current_version_link}: ${_current_link_result}")
+            endif()
+            set(_restored_current_link TRUE)
+        endif()
+
         if(NOT IS_SYMLINK "${_current_version_link}")
             message(FATAL_ERROR
-                "Expected a versioned Qt framework Current link: "
+                "Staged Qt framework Current is not a symlink: "
                 "${_current_version_link}")
         endif()
-        get_filename_component(_current_version_real
-            "${_current_version_link}" REALPATH)
-        file(RELATIVE_PATH _current_version_relative "${_framework}"
-            "${_current_version_real}")
-        if(_current_version_relative STREQUAL ".." OR
-           _current_version_relative MATCHES "^\\.\\./" OR
-           NOT _current_version_relative MATCHES "^Versions/[^/]+$")
+        file(READ_SYMLINK "${_current_version_link}" _current_version_target)
+        if(_current_version_target STREQUAL "" OR
+           _current_version_target STREQUAL "." OR
+           _current_version_target STREQUAL ".." OR
+           _current_version_target MATCHES "^\\.\\./" OR
+           IS_ABSOLUTE "${_current_version_target}" OR
+           NOT _current_version_target MATCHES "^[^/]+$")
             message(FATAL_ERROR
-                "Qt framework Current link escapes its staged framework: "
+                "Qt framework Current link is not an immediate version directory: "
+                "${_current_version_link} -> ${_current_version_target}")
+        endif()
+
+        set(_current_version_directory
+            "${_versions_directory}/${_current_version_target}")
+        _ebplus_is_canonical_staged_qt_framework_version(
+            "${_versions_directory}" "${_framework_name}"
+            "${_current_version_directory}" _is_canonical_current_version)
+        if(NOT _is_canonical_current_version)
+            message(FATAL_ERROR
+                "Staged Qt framework Current link has no canonical versioned "
+                "code/resources: ${_current_version_link}")
+        endif()
+        get_filename_component(_current_version_real
+            "${_current_version_directory}" REALPATH)
+        file(RELATIVE_PATH _current_version_relative "${_versions_directory}"
+            "${_current_version_real}")
+        if(NOT _current_version_relative STREQUAL "${_current_version_target}")
+            message(FATAL_ERROR
+                "Qt framework Current link escapes its staged Versions directory: "
                 "${_current_version_link}")
+        endif()
+
+        if(_restored_current_link)
+            math(EXPR _restored_current_link_count
+                "${_restored_current_link_count} + 1")
+            message(STATUS
+                "Restored staged Qt framework Current link: "
+                "${_framework_name}.framework/Versions/Current -> "
+                "${_current_version_target}")
         endif()
 
         set(_canonical_executable
             "${_current_version_real}/${_framework_name}")
         set(_canonical_headers "${_current_version_real}/Headers")
-        set(_canonical_info_plist
-            "${_current_version_real}/Resources/Info.plist")
-        if(NOT EXISTS "${_canonical_executable}" OR
-           NOT IS_DIRECTORY "${_canonical_headers}" OR
-           NOT EXISTS "${_canonical_info_plist}")
-            message(FATAL_ERROR
-                "Staged Qt framework has no canonical versioned code/resources: "
-                "${_framework}")
-        endif()
+        set(_canonical_resources "${_current_version_real}/Resources")
+        get_filename_component(_canonical_executable_real
+            "${_canonical_executable}" REALPATH)
+        get_filename_component(_canonical_headers_real
+            "${_canonical_headers}" REALPATH)
+        get_filename_component(_canonical_resources_real
+            "${_canonical_resources}" REALPATH)
 
         set(_resources_link "${_framework}/Resources")
         if(NOT IS_SYMLINK "${_resources_link}")
@@ -540,6 +741,12 @@ function(_ebplus_restore_staged_qt_framework_links)
             message(FATAL_ERROR
                 "Unexpected staged Qt framework Resources link target: "
                 "${_resources_link} -> ${_resources_target}")
+        endif()
+        get_filename_component(_resources_real "${_resources_link}" REALPATH)
+        if(NOT _resources_real STREQUAL "${_canonical_resources_real}")
+            message(FATAL_ERROR
+                "Staged Qt framework Resources link does not resolve to its "
+                "canonical versioned resources: ${_resources_link}")
         endif()
 
         set(_root_executable "${_framework}/${_framework_name}")
@@ -566,6 +773,25 @@ function(_ebplus_restore_staged_qt_framework_links)
                 "Expected a regular staged Qt framework executable copy: "
                 "${_root_executable}")
         endif()
+        if(NOT IS_SYMLINK "${_root_executable}")
+            message(FATAL_ERROR
+                "Restored staged Qt framework executable is not a symlink: "
+                "${_root_executable}")
+        endif()
+        file(READ_SYMLINK "${_root_executable}" _root_executable_target)
+        if(NOT _root_executable_target STREQUAL
+           "Versions/Current/${_framework_name}")
+            message(FATAL_ERROR
+                "Unexpected restored Qt framework executable link target: "
+                "${_root_executable} -> ${_root_executable_target}")
+        endif()
+        get_filename_component(_root_executable_real
+            "${_root_executable}" REALPATH)
+        if(NOT _root_executable_real STREQUAL "${_canonical_executable_real}")
+            message(FATAL_ERROR
+                "Staged Qt framework executable link does not resolve to its "
+                "canonical versioned executable: ${_root_executable}")
+        endif()
 
         set(_root_headers "${_framework}/Headers")
         if(IS_SYMLINK "${_root_headers}")
@@ -591,6 +817,23 @@ function(_ebplus_restore_staged_qt_framework_links)
                 "Expected a regular staged Qt framework Headers directory: "
                 "${_root_headers}")
         endif()
+        if(NOT IS_SYMLINK "${_root_headers}")
+            message(FATAL_ERROR
+                "Restored staged Qt framework Headers is not a symlink: "
+                "${_root_headers}")
+        endif()
+        file(READ_SYMLINK "${_root_headers}" _root_headers_target)
+        if(NOT _root_headers_target STREQUAL "Versions/Current/Headers")
+            message(FATAL_ERROR
+                "Unexpected restored Qt framework Headers link target: "
+                "${_root_headers} -> ${_root_headers_target}")
+        endif()
+        get_filename_component(_root_headers_real "${_root_headers}" REALPATH)
+        if(NOT _root_headers_real STREQUAL "${_canonical_headers_real}")
+            message(FATAL_ERROR
+                "Staged Qt framework Headers link does not resolve to its "
+                "canonical versioned headers: ${_root_headers}")
+        endif()
 
         math(EXPR _restored_framework_count
             "${_restored_framework_count} + 1")
@@ -603,6 +846,9 @@ function(_ebplus_restore_staged_qt_framework_links)
     message(STATUS
         "M8-A1 restored standard compatibility links in "
         "${_restored_framework_count} staged Qt frameworks")
+    message(STATUS
+        "M8-B1l restored ${_restored_current_link_count} missing "
+        "Versions/Current links")
 endfunction()
 
 _ebplus_restore_staged_qt_framework_links()
