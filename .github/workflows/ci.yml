@@ -568,6 +568,27 @@ jobs:
             printf 'Runner-local HDF5 CMake package is missing: %s\n' "$EBPLUS_HDF5_DIR" >&2
             exit 1
           fi
+          hdf5_runtime_dir="$EBPLUS_HDF5_PREFIX/lib"
+          if [[ ! -d "$hdf5_runtime_dir" ]]; then
+            printf 'Runner-local HDF5 runtime directory is missing: %s\n' "$hdf5_runtime_dir" >&2
+            exit 1
+          fi
+          workspace_realpath="$(cd "$GITHUB_WORKSPACE" && pwd -P)"
+          hdf5_runtime_dir="$(cd "$hdf5_runtime_dir" && pwd -P)"
+          case "$hdf5_runtime_dir" in
+            "$workspace_realpath"/*) ;;
+            *)
+              printf 'Runner-local HDF5 runtime directory escapes the workspace: %s\n' "$hdf5_runtime_dir" >&2
+              exit 1
+              ;;
+          esac
+          for library in libhdf5.dylib libhdf5_cpp.dylib libhdf5_hl.dylib; do
+            if [[ ! -f "$hdf5_runtime_dir/$library" ]]; then
+              printf 'Expected HDF5 runtime library is missing: %s/%s\n' "$hdf5_runtime_dir" "$library" >&2
+              exit 1
+            fi
+          done
+          printf 'EBplus build-tree HDF5 runtime dir=%s\n' "$hdf5_runtime_dir"
           dependency_prefixes=(
             "$EBPLUS_OPENEB_PREFIX"
             "$EBPLUS_OPENCV4_PREFIX"
@@ -584,6 +605,7 @@ jobs:
           )
           cmake_prefix_path="$(IFS=';'; printf '%s' "${dependency_prefixes[*]}")"
           test -x "$make_program"
+          # GTest discovery executes build-tree binaries; installation retains its own RPATH contract.
           cmake \
             -S "$GITHUB_WORKSPACE" \
             -B "$EBPLUS_BUILD" \
@@ -592,6 +614,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_INSTALL_PREFIX="$EBPLUS_PREFIX" \
+            "-DCMAKE_BUILD_RPATH=$hdf5_runtime_dir" \
             "-DCMAKE_PREFIX_PATH=$cmake_prefix_path" \
             "-DOpenCV_DIR=$EBPLUS_OPENCV4_DIR" \
             "-DHDF5_DIR=$EBPLUS_HDF5_DIR" \
@@ -601,12 +624,96 @@ jobs:
             -DEBPLUS_ONNXRUNTIME_MODE=OFF \
             -DBUILD_TESTING=ON \
             -DGUI_BUILD_TESTS=ON
+          actual_build_rpath="$(sed -n 's/^CMAKE_BUILD_RPATH:[^=]*=//p' "$EBPLUS_BUILD/CMakeCache.txt")"
+          if [[ "$actual_build_rpath" != "$hdf5_runtime_dir" ]]; then
+            printf 'EBplus CMAKE_BUILD_RPATH mismatch: expected=%s actual=%s\n' "$hdf5_runtime_dir" "$actual_build_rpath" >&2
+            exit 1
+          fi
+          printf 'EBplus CMAKE_BUILD_RPATH=%s\n' "$actual_build_rpath"
+          printf 'EBPLUS_HDF5_RUNTIME_DIR=%s\n' "$hdf5_runtime_dir" >> "$GITHUB_ENV"
 
       - name: Build EBplus
         shell: bash
         run: |
           set -euo pipefail
           cmake --build "$EBPLUS_BUILD" --parallel 3
+
+      - name: Verify EBplus build-tree HDF5 loader closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "${EBPLUS_HDF5_RUNTIME_DIR:-}" || ! -d "$EBPLUS_HDF5_RUNTIME_DIR" ]]; then
+            printf 'Resolved EBplus HDF5 runtime directory is unavailable: %s\n' "${EBPLUS_HDF5_RUNTIME_DIR:-<unset>}" >&2
+            exit 1
+          fi
+
+          resolve_unique_file() {
+            local search_root="$1"
+            local file_name="$2"
+            local matches=()
+            local match=""
+            while IFS= read -r match; do
+              matches+=("$match")
+            done < <(find "$search_root" -type f -name "$file_name" -print)
+            if (( ${#matches[@]} != 1 )); then
+              printf 'Expected exactly one %s below %s; found %s.\n' "$file_name" "$search_root" "${#matches[@]}" >&2
+              for match in "${matches[@]}"; do
+                printf 'candidate=%s\n' "$match" >&2
+              done
+              exit 1
+            fi
+            printf '%s\n' "${matches[0]}"
+          }
+
+          print_lc_rpaths() {
+            /usr/bin/otool -l "$1" | awk '
+              $1 == "cmd" && $2 == "LC_RPATH" { in_rpath = 1 }
+              in_rpath { print }
+              in_rpath && $1 == "path" { in_rpath = 0 }
+            '
+          }
+
+          read_lc_rpath_values() {
+            /usr/bin/otool -l "$1" | awk '
+              $1 == "cmd" && $2 == "LC_RPATH" { expect_path = 1; next }
+              expect_path && $1 == "path" {
+                path = $0
+                sub(/^[[:space:]]*path[[:space:]]+/, "", path)
+                sub(/[[:space:]]+\(offset [0-9]+\)$/, "", path)
+                print path
+                expect_path = 0
+                next
+              }
+              $1 == "cmd" { expect_path = 0 }
+            '
+          }
+
+          stream_library="$(resolve_unique_file "$EBPLUS_OPENEB_PREFIX/lib" 'libmetavision_sdk_stream*.dylib')"
+          printf 'OpenEB stream library=%s\n' "$stream_library"
+          printf 'OpenEB stream loader dependencies:\n'
+          /usr/bin/otool -L "$stream_library"
+          if ! /usr/bin/otool -L "$stream_library" | /usr/bin/grep -E '^[[:space:]]+@rpath/libhdf5_cpp[^[:space:]]*\.dylib '; then
+            printf 'OpenEB stream library does not retain an @rpath libhdf5_cpp dependency.\n' >&2
+            exit 1
+          fi
+
+          for test_target in test_phase6_common test_phase7_cv; do
+            test_binary="$(resolve_unique_file "$EBPLUS_BUILD" "$test_target")"
+            printf 'EBplus test binary %s=%s\n' "$test_target" "$test_binary"
+            printf 'Loader dependencies for %s:\n' "$test_target"
+            /usr/bin/otool -L "$test_binary"
+            rpath_values="$(read_lc_rpath_values "$test_binary")"
+            printf 'LC_RPATH sections for %s:\n' "$test_target"
+            print_lc_rpaths "$test_binary"
+            if ! printf '%s\n' "$rpath_values" | /usr/bin/grep -Fqx "$EBPLUS_HDF5_RUNTIME_DIR"; then
+              printf 'Missing HDF5 build-tree RPATH in %s: %s\n' "$test_target" "$EBPLUS_HDF5_RUNTIME_DIR" >&2
+              printf 'Full otool -L output for %s:\n' "$test_target" >&2
+              /usr/bin/otool -L "$test_binary" >&2 || true
+              printf 'LC_RPATH sections for %s:\n' "$test_target" >&2
+              print_lc_rpaths "$test_binary" >&2 || true
+              exit 1
+            fi
+          done
 
       - name: Run the full configured CTest suite
         shell: bash
