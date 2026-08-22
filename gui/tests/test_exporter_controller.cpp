@@ -101,14 +101,15 @@ void reject_symlinked_path_components(const std::filesystem::path &path) {
         current /= component;
         std::error_code error;
         const std::filesystem::file_status status = std::filesystem::symlink_status(current, error);
+        if (status.type() == std::filesystem::file_type::not_found) {
+            return;
+        }
         if (error) {
-            throw std::runtime_error("could not inspect exporter test artifact path");
+            throw std::runtime_error("could not inspect exporter test artifact path " + current.string() + ": " +
+                                     error.message());
         }
         if (std::filesystem::is_symlink(status)) {
             throw std::runtime_error("exporter test artifact path must not traverse a symlink");
-        }
-        if (status.type() == std::filesystem::file_type::not_found) {
-            return;
         }
     }
 }
