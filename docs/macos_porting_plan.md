@@ -538,11 +538,13 @@ acceptance.
 
 ### Milestone 8: Packaging and CI
 
-**状态：** `In progress` — M8-A is `Complete / Qualified` for a local
-ad-hoc-signed macOS arm64 packaged runtime, including both Terminal-direct and
-Finder-launched offline RAW workflows within its documented scope. CI,
-Developer ID signing, Gatekeeper distribution qualification, notarization, DMG
-and cross-machine distribution remain `Not run`.
+**状态：** `In progress` — M8-A and M8-B1 are `Complete / Qualified` within
+their separate documented scopes. M8-A covers the local ad-hoc-signed macOS
+arm64 packaged runtime, including Terminal-direct and Finder-launched offline
+RAW workflows; M8-B1 covers fresh GitHub-hosted Apple Silicon CI build, test,
+package, and static closure. Native Linux CI has not started. Developer ID
+signing, Gatekeeper distribution qualification, notarization, DMG and
+cross-machine distribution remain `Not run`.
 **独立分支：** `build/macos-packaging-ci`
 
 **范围**
@@ -598,6 +600,26 @@ Linux native runtime, CI, Developer ID signing, Gatekeeper distribution
 qualification, notarization, DMG or cross-machine distribution. The full CTest
 shell inherited `HDF5_PLUGIN_PATH`; it is regression evidence and not a
 substitute for dependency-isolation evidence.
+
+#### M8-B1: macOS arm64 CI foundation
+
+M8-B1 is `Complete / Qualified` for the fresh GitHub-hosted macOS 15 arm64 CI
+foundation. The closure record is [macOS Milestone 8-B1 CI
+Validation](macos_milestone_8b1_validation.md), with final successful
+[Actions run 32626325967](https://github.com/yayuqwq/EBplus-MacOS/actions/runs/32626325967).
+
+The run reproduced the selected OpenCV 4 and HDF5 1.14.6 profile, prepared,
+configured, built, and installed the CenturyArks OpenEB producer, configured
+and built EBplus, discovered and ran the configured `399`-test CTest suite
+(`391 passed / 8 skipped / 0 failed`), packaged the app, resolved the recursive
+HDF5 runtime closure, normalized staged Qt framework topology, and passed the
+existing bundle verifier and local ad-hoc signature checks.
+
+This is Apple Silicon CI evidence only. It does not replace M8-A Cocoa/Finder
+runtime evidence and does not qualify Linux CI/runtime, physical camera,
+model inference, Developer ID, Gatekeeper, notarization, DMG, or distribution.
+The next M8 completion item is native Linux CI foundation; it has not started,
+so M8 overall remains `In progress`.
 
 ## 跨平台实施原则
 

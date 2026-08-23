@@ -46,7 +46,7 @@ prepared profile, not the historical generic M2B profile:
 
 | 用途 | 当前路径 / provenance |
 |---|---|
-| Canonical tracked OpenEB | `$REPO_ROOT/openeb` at current tracked tree `b407c407aa46d3b97edc9b2096fb120a96c8b465`; imported upstream OpenEB 5.2 release commit `9003b5416676e78ba994d912087486cfa94fae73` |
+| Canonical tracked OpenEB | `$REPO_ROOT/openeb` at current tracked tree `8c12992a3d025ebe86e28a8ce80fe3c3da26b4a8`; imported upstream OpenEB 5.2 release commit `9003b5416676e78ba994d912087486cfa94fae73` |
 | Prepared OpenEB source | `$REPO_ROOT/.tmp/openeb-5.2.0-centuryarks-source` |
 | OpenEB build | `$REPO_ROOT/.build/openeb-5.2.0-centuryarks-macos` |
 | OpenEB install | `$REPO_ROOT/.deps/openeb-5.2.0-centuryarks-macos` |
@@ -56,11 +56,13 @@ prepared profile, not the historical generic M2B profile:
 `9003b5416676e78ba994d912087486cfa94fae73` is the imported upstream release
 commit, not the current tracked subtree object. At the current EBplus HEAD,
 `git ls-tree HEAD openeb` resolves to tree
-`b407c407aa46d3b97edc9b2096fb120a96c8b465`; the upstream release commit's tree
-is `2fc75cdd`. The tracked subtree includes subsequent repository changes from
-`014f245` (GCC 15 portability) and `708a36e` (macOS install RPATHs). This
-distinction preserves provenance without treating the upstream release object
-as the final producer tree.
+`8c12992a3d025ebe86e28a8ce80fe3c3da26b4a8`; the upstream release commit's
+tree is `2fc75cdd48cd3cc1597ed95341bd3613e9c6dd26`. The tracked subtree
+includes subsequent repository changes from `014f245` (GCC 15 portability),
+`708a36e` (macOS install RPATHs), and the M8-B1 two-site AppleClang 17
+warning-use annotations: behavior-neutral `(void)main_dev` expressions in
+`tz_device_control.cpp`. This distinction preserves provenance without treating
+the upstream release object as the final producer tree.
 
 The CenturyArks overlay is materialized only in the prepared source; it does
 not patch the canonical tracked `openeb/` tree. The old generic

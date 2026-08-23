@@ -105,6 +105,15 @@ OpenEB declared version: 5.2.0
 HDF5 ECF commit: b982d908a0bc0afd9104d226607bedb1a11b2a95
 ```
 
+The `b407c407aa46d3b97edc9b2096fb120a96c8b465` value above is the historical
+Phase-1 validation identity, not a rewrite of that historical result. Current
+reproduction after the later M8-B1 AppleClang warning-use annotation uses
+canonical tracked OpenEB tree `8c12992a3d025ebe86e28a8ce80fe3c3da26b4a8`.
+The preparation script deterministically gates that current tree together with
+the existing overlay inputs. The CenturyArks overlay architecture and its
+two-hunk vendor overlay did not change; the later annotation is outside those
+overlay inputs.
+
 Only two supplier-derived inputs were retained:
 
 - `LICENSE_OPEN`, copied byte-for-byte from the supplier package;

@@ -284,6 +284,24 @@ if(APPLE)
     endforeach()
     list(APPEND EBPLUS_MACOS_BUNDLE_SEARCH_DIRECTORIES
         "${_ebplus_qtsvg_library_directory}")
+
+    # Build-tree RPATH entries can identify selected private runtimes that
+    # imported target metadata does not expose. Keep only real producer
+    # directories; install RPATH remains the bundle-relative contract above.
+    foreach(_ebplus_build_rpath_entry IN LISTS CMAKE_BUILD_RPATH)
+        if("${_ebplus_build_rpath_entry}" STREQUAL "" OR
+           "${_ebplus_build_rpath_entry}" MATCHES "\\$<" OR
+           NOT IS_ABSOLUTE "${_ebplus_build_rpath_entry}" OR
+           NOT IS_DIRECTORY "${_ebplus_build_rpath_entry}")
+            continue()
+        endif()
+        get_filename_component(_ebplus_build_rpath_directory
+            "${_ebplus_build_rpath_entry}" REALPATH)
+        if(IS_DIRECTORY "${_ebplus_build_rpath_directory}")
+            list(APPEND EBPLUS_MACOS_BUNDLE_SEARCH_DIRECTORIES
+                "${_ebplus_build_rpath_directory}")
+        endif()
+    endforeach()
     list(REMOVE_DUPLICATES EBPLUS_MACOS_BUNDLE_SEARCH_DIRECTORIES)
 
     get_target_property(_ebplus_bundle_output_name gui_for_openeb OUTPUT_NAME)
@@ -324,6 +342,8 @@ if(APPLE)
     unset(_ebplus_qtsvg_cmake_parent)
     unset(_ebplus_qtsvg_image_plugin_candidate)
     unset(_ebplus_qtsvg_icon_plugin_candidate)
+    unset(_ebplus_build_rpath_directory)
+    unset(_ebplus_build_rpath_entry)
     unset(_opencv_library)
     unset(_opencv_library_directory)
     unset(_opencv_library_location)

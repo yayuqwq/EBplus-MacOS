@@ -265,7 +265,7 @@ output evidence.
 | PKG-004 | Packaging | Code signing | Not applicable | Not applicable | Verified | M8-A1 diagnosed post-fixup signature invalidation and added deterministic inside-out local ad-hoc signing; recursive `codesign --verify --deep --strict` passed; see [M8-A validation](macos_milestone_8a_validation.md) | Developer ID, Gatekeeper and distribution signing | M8 | local ad-hoc execution integrity only; not release-ready signing |
 | PKG-005 | Packaging | Notarization | Not applicable | Not applicable | Not started | 当前未找到 notarization 配置 | Apple notarization workflow | M8 | 后续可选工作 |
 | PKG-006 | Packaging | DMG | Not applicable | Not applicable | Not started | 当前未找到 DMG 生成逻辑 | 安装、卸载和空间预算 | M8 | 仅 milestone 需要时生成 |
-| PKG-007 | CI | Linux and Apple Silicon CI | Unknown | Unknown | Not started | 当前审计未发现覆盖本目标的 CI workflow | Linux regression、macOS arm64 configure/build/smoke | M8 | CI 不得破坏 Linux baseline |
+| PKG-007 | CI | Linux and Apple Silicon CI | Unknown | Unknown | In progress — Apple Silicon CI verified; Linux CI not started | [M8-B1 CI validation](macos_milestone_8b1_validation.md): fresh GitHub-hosted macOS 15 arm64 build/test/package/static closure; [successful run](https://github.com/yayuqwq/EBplus-MacOS/actions/runs/32626325967) | native Linux CI configure/build/tests | M8 | Apple Silicon half is qualified; Linux half remains unverified and CI must not break the Linux baseline |
 
 ## 12. 更新规则
 
