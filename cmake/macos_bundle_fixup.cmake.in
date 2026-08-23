@@ -478,15 +478,15 @@ set(BU_CHMOD_BUNDLE_ITEMS TRUE)
 set(BU_COPY_FULL_FRAMEWORK_CONTENTS TRUE)
 fixup_bundle("${_bundle}" "${_dynamic_plugins}" "${_runtime_search_directories}")
 
-# CMake's full-framework copy follows the producer's root compatibility links.
-# The resulting staged Qt framework can therefore contain a duplicate regular
-# root executable and Headers directory instead of the standard relative
-# links. Aside from leaving a duplicate Mach-O for later normalization, that
-# layout makes current macOS codesign reject the framework root as ambiguous.
-# Restore only the known Qt compatibility links in the final staged bundle
-# before any load-command mutation or signing. Every guard below is deliberate:
-# this never follows or modifies a producer framework, and it refuses an
-# unexpected framework topology instead of silently replacing it.
+# CMake's full-framework copy follows the producer's compatibility links. The
+# staged framework can therefore materialize Current, the root executable,
+# Resources, and Headers instead of preserving their standard relative links.
+# BundleUtilities has already copied those files and run its Mach-O fixups
+# above. Restore only the known Qt compatibility links after that work, but
+# before EBplus's additional loader normalization and final signing. Every
+# guard below is deliberate: this never follows or modifies a producer
+# framework, and it refuses an unexpected framework topology instead of
+# silently replacing it.
 function(_ebplus_is_canonical_staged_qt_framework_version
          versions_directory framework_name version_directory output_variable)
     set(${output_variable} FALSE PARENT_SCOPE)
@@ -664,6 +664,22 @@ function(_ebplus_require_real_staged_directory_child
     set(${output_variable} "${_child_real}" PARENT_SCOPE)
 endfunction()
 
+function(_ebplus_require_real_staged_file_child
+         parent_real child expected_relative context output_variable)
+    if(IS_SYMLINK "${child}" OR NOT EXISTS "${child}" OR
+       IS_DIRECTORY "${child}")
+        message(FATAL_ERROR
+            "Expected a real staged ${context} file: ${child}")
+    endif()
+    get_filename_component(_child_real "${child}" REALPATH)
+    file(RELATIVE_PATH _child_relative "${parent_real}" "${_child_real}")
+    if(NOT "${_child_relative}" STREQUAL "${expected_relative}")
+        message(FATAL_ERROR
+            "Staged ${context} file escapes its expected parent: ${child}")
+    endif()
+    set(${output_variable} "${_child_real}" PARENT_SCOPE)
+endfunction()
+
 function(_ebplus_assert_matching_staged_file_sha256
          materialized_file canonical_file context output_materialized_hash
          output_canonical_hash)
@@ -686,21 +702,201 @@ function(_ebplus_assert_matching_staged_file_sha256
     set(${output_canonical_hash} "${_canonical_hash}" PARENT_SCOPE)
 endfunction()
 
-function(_ebplus_assert_staged_macho_file file_path context)
+function(_ebplus_collect_staged_macho_architectures
+         file_path context output_variable)
+    execute_process(
+        COMMAND /usr/bin/lipo -archs "${file_path}"
+        RESULT_VARIABLE _lipo_result
+        OUTPUT_VARIABLE _lipo_output
+        ERROR_VARIABLE _lipo_error)
+    if(NOT _lipo_result EQUAL 0)
+        message(FATAL_ERROR
+            "Could not inspect staged Qt Mach-O architectures for ${context}: "
+            "${file_path}: ${_lipo_error}")
+    endif()
+
+    string(STRIP "${_lipo_output}" _lipo_output)
+    if("${_lipo_output}" STREQUAL "")
+        message(FATAL_ERROR
+            "Staged Qt Mach-O has no architectures for ${context}: ${file_path}")
+    endif()
+    string(REGEX REPLACE "[ \t\r\n]+" ";" _raw_architectures
+        "${_lipo_output}")
+    set(_architectures "")
+    foreach(_architecture IN LISTS _raw_architectures)
+        if(NOT "${_architecture}" MATCHES "^[A-Za-z0-9_]+$")
+            message(FATAL_ERROR
+                "Could not parse staged Qt Mach-O architecture for ${context}: "
+                "${_architecture}")
+        endif()
+        list(FIND _architectures "${_architecture}" _architecture_index)
+        if(NOT _architecture_index EQUAL -1)
+            message(FATAL_ERROR
+                "Staged Qt Mach-O repeats an architecture for ${context}: "
+                "${_architecture}")
+        endif()
+        list(APPEND _architectures "${_architecture}")
+    endforeach()
+    list(SORT _architectures)
+    set(${output_variable} "${_architectures}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_collect_staged_macho_identity
+         file_path context output_architectures output_uuids output_pairs
+         output_dylib_id)
     if(NOT EXISTS "${file_path}" OR IS_DIRECTORY "${file_path}")
         message(FATAL_ERROR
             "Expected a staged Qt Mach-O file for ${context}: ${file_path}")
     endif()
+    _ebplus_collect_staged_macho_architectures(
+        "${file_path}" "${context}" _architectures)
+
     execute_process(
-        COMMAND /usr/bin/otool -L "${file_path}"
-        RESULT_VARIABLE _otool_result
-        OUTPUT_QUIET
-        ERROR_VARIABLE _otool_error)
-    if(NOT _otool_result EQUAL 0)
+        COMMAND xcrun dwarfdump --uuid "${file_path}"
+        RESULT_VARIABLE _dwarfdump_result
+        OUTPUT_VARIABLE _dwarfdump_output
+        ERROR_VARIABLE _dwarfdump_error)
+    if(NOT _dwarfdump_result EQUAL 0)
         message(FATAL_ERROR
-            "Could not inspect staged Qt Mach-O for ${context}: "
-            "${file_path}: ${_otool_error}")
+            "Could not inspect staged Qt LC_UUID values for ${context}: "
+            "${file_path}: ${_dwarfdump_error}")
     endif()
+
+    string(REPLACE "\n" ";" _dwarfdump_lines "${_dwarfdump_output}")
+    set(_uuid_architectures "")
+    set(_uuid_values "")
+    set(_architecture_uuid_pairs "")
+    foreach(_dwarfdump_line IN LISTS _dwarfdump_lines)
+        string(STRIP "${_dwarfdump_line}" _dwarfdump_line)
+        if("${_dwarfdump_line}" STREQUAL "")
+            continue()
+        endif()
+        # Ignore dwarfdump's trailing inspected-file path. The identity is only
+        # the LC_UUID and architecture prefix emitted for each Mach-O slice.
+        if(NOT "${_dwarfdump_line}" MATCHES
+           "^UUID: ([0-9A-Fa-f-]+) \\(([^)]+)\\)")
+            message(FATAL_ERROR
+                "Could not parse staged Qt LC_UUID for ${context}: "
+                "${_dwarfdump_line}")
+        endif()
+        string(TOUPPER "${CMAKE_MATCH_1}" _uuid_value)
+        set(_uuid_architecture "${CMAKE_MATCH_2}")
+        string(REPLACE "-" "" _uuid_hex "${_uuid_value}")
+        string(LENGTH "${_uuid_value}" _uuid_length)
+        string(LENGTH "${_uuid_hex}" _uuid_hex_length)
+        if(NOT _uuid_length EQUAL 36 OR
+           NOT _uuid_hex_length EQUAL 32 OR
+           NOT "${_uuid_hex}" MATCHES "^[0-9A-F]+$")
+            message(FATAL_ERROR
+                "Malformed staged Qt LC_UUID for ${context}: ${_uuid_value}")
+        endif()
+        foreach(_hyphen_offset IN ITEMS 8 13 18 23)
+            string(SUBSTRING "${_uuid_value}" ${_hyphen_offset} 1 _uuid_hyphen)
+            if(NOT "${_uuid_hyphen}" STREQUAL "-")
+                message(FATAL_ERROR
+                    "Malformed staged Qt LC_UUID for ${context}: ${_uuid_value}")
+            endif()
+        endforeach()
+        list(FIND _architectures "${_uuid_architecture}" _expected_architecture)
+        if(_expected_architecture EQUAL -1)
+            message(FATAL_ERROR
+                "Staged Qt LC_UUID architecture is not reported by lipo for "
+                "${context}: ${_uuid_architecture}")
+        endif()
+        list(FIND _uuid_architectures "${_uuid_architecture}"
+            _uuid_architecture_index)
+        if(NOT _uuid_architecture_index EQUAL -1)
+            message(FATAL_ERROR
+                "Staged Qt Mach-O has multiple LC_UUID values for ${context}: "
+                "${_uuid_architecture}")
+        endif()
+        list(APPEND _uuid_architectures "${_uuid_architecture}")
+        list(APPEND _uuid_values "${_uuid_value}")
+        list(APPEND _architecture_uuid_pairs
+            "${_uuid_architecture}=${_uuid_value}")
+    endforeach()
+
+    list(SORT _uuid_architectures)
+    list(LENGTH _architectures _architecture_count)
+    list(LENGTH _uuid_architectures _uuid_architecture_count)
+    if(NOT _architecture_count EQUAL _uuid_architecture_count OR
+       NOT "${_architectures}" STREQUAL "${_uuid_architectures}")
+        message(FATAL_ERROR
+            "Staged Qt LC_UUID architecture set differs from lipo for ${context}: "
+            "lipo=${_architectures}; uuid=${_uuid_architectures}")
+    endif()
+    list(REMOVE_DUPLICATES _uuid_values)
+    list(SORT _uuid_values)
+    list(SORT _architecture_uuid_pairs)
+
+    _ebplus_read_macho_load_metadata("${file_path}"
+        _dylib_id _macho_loads _macho_rpaths)
+    if("${_dylib_id}" STREQUAL "")
+        set(_dylib_id "<none>")
+    endif()
+
+    set(${output_architectures} "${_architectures}" PARENT_SCOPE)
+    set(${output_uuids} "${_uuid_values}" PARENT_SCOPE)
+    set(${output_pairs} "${_architecture_uuid_pairs}" PARENT_SCOPE)
+    set(${output_dylib_id} "${_dylib_id}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_assert_matching_staged_macho_identity
+         materialized_file canonical_file context)
+    _ebplus_collect_staged_macho_identity(
+        "${materialized_file}" "${context} materialized"
+        _materialized_architectures _materialized_uuids _materialized_pairs
+        _materialized_dylib_id)
+    _ebplus_collect_staged_macho_identity(
+        "${canonical_file}" "${context} canonical"
+        _canonical_architectures _canonical_uuids _canonical_pairs
+        _canonical_dylib_id)
+    if(NOT "${_materialized_architectures}" STREQUAL
+       "${_canonical_architectures}")
+        message(FATAL_ERROR
+            "Materialized staged Qt ${context} Mach-O architectures differ: "
+            "${_materialized_architectures}; ${_canonical_architectures}")
+    endif()
+    if(NOT "${_materialized_uuids}" STREQUAL "${_canonical_uuids}")
+        message(FATAL_ERROR
+            "Materialized staged Qt ${context} LC_UUID sets differ: "
+            "${_materialized_uuids}; ${_canonical_uuids}")
+    endif()
+    if(NOT "${_materialized_pairs}" STREQUAL "${_canonical_pairs}")
+        message(FATAL_ERROR
+            "Materialized staged Qt ${context} LC_UUID architecture mappings "
+            "differ: ${_materialized_pairs}; ${_canonical_pairs}")
+    endif()
+    message(STATUS
+        "Materialized Qt ${context} Mach-O identity: "
+        "architectures=${_materialized_architectures}; "
+        "LC_UUIDs=${_materialized_uuids}; "
+        "materialized LC_ID_DYLIB=${_materialized_dylib_id}; "
+        "canonical LC_ID_DYLIB=${_canonical_dylib_id}")
+endfunction()
+
+function(_ebplus_assert_matching_staged_directory_entry_names
+         materialized_directory canonical_directory context)
+    if(IS_SYMLINK "${materialized_directory}" OR
+       NOT IS_DIRECTORY "${materialized_directory}" OR
+       IS_SYMLINK "${canonical_directory}" OR
+       NOT IS_DIRECTORY "${canonical_directory}")
+        message(FATAL_ERROR
+            "Expected real staged Qt directories for ${context}: "
+            "${materialized_directory}; ${canonical_directory}")
+    endif()
+    _ebplus_collect_immediate_staged_entry_names(
+        "${materialized_directory}" _materialized_entry_names)
+    _ebplus_collect_immediate_staged_entry_names(
+        "${canonical_directory}" _canonical_entry_names)
+    if(NOT "${_materialized_entry_names}" STREQUAL
+       "${_canonical_entry_names}")
+        message(FATAL_ERROR
+            "Materialized staged Qt ${context} immediate entries differ: "
+            "${_materialized_entry_names}; ${_canonical_entry_names}")
+    endif()
+    message(STATUS
+        "Materialized Qt ${context}: immediate entries=${_materialized_entry_names}")
 endfunction()
 
 function(_ebplus_validate_materialized_qt_directory
@@ -735,16 +931,8 @@ function(_ebplus_validate_materialized_qt_directory
         "${_materialized_info_real}" "${_canonical_info_real}"
         "${kind} Info.plist" _materialized_info_hash _canonical_info_hash)
 
-    _ebplus_collect_immediate_staged_entry_names(
-        "${_materialized_real}" _materialized_entry_names)
-    _ebplus_collect_immediate_staged_entry_names(
-        "${_canonical_real}" _canonical_entry_names)
-    if(NOT "${_materialized_entry_names}" STREQUAL
-       "${_canonical_entry_names}")
-        message(FATAL_ERROR
-            "Materialized staged Qt ${kind} immediate entries differ: "
-            "${_materialized_entry_names}; ${_canonical_entry_names}")
-    endif()
+    _ebplus_assert_matching_staged_directory_entry_names(
+        "${_materialized_real}" "${_canonical_real}" "${kind}")
 
     if(NOT "${executable_relative}" STREQUAL "")
         set(_materialized_executable
@@ -766,19 +954,10 @@ function(_ebplus_validate_materialized_qt_directory
                 "Staged Qt ${kind} executable escapes its compared directory: "
                 "${materialized_directory}; ${canonical_directory}")
         endif()
-        _ebplus_assert_staged_macho_file(
-            "${_materialized_executable_real}" "${kind} materialized executable")
-        _ebplus_assert_staged_macho_file(
-            "${_canonical_executable_real}" "${kind} canonical executable")
-        _ebplus_assert_matching_staged_file_sha256(
+        _ebplus_assert_matching_staged_macho_identity(
             "${_materialized_executable_real}" "${_canonical_executable_real}"
-            "${kind} executable" _materialized_executable_hash
-            _canonical_executable_hash)
-        message(STATUS
-            "Materialized Qt ${kind}: framework=${framework_name}; "
-            "selected-version=${selected_version_name}; "
-            "Current executable SHA=${_materialized_executable_hash}; "
-            "canonical executable SHA=${_canonical_executable_hash}")
+            "${kind} executable for ${framework_name}.framework "
+            "selected-version=${selected_version_name}")
     else()
         message(STATUS
             "Materialized Qt ${kind}: framework=${framework_name}; "
@@ -828,6 +1007,8 @@ function(_ebplus_restore_staged_qt_framework_links)
     set(_missing_current_link_count 0)
     set(_materialized_current_link_count 0)
     set(_materialized_resources_link_count 0)
+    set(_materialized_root_executable_link_count 0)
+    set(_materialized_root_headers_link_count 0)
     foreach(_framework IN LISTS _qt_framework_candidates)
         if(NOT IS_DIRECTORY "${_framework}" OR IS_SYMLINK "${_framework}")
             message(FATAL_ERROR
@@ -873,16 +1054,24 @@ function(_ebplus_restore_staged_qt_framework_links)
 
         set(_current_version_link "${_versions_directory}/Current")
         set(_resources_link "${_framework}/Resources")
+        set(_root_executable "${_framework}/${_framework_name}")
+        set(_root_headers "${_framework}/Headers")
         _ebplus_describe_staged_path("${_current_version_link}"
             _initial_current_state)
         _ebplus_describe_staged_path("${_resources_link}"
             _initial_resources_state)
+        _ebplus_describe_staged_path("${_root_executable}"
+            _initial_root_executable_state)
+        _ebplus_describe_staged_path("${_root_headers}"
+            _initial_root_headers_state)
         message(STATUS
             "Staged Qt framework initial topology: ${_framework_name}.framework; "
             "immediate Versions entries: ${_versions_directory_listing}; "
             "selected version: ${_selected_version_name}; "
             "Current=${_initial_current_state}; "
-            "Resources=${_initial_resources_state}")
+            "Resources=${_initial_resources_state}; "
+            "${_framework_name}=${_initial_root_executable_state}; "
+            "Headers=${_initial_root_headers_state}")
 
         set(_framework_normalized FALSE)
         set(_restored_missing_current_link FALSE)
@@ -1071,7 +1260,6 @@ function(_ebplus_restore_staged_qt_framework_links)
                 "Versions/Current/Resources")
         endif()
 
-        set(_root_executable "${_framework}/${_framework_name}")
         set(_normalized_root_executable FALSE)
         if(IS_SYMLINK "${_root_executable}")
             file(READ_SYMLINK "${_root_executable}" _root_executable_target)
@@ -1083,6 +1271,24 @@ function(_ebplus_restore_staged_qt_framework_links)
             endif()
         elseif(EXISTS "${_root_executable}" AND
                NOT IS_DIRECTORY "${_root_executable}")
+            _ebplus_require_real_staged_file_child(
+                "${_framework_real}" "${_root_executable}"
+                "${_framework_name}" "Qt framework root executable"
+                _materialized_root_executable_real)
+            _ebplus_assert_matching_staged_macho_identity(
+                "${_materialized_root_executable_real}"
+                "${_canonical_executable_real}"
+                "root executable for ${_framework_name}.framework "
+                "selected-version=${_selected_version_name}")
+            _ebplus_require_real_staged_file_child(
+                "${_framework_real}" "${_root_executable}"
+                "${_framework_name}" "Qt framework root executable"
+                _root_executable_removal_real)
+            if(IS_SYMLINK "${_root_executable}")
+                message(FATAL_ERROR
+                    "Refusing to remove a staged Qt framework executable symlink: "
+                    "${_root_executable}")
+            endif()
             file(REMOVE "${_root_executable}")
             file(CREATE_LINK "Versions/Current/${_framework_name}"
                 "${_root_executable}" SYMBOLIC RESULT _root_link_result)
@@ -1117,8 +1323,15 @@ function(_ebplus_restore_staged_qt_framework_links)
                 "Staged Qt framework executable link does not resolve to its "
                 "canonical versioned executable: ${_root_executable}")
         endif()
+        if(_normalized_root_executable)
+            math(EXPR _materialized_root_executable_link_count
+                "${_materialized_root_executable_link_count} + 1")
+            message(STATUS
+                "Restored materialized Qt framework executable: "
+                "${_framework_name}.framework/${_framework_name} -> "
+                "Versions/Current/${_framework_name}")
+        endif()
 
-        set(_root_headers "${_framework}/Headers")
         set(_normalized_root_headers FALSE)
         if(IS_SYMLINK "${_root_headers}")
             file(READ_SYMLINK "${_root_headers}" _root_headers_target)
@@ -1128,8 +1341,20 @@ function(_ebplus_restore_staged_qt_framework_links)
                     "${_root_headers} -> ${_root_headers_target}")
             endif()
         elseif(IS_DIRECTORY "${_root_headers}")
-            # This exact directory is a duplicate of the canonical versioned
-            # headers inside the final generated bundle, never a producer path.
+            _ebplus_require_real_staged_directory_child(
+                "${_framework_real}" "${_root_headers}" "Headers"
+                "Qt framework Headers" _materialized_root_headers_real)
+            _ebplus_assert_matching_staged_directory_entry_names(
+                "${_materialized_root_headers_real}" "${_canonical_headers_real}"
+                "Headers for ${_framework_name}.framework")
+            _ebplus_require_real_staged_directory_child(
+                "${_framework_real}" "${_root_headers}" "Headers"
+                "Qt framework Headers" _root_headers_removal_real)
+            if(IS_SYMLINK "${_root_headers}")
+                message(FATAL_ERROR
+                    "Refusing to remove a staged Qt framework Headers symlink: "
+                    "${_root_headers}")
+            endif()
             file(REMOVE_RECURSE "${_root_headers}")
             file(CREATE_LINK "Versions/Current/Headers" "${_root_headers}"
                 SYMBOLIC RESULT _headers_link_result)
@@ -1162,6 +1387,14 @@ function(_ebplus_restore_staged_qt_framework_links)
                 "Staged Qt framework Headers link does not resolve to its "
                 "canonical versioned headers: ${_root_headers}")
         endif()
+        if(_normalized_root_headers)
+            math(EXPR _materialized_root_headers_link_count
+                "${_materialized_root_headers_link_count} + 1")
+            message(STATUS
+                "Restored materialized Qt framework Headers: "
+                "${_framework_name}.framework/Headers -> "
+                "Versions/Current/Headers")
+        endif()
 
         if(_framework_normalized)
             math(EXPR _normalized_framework_count
@@ -1185,16 +1418,22 @@ function(_ebplus_restore_staged_qt_framework_links)
         "M8-A1 restored standard compatibility links in "
         "${_audited_framework_count} staged Qt frameworks")
     message(STATUS
-        "M8-B1m restored ${_missing_current_link_count} missing "
+        "M8-B1n restored ${_missing_current_link_count} missing "
         "Versions/Current links")
     message(STATUS
-        "M8-B1m normalized ${_materialized_current_link_count} materialized "
+        "M8-B1n normalized ${_materialized_current_link_count} materialized "
         "Versions/Current directories")
     message(STATUS
-        "M8-B1m normalized ${_materialized_resources_link_count} materialized "
+        "M8-B1n normalized ${_materialized_resources_link_count} materialized "
         "Resources directories")
     message(STATUS
-        "M8-B1m normalized ${_normalized_framework_count} staged Qt frameworks")
+        "M8-B1n normalized ${_materialized_root_executable_link_count} "
+        "materialized root executable files")
+    message(STATUS
+        "M8-B1n normalized ${_materialized_root_headers_link_count} "
+        "materialized Headers directories")
+    message(STATUS
+        "M8-B1n normalized ${_normalized_framework_count} staged Qt frameworks")
 endfunction()
 
 _ebplus_restore_staged_qt_framework_links()
