@@ -555,6 +555,252 @@ function(_ebplus_is_canonical_staged_qt_framework_version
     set(${output_variable} TRUE PARENT_SCOPE)
 endfunction()
 
+function(_ebplus_collect_immediate_staged_entry_names directory output_variable)
+    if(NOT IS_DIRECTORY "${directory}" OR IS_SYMLINK "${directory}")
+        message(FATAL_ERROR
+            "Expected a real staged directory while listing immediate entries: "
+            "${directory}")
+    endif()
+
+    # Include hidden immediate entries so a materialized compatibility copy
+    # cannot silently discard a staging artifact such as .DS_Store.
+    file(GLOB _entries LIST_DIRECTORIES TRUE
+        "${directory}/*"
+        "${directory}/.*")
+    set(_entry_names "")
+    foreach(_entry IN LISTS _entries)
+        get_filename_component(_entry_name "${_entry}" NAME)
+        if(_entry_name STREQUAL "." OR _entry_name STREQUAL "..")
+            continue()
+        endif()
+        list(APPEND _entry_names "${_entry_name}")
+    endforeach()
+    list(REMOVE_DUPLICATES _entry_names)
+    list(SORT _entry_names)
+    set(${output_variable} "${_entry_names}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_select_canonical_staged_qt_framework_version
+         versions_directory framework_name output_name output_directory
+         output_listing)
+    _ebplus_collect_immediate_staged_entry_names(
+        "${versions_directory}" _version_entry_names)
+    set(_canonical_version_names "")
+    set(_canonical_version_directories "")
+    foreach(_version_entry_name IN LISTS _version_entry_names)
+        if(_version_entry_name STREQUAL "Current")
+            continue()
+        endif()
+
+        set(_version_entry "${versions_directory}/${_version_entry_name}")
+        _ebplus_is_canonical_staged_qt_framework_version(
+            "${versions_directory}" "${framework_name}" "${_version_entry}"
+            _is_canonical_version)
+        if(_is_canonical_version)
+            get_filename_component(_version_entry_real
+                "${_version_entry}" REALPATH)
+            file(RELATIVE_PATH _version_entry_relative "${versions_directory}"
+                "${_version_entry_real}")
+            if(NOT _version_entry_relative STREQUAL "${_version_entry_name}")
+                message(FATAL_ERROR
+                    "Canonical staged Qt framework version is not an immediate "
+                    "Versions child: ${_version_entry}")
+            endif()
+            list(APPEND _canonical_version_names "${_version_entry_name}")
+            list(APPEND _canonical_version_directories "${_version_entry_real}")
+        endif()
+    endforeach()
+
+    if(_version_entry_names)
+        set(_versions_listing "${_version_entry_names}")
+    else()
+        set(_versions_listing "<empty>")
+    endif()
+    list(LENGTH _canonical_version_directories _canonical_version_count)
+    if(_canonical_version_count EQUAL 0)
+        message(FATAL_ERROR
+            "No canonical staged Qt framework version directory for "
+            "${framework_name}.framework; immediate Versions entries: "
+            "${_versions_listing}")
+    elseif(_canonical_version_count GREATER 1)
+        message(FATAL_ERROR
+            "Ambiguous staged Qt framework version directories for "
+            "${framework_name}.framework: ${_canonical_version_names}")
+    endif()
+
+    list(GET _canonical_version_names 0 _selected_version_name)
+    list(GET _canonical_version_directories 0 _selected_version_directory)
+    set(${output_name} "${_selected_version_name}" PARENT_SCOPE)
+    set(${output_directory} "${_selected_version_directory}" PARENT_SCOPE)
+    set(${output_listing} "${_versions_listing}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_describe_staged_path path output_variable)
+    if(IS_SYMLINK "${path}")
+        file(READ_SYMLINK "${path}" _link_target)
+        set(_description "symlink(${_link_target})")
+    elseif(IS_DIRECTORY "${path}")
+        set(_description "directory")
+    elseif(EXISTS "${path}")
+        set(_description "file")
+    else()
+        set(_description "absent")
+    endif()
+    set(${output_variable} "${_description}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_require_real_staged_directory_child
+         parent_real child expected_relative context output_variable)
+    if(IS_SYMLINK "${child}" OR NOT IS_DIRECTORY "${child}")
+        message(FATAL_ERROR
+            "Expected a real staged ${context} directory: ${child}")
+    endif()
+    get_filename_component(_child_real "${child}" REALPATH)
+    file(RELATIVE_PATH _child_relative "${parent_real}" "${_child_real}")
+    if(NOT _child_relative STREQUAL "${expected_relative}")
+        message(FATAL_ERROR
+            "Staged ${context} directory escapes its expected parent: ${child}")
+    endif()
+    set(${output_variable} "${_child_real}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_assert_matching_staged_file_sha256
+         materialized_file canonical_file context output_materialized_hash
+         output_canonical_hash)
+    if(NOT EXISTS "${materialized_file}" OR
+       IS_DIRECTORY "${materialized_file}" OR
+       NOT EXISTS "${canonical_file}" OR
+       IS_DIRECTORY "${canonical_file}")
+        message(FATAL_ERROR
+            "Expected matching staged files for ${context}: "
+            "${materialized_file}; ${canonical_file}")
+    endif()
+    file(SHA256 "${materialized_file}" _materialized_hash)
+    file(SHA256 "${canonical_file}" _canonical_hash)
+    if(NOT _materialized_hash STREQUAL "${_canonical_hash}")
+        message(FATAL_ERROR
+            "Materialized staged Qt ${context} SHA-256 differs: "
+            "${materialized_file}; ${canonical_file}")
+    endif()
+    set(${output_materialized_hash} "${_materialized_hash}" PARENT_SCOPE)
+    set(${output_canonical_hash} "${_canonical_hash}" PARENT_SCOPE)
+endfunction()
+
+function(_ebplus_assert_staged_macho_file file_path context)
+    if(NOT EXISTS "${file_path}" OR IS_DIRECTORY "${file_path}")
+        message(FATAL_ERROR
+            "Expected a staged Qt Mach-O file for ${context}: ${file_path}")
+    endif()
+    execute_process(
+        COMMAND /usr/bin/otool -L "${file_path}"
+        RESULT_VARIABLE _otool_result
+        OUTPUT_QUIET
+        ERROR_VARIABLE _otool_error)
+    if(NOT _otool_result EQUAL 0)
+        message(FATAL_ERROR
+            "Could not inspect staged Qt Mach-O for ${context}: "
+            "${file_path}: ${_otool_error}")
+    endif()
+endfunction()
+
+function(_ebplus_validate_materialized_qt_directory
+         kind framework_name selected_version_name materialized_directory
+         canonical_directory info_relative executable_relative)
+    if(IS_SYMLINK "${materialized_directory}" OR
+       NOT IS_DIRECTORY "${materialized_directory}" OR
+       IS_SYMLINK "${canonical_directory}" OR
+       NOT IS_DIRECTORY "${canonical_directory}")
+        message(FATAL_ERROR
+            "Expected real staged Qt ${kind} directories for comparison: "
+            "${materialized_directory}; ${canonical_directory}")
+    endif()
+
+    get_filename_component(_materialized_real "${materialized_directory}" REALPATH)
+    get_filename_component(_canonical_real "${canonical_directory}" REALPATH)
+    set(_materialized_info "${_materialized_real}/${info_relative}")
+    set(_canonical_info "${_canonical_real}/${info_relative}")
+    get_filename_component(_materialized_info_real "${_materialized_info}" REALPATH)
+    get_filename_component(_canonical_info_real "${_canonical_info}" REALPATH)
+    file(RELATIVE_PATH _materialized_info_relative "${_materialized_real}"
+        "${_materialized_info_real}")
+    file(RELATIVE_PATH _canonical_info_relative "${_canonical_real}"
+        "${_canonical_info_real}")
+    if(NOT _materialized_info_relative STREQUAL "${info_relative}" OR
+       NOT _canonical_info_relative STREQUAL "${info_relative}")
+        message(FATAL_ERROR
+            "Staged Qt ${kind} Info.plist escapes its compared directory: "
+            "${materialized_directory}; ${canonical_directory}")
+    endif()
+    _ebplus_assert_matching_staged_file_sha256(
+        "${_materialized_info_real}" "${_canonical_info_real}"
+        "${kind} Info.plist" _materialized_info_hash _canonical_info_hash)
+
+    _ebplus_collect_immediate_staged_entry_names(
+        "${_materialized_real}" _materialized_entry_names)
+    _ebplus_collect_immediate_staged_entry_names(
+        "${_canonical_real}" _canonical_entry_names)
+    if(NOT "${_materialized_entry_names}" STREQUAL
+       "${_canonical_entry_names}")
+        message(FATAL_ERROR
+            "Materialized staged Qt ${kind} immediate entries differ: "
+            "${_materialized_entry_names}; ${_canonical_entry_names}")
+    endif()
+
+    if(NOT "${executable_relative}" STREQUAL "")
+        set(_materialized_executable
+            "${_materialized_real}/${executable_relative}")
+        set(_canonical_executable "${_canonical_real}/${executable_relative}")
+        get_filename_component(_materialized_executable_real
+            "${_materialized_executable}" REALPATH)
+        get_filename_component(_canonical_executable_real
+            "${_canonical_executable}" REALPATH)
+        file(RELATIVE_PATH _materialized_executable_relative
+            "${_materialized_real}" "${_materialized_executable_real}")
+        file(RELATIVE_PATH _canonical_executable_relative
+            "${_canonical_real}" "${_canonical_executable_real}")
+        if(NOT _materialized_executable_relative STREQUAL
+           "${executable_relative}" OR
+           NOT _canonical_executable_relative STREQUAL
+           "${executable_relative}")
+            message(FATAL_ERROR
+                "Staged Qt ${kind} executable escapes its compared directory: "
+                "${materialized_directory}; ${canonical_directory}")
+        endif()
+        _ebplus_assert_staged_macho_file(
+            "${_materialized_executable_real}" "${kind} materialized executable")
+        _ebplus_assert_staged_macho_file(
+            "${_canonical_executable_real}" "${kind} canonical executable")
+        _ebplus_assert_matching_staged_file_sha256(
+            "${_materialized_executable_real}" "${_canonical_executable_real}"
+            "${kind} executable" _materialized_executable_hash
+            _canonical_executable_hash)
+        message(STATUS
+            "Materialized Qt ${kind}: framework=${framework_name}; "
+            "selected-version=${selected_version_name}; "
+            "Current executable SHA=${_materialized_executable_hash}; "
+            "canonical executable SHA=${_canonical_executable_hash}")
+    else()
+        message(STATUS
+            "Materialized Qt ${kind}: framework=${framework_name}; "
+            "Info.plist SHA=${_materialized_info_hash}; "
+            "canonical Info.plist SHA=${_canonical_info_hash}")
+    endif()
+endfunction()
+
+function(_ebplus_create_staged_qt_relative_link link_path target context)
+    if(EXISTS "${link_path}" OR IS_SYMLINK "${link_path}")
+        message(FATAL_ERROR
+            "Expected absent staged Qt link before restoring ${context}: "
+            "${link_path}")
+    endif()
+    file(CREATE_LINK "${target}" "${link_path}" SYMBOLIC RESULT _link_result)
+    if(NOT _link_result STREQUAL "0")
+        message(FATAL_ERROR
+            "Could not restore staged Qt ${context} link ${link_path}: "
+            "${_link_result}")
+    endif()
+endfunction()
+
 function(_ebplus_restore_staged_qt_framework_links)
     if(NOT IS_DIRECTORY "${_frameworks_directory}" OR
        IS_SYMLINK "${_frameworks_directory}")
@@ -577,8 +823,11 @@ function(_ebplus_restore_staged_qt_framework_links)
         "${_frameworks_directory}/Qt*.framework")
     list(SORT _qt_framework_candidates)
 
-    set(_restored_framework_count 0)
-    set(_restored_current_link_count 0)
+    set(_audited_framework_count 0)
+    set(_normalized_framework_count 0)
+    set(_missing_current_link_count 0)
+    set(_materialized_current_link_count 0)
+    set(_materialized_resources_link_count 0)
     foreach(_framework IN LISTS _qt_framework_candidates)
         if(NOT IS_DIRECTORY "${_framework}" OR IS_SYMLINK "${_framework}")
             message(FATAL_ERROR
@@ -603,75 +852,88 @@ function(_ebplus_restore_staged_qt_framework_links)
                 "Expected a real staged Qt framework Versions directory: "
                 "${_versions_directory}")
         endif()
+        get_filename_component(_versions_directory_real
+            "${_versions_directory}" REALPATH)
+        file(RELATIVE_PATH _versions_relative_to_framework "${_framework_real}"
+            "${_versions_directory_real}")
+        if(NOT _versions_relative_to_framework STREQUAL "Versions")
+            message(FATAL_ERROR
+                "Staged Qt framework Versions directory escapes its framework: "
+                "${_versions_directory}")
+        endif()
+
+        # A staged Current directory may itself look canonical after
+        # BundleUtilities materializes the producer's compatibility link. Pick
+        # the real version before inspecting Current, and always exclude the
+        # literal Current entry from that unique-candidate decision.
+        _ebplus_select_canonical_staged_qt_framework_version(
+            "${_versions_directory}" "${_framework_name}"
+            _selected_version_name _selected_version_directory
+            _versions_directory_listing)
 
         set(_current_version_link "${_versions_directory}/Current")
-        set(_restored_current_link FALSE)
+        set(_resources_link "${_framework}/Resources")
+        _ebplus_describe_staged_path("${_current_version_link}"
+            _initial_current_state)
+        _ebplus_describe_staged_path("${_resources_link}"
+            _initial_resources_state)
+        message(STATUS
+            "Staged Qt framework initial topology: ${_framework_name}.framework; "
+            "immediate Versions entries: ${_versions_directory_listing}; "
+            "selected version: ${_selected_version_name}; "
+            "Current=${_initial_current_state}; "
+            "Resources=${_initial_resources_state}")
+
+        set(_framework_normalized FALSE)
+        set(_restored_missing_current_link FALSE)
+        set(_normalized_materialized_current FALSE)
+        set(_normalized_materialized_resources FALSE)
         if(IS_SYMLINK "${_current_version_link}")
-            # Validate it below. A dangling symlink is not an absent Current.
-        elseif(EXISTS "${_current_version_link}")
-            message(FATAL_ERROR
-                "Expected staged Qt framework Current to be a symlink or absent: "
-                "${_current_version_link}")
+            # Validate this existing link below. A dangling link is not absent.
+        elseif(NOT EXISTS "${_current_version_link}")
+            _ebplus_create_staged_qt_relative_link(
+                "${_current_version_link}" "${_selected_version_name}"
+                "framework Current")
+            set(_restored_missing_current_link TRUE)
+            set(_framework_normalized TRUE)
+        elseif(IS_DIRECTORY "${_current_version_link}" AND
+               NOT IS_SYMLINK "${_current_version_link}")
+            _ebplus_require_real_staged_directory_child(
+                "${_versions_directory_real}" "${_current_version_link}"
+                "Current" "Qt framework Current" _materialized_current_real)
+            _ebplus_is_canonical_staged_qt_framework_version(
+                "${_versions_directory}" "${_framework_name}"
+                "${_materialized_current_real}" _is_canonical_materialized_current)
+            if(NOT _is_canonical_materialized_current)
+                message(FATAL_ERROR
+                    "Materialized staged Qt framework Current has no canonical "
+                    "versioned code/resources: ${_current_version_link}")
+            endif()
+            _ebplus_validate_materialized_qt_directory(
+                "Current" "${_framework_name}" "${_selected_version_name}"
+                "${_materialized_current_real}" "${_selected_version_directory}"
+                "Resources/Info.plist" "${_framework_name}")
+
+            # The exact direct child has been proven to be a materialized copy
+            # of the selected version. Do not delete an unexpected topology.
+            _ebplus_require_real_staged_directory_child(
+                "${_versions_directory_real}" "${_current_version_link}"
+                "Current" "Qt framework Current" _current_removal_real)
+            if(IS_SYMLINK "${_current_version_link}")
+                message(FATAL_ERROR
+                    "Refusing to remove a staged Qt framework Current symlink: "
+                    "${_current_version_link}")
+            endif()
+            file(REMOVE_RECURSE "${_current_version_link}")
+            _ebplus_create_staged_qt_relative_link(
+                "${_current_version_link}" "${_selected_version_name}"
+                "materialized framework Current")
+            set(_normalized_materialized_current TRUE)
+            set(_framework_normalized TRUE)
         else()
-            file(GLOB _version_entries LIST_DIRECTORIES TRUE
-                "${_versions_directory}/*")
-            list(SORT _version_entries)
-            set(_version_entry_names "")
-            set(_canonical_version_directories "")
-            set(_canonical_version_names "")
-            foreach(_version_entry IN LISTS _version_entries)
-                get_filename_component(_version_entry_name "${_version_entry}" NAME)
-                list(APPEND _version_entry_names "${_version_entry_name}")
-                if(_version_entry_name STREQUAL "Current")
-                    continue()
-                endif()
-
-                _ebplus_is_canonical_staged_qt_framework_version(
-                    "${_versions_directory}" "${_framework_name}"
-                    "${_version_entry}" _is_canonical_version)
-                if(_is_canonical_version)
-                    get_filename_component(_version_entry_real
-                        "${_version_entry}" REALPATH)
-                    list(APPEND _canonical_version_directories
-                        "${_version_entry_real}")
-                    list(APPEND _canonical_version_names
-                        "${_version_entry_name}")
-                endif()
-            endforeach()
-
-            if(_version_entry_names)
-                set(_versions_directory_listing "${_version_entry_names}")
-            else()
-                set(_versions_directory_listing "<empty>")
-            endif()
-            list(LENGTH _canonical_version_directories
-                _canonical_version_count)
-            if(_canonical_version_count EQUAL 0)
-                message(FATAL_ERROR
-                    "No canonical staged Qt framework version directory for "
-                    "${_framework_name}.framework; immediate Versions entries: "
-                    "${_versions_directory_listing}")
-            elseif(_canonical_version_count GREATER 1)
-                message(FATAL_ERROR
-                    "Ambiguous staged Qt framework version directories for "
-                    "${_framework_name}.framework: ${_canonical_version_names}")
-            endif()
-
-            list(GET _canonical_version_directories 0 _selected_version_directory)
-            list(GET _canonical_version_names 0 _selected_version_name)
-            message(STATUS
-                "Staged Qt framework ${_framework_name}.framework has no "
-                "Versions/Current link; immediate Versions entries: "
-                "${_versions_directory_listing}; selected version: "
-                "${_selected_version_name}")
-            file(CREATE_LINK "${_selected_version_name}" "${_current_version_link}"
-                SYMBOLIC RESULT _current_link_result)
-            if(NOT _current_link_result STREQUAL "0")
-                message(FATAL_ERROR
-                    "Could not restore staged Qt framework Current link "
-                    "${_current_version_link}: ${_current_link_result}")
-            endif()
-            set(_restored_current_link TRUE)
+            message(FATAL_ERROR
+                "Expected staged Qt framework Current to be a symlink, absent, "
+                "or a real materialized directory: ${_current_version_link}")
         endif()
 
         if(NOT IS_SYMLINK "${_current_version_link}")
@@ -689,6 +951,12 @@ function(_ebplus_restore_staged_qt_framework_links)
             message(FATAL_ERROR
                 "Qt framework Current link is not an immediate version directory: "
                 "${_current_version_link} -> ${_current_version_target}")
+        endif()
+        if(NOT _current_version_target STREQUAL "${_selected_version_name}")
+            message(FATAL_ERROR
+                "Staged Qt framework Current link does not select the unique "
+                "canonical version: ${_current_version_link} -> "
+                "${_current_version_target}; expected ${_selected_version_name}")
         endif()
 
         set(_current_version_directory
@@ -710,20 +978,33 @@ function(_ebplus_restore_staged_qt_framework_links)
                 "Qt framework Current link escapes its staged Versions directory: "
                 "${_current_version_link}")
         endif()
+        if(NOT _current_version_real STREQUAL "${_selected_version_directory}")
+            message(FATAL_ERROR
+                "Staged Qt framework Current link does not resolve to the selected "
+                "canonical version: ${_current_version_link}")
+        endif()
 
-        if(_restored_current_link)
-            math(EXPR _restored_current_link_count
-                "${_restored_current_link_count} + 1")
+        if(_restored_missing_current_link)
+            math(EXPR _missing_current_link_count
+                "${_missing_current_link_count} + 1")
             message(STATUS
                 "Restored staged Qt framework Current link: "
                 "${_framework_name}.framework/Versions/Current -> "
-                "${_current_version_target}")
+                "${_selected_version_name}")
+        endif()
+        if(_normalized_materialized_current)
+            math(EXPR _materialized_current_link_count
+                "${_materialized_current_link_count} + 1")
+            message(STATUS
+                "Restored materialized Qt framework Current: "
+                "${_framework_name}.framework/Versions/Current -> "
+                "${_selected_version_name}")
         endif()
 
         set(_canonical_executable
-            "${_current_version_real}/${_framework_name}")
-        set(_canonical_headers "${_current_version_real}/Headers")
-        set(_canonical_resources "${_current_version_real}/Resources")
+            "${_selected_version_directory}/${_framework_name}")
+        set(_canonical_headers "${_selected_version_directory}/Headers")
+        set(_canonical_resources "${_selected_version_directory}/Resources")
         get_filename_component(_canonical_executable_real
             "${_canonical_executable}" REALPATH)
         get_filename_component(_canonical_headers_real
@@ -731,10 +1012,43 @@ function(_ebplus_restore_staged_qt_framework_links)
         get_filename_component(_canonical_resources_real
             "${_canonical_resources}" REALPATH)
 
-        set(_resources_link "${_framework}/Resources")
+        if(IS_SYMLINK "${_resources_link}")
+            # Validate this existing link below.
+        elseif(IS_DIRECTORY "${_resources_link}" AND
+               NOT IS_SYMLINK "${_resources_link}")
+            _ebplus_require_real_staged_directory_child(
+                "${_framework_real}" "${_resources_link}" "Resources"
+                "Qt framework Resources" _materialized_resources_real)
+            _ebplus_validate_materialized_qt_directory(
+                "Resources" "${_framework_name}" "${_selected_version_name}"
+                "${_materialized_resources_real}" "${_canonical_resources_real}"
+                "Info.plist" "")
+
+            # As for Current, mutation is allowed only after the exact staged
+            # direct child has been validated as a compatibility-copy artifact.
+            _ebplus_require_real_staged_directory_child(
+                "${_framework_real}" "${_resources_link}" "Resources"
+                "Qt framework Resources" _resources_removal_real)
+            if(IS_SYMLINK "${_resources_link}")
+                message(FATAL_ERROR
+                    "Refusing to remove a staged Qt framework Resources symlink: "
+                    "${_resources_link}")
+            endif()
+            file(REMOVE_RECURSE "${_resources_link}")
+            _ebplus_create_staged_qt_relative_link(
+                "${_resources_link}" "Versions/Current/Resources"
+                "materialized framework Resources")
+            set(_normalized_materialized_resources TRUE)
+            set(_framework_normalized TRUE)
+        else()
+            message(FATAL_ERROR
+                "Expected staged Qt framework Resources to be a symlink or a "
+                "real materialized directory: ${_resources_link}")
+        endif()
         if(NOT IS_SYMLINK "${_resources_link}")
             message(FATAL_ERROR
-                "Expected a staged Qt framework Resources link: ${_resources_link}")
+                "Restored staged Qt framework Resources is not a symlink: "
+                "${_resources_link}")
         endif()
         file(READ_SYMLINK "${_resources_link}" _resources_target)
         if(NOT _resources_target STREQUAL "Versions/Current/Resources")
@@ -748,8 +1062,17 @@ function(_ebplus_restore_staged_qt_framework_links)
                 "Staged Qt framework Resources link does not resolve to its "
                 "canonical versioned resources: ${_resources_link}")
         endif()
+        if(_normalized_materialized_resources)
+            math(EXPR _materialized_resources_link_count
+                "${_materialized_resources_link_count} + 1")
+            message(STATUS
+                "Restored materialized Qt framework Resources: "
+                "${_framework_name}.framework/Resources -> "
+                "Versions/Current/Resources")
+        endif()
 
         set(_root_executable "${_framework}/${_framework_name}")
+        set(_normalized_root_executable FALSE)
         if(IS_SYMLINK "${_root_executable}")
             file(READ_SYMLINK "${_root_executable}" _root_executable_target)
             if(NOT _root_executable_target STREQUAL
@@ -768,6 +1091,8 @@ function(_ebplus_restore_staged_qt_framework_links)
                     "Could not restore staged Qt framework executable link "
                     "${_root_executable}: ${_root_link_result}")
             endif()
+            set(_normalized_root_executable TRUE)
+            set(_framework_normalized TRUE)
         else()
             message(FATAL_ERROR
                 "Expected a regular staged Qt framework executable copy: "
@@ -794,6 +1119,7 @@ function(_ebplus_restore_staged_qt_framework_links)
         endif()
 
         set(_root_headers "${_framework}/Headers")
+        set(_normalized_root_headers FALSE)
         if(IS_SYMLINK "${_root_headers}")
             file(READ_SYMLINK "${_root_headers}" _root_headers_target)
             if(NOT _root_headers_target STREQUAL "Versions/Current/Headers")
@@ -812,6 +1138,8 @@ function(_ebplus_restore_staged_qt_framework_links)
                     "Could not restore staged Qt framework Headers link "
                     "${_root_headers}: ${_headers_link_result}")
             endif()
+            set(_normalized_root_headers TRUE)
+            set(_framework_normalized TRUE)
         else()
             message(FATAL_ERROR
                 "Expected a regular staged Qt framework Headers directory: "
@@ -835,20 +1163,38 @@ function(_ebplus_restore_staged_qt_framework_links)
                 "canonical versioned headers: ${_root_headers}")
         endif()
 
-        math(EXPR _restored_framework_count
-            "${_restored_framework_count} + 1")
+        if(_framework_normalized)
+            math(EXPR _normalized_framework_count
+                "${_normalized_framework_count} + 1")
+        endif()
+        math(EXPR _audited_framework_count "${_audited_framework_count} + 1")
+        message(STATUS
+            "Staged Qt framework final topology: ${_framework_name}.framework; "
+            "Current -> ${_selected_version_name}; "
+            "Resources -> Versions/Current/Resources; "
+            "${_framework_name} -> Versions/Current/${_framework_name}; "
+            "Headers -> Versions/Current/Headers; "
+            "normalized=${_framework_normalized}")
     endforeach()
 
-    if(_restored_framework_count EQUAL 0)
+    if(_audited_framework_count EQUAL 0)
         message(FATAL_ERROR
             "No staged Qt frameworks were found for signature-safe layout repair.")
     endif()
     message(STATUS
         "M8-A1 restored standard compatibility links in "
-        "${_restored_framework_count} staged Qt frameworks")
+        "${_audited_framework_count} staged Qt frameworks")
     message(STATUS
-        "M8-B1l restored ${_restored_current_link_count} missing "
+        "M8-B1m restored ${_missing_current_link_count} missing "
         "Versions/Current links")
+    message(STATUS
+        "M8-B1m normalized ${_materialized_current_link_count} materialized "
+        "Versions/Current directories")
+    message(STATUS
+        "M8-B1m normalized ${_materialized_resources_link_count} materialized "
+        "Resources directories")
+    message(STATUS
+        "M8-B1m normalized ${_normalized_framework_count} staged Qt frameworks")
 endfunction()
 
 _ebplus_restore_staged_qt_framework_links()
