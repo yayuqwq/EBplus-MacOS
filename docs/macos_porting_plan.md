@@ -538,13 +538,22 @@ acceptance.
 
 ### Milestone 8: Packaging and CI
 
-**状态：** `In progress` — M8-A and M8-B1 are `Complete / Qualified` within
-their separate documented scopes. M8-A covers the local ad-hoc-signed macOS
-arm64 packaged runtime, including Terminal-direct and Finder-launched offline
-RAW workflows; M8-B1 covers fresh GitHub-hosted Apple Silicon CI build, test,
-package, and static closure. Native Linux CI has not started. Developer ID
-signing, Gatekeeper distribution qualification, notarization, DMG and
-cross-machine distribution remain `Not run`.
+**状态：** `Complete / Qualified` for the documented macOS Apple Silicon
+packaging and reproducibility scope; see [macOS Milestone 8
+Validation](macos_milestone_8_validation.md). M8-A covers the local
+ad-hoc-signed macOS arm64 packaged runtime, including Terminal-direct and
+Finder-launched offline RAW workflows. M8-B1 covers fresh GitHub-hosted Apple
+Silicon CI build, test, package, and static closure.
+
+Earlier M8 wording included native Linux CI as part of a broad cross-platform
+regression objective. Native Linux CI is not implemented, and no current native
+Linux configure/build/CTest/runtime qualification baseline exists. Native Linux
+CI and runtime qualification are therefore **Deferred / separate future
+qualification**, not a mandatory M8 closure gate; they remain **Not run /
+unverified**. This scope refinement does not claim Linux support or regression
+protection. Developer ID signing,
+Gatekeeper distribution qualification, notarization, DMG, and cross-machine
+distribution remain **Not run** and outside this qualified closure.
 **独立分支：** `build/macos-packaging-ci`
 
 **范围**
@@ -552,27 +561,60 @@ cross-machine distribution remain `Not run`.
 - 生成可运行的 macOS `.app` bundle。
 - 收集并验证 Qt frameworks/plugins、OpenCV、OpenEB SDK/HAL plugins、HDF5/ECF
   plugin、optional ONNX Runtime/models 和其他运行时依赖及 RPATH。
-- 根据需要提供 DMG；代码签名和 notarization 作为后续可选工作，不作为初始移植阻塞项。
-- 增加 Apple Silicon CI，同时保持 Linux CI 正常。
+- 使用 local ad-hoc signing 验证最终 staged bundle 的本地执行完整性；这不等同于
+  Developer ID、Gatekeeper 或 distribution signing。
+- 增加并验证 Apple Silicon CI。
+- 维持 Linux/non-Apple source-path preservation discipline：macOS-specific
+  packaging and signing behavior 应保持 `APPLE` scoped，且不得在未经单独授权时
+  有意改写既有 Linux/non-Apple paths。该工程约束不构成 Linux 验证。
+- Native Linux CI、native Linux configure/build/CTest/runtime 和 Linux GUI
+  runtime 属于未来独立 qualification；它们未在本 M8 closure 中执行。
+- DMG、Developer ID、Gatekeeper、notarization 和 cross-machine distribution 是
+  后续 optional/as-needed distribution qualification，不作为此 macOS packaging
+  milestone 的 mandatory gate。
 - 记录打包输入、产物边界、运行环境、已知限制和回滚方法。
 
 **检查方法**
 
 - 在干净环境检查 `.app` 结构、资源、插件和 `otool -L`/RPATH 结果；从 Finder 与
   terminal launch 均不得依赖 developer absolute path 或 fallback prefix。
-- 从 Finder 和终端分别启动，执行 GUI、RAW、算法和无需硬件的导出 smoke test。
-- 在可用硬件环境验证打包应用的设备发现和实时相机路径。
-- CI 执行 macOS arm64 configure/build/tests/packaging smoke test，并持续执行 Linux configure/build/tests。
-- 若制作 DMG，验证安装、首次启动、升级/覆盖和卸载说明；签名状态必须如实标注。
+- M8-A 记录受限的 Finder 和 Terminal-direct Cocoa/RAW runtime evidence；物理
+  camera/live workflow 继续属于 M6，而不是 M8 package closure。
+- M8-B1 CI 执行 fresh macOS arm64 configure/build/CTest/package/static closure。
+- Linux qualification 如启动，必须作为单独 scope 建立 native Linux dependency,
+  configure/build/CTest and runtime evidence；不得将它的首次结果追溯解释为 M8
+  macOS evidence。
+- 若后续制作 DMG 或 distribution release，应单独验证安装、首次启动、升级/覆盖、
+  卸载、签名和 notarization 状态。
 
 **完成标准**
 
 - `.app` 在规定的 macOS arm64 环境可独立启动，运行时依赖不指向开发者个人目录；
   build-tree/install RPATH evidence does not by itself satisfy standalone
   loader or bundle closure.
-- CI 能阻止 macOS 构建回归，同时 Linux job 保持通过。
+- Fresh Apple Silicon CI 能重现 documented dependency profile，并通过 build,
+  configured CTest, package, loader/topology closure 和 strict local-ad-hoc
+  signature verification。
 - 打包文档列出支持范围、硬件限制、签名/notarization 状态和可复现命令。
 - 仅在对应功能 milestone 已完成后，才可对外声明相应 macOS 能力。
+- Linux source-path preservation 是本 M8 scope 的工程约束；native Linux CI,
+  configure/build/CTest/runtime 仍是 **Deferred / separate future
+  qualification**，而非当前 M8 completion criterion。
+- Developer ID、Gatekeeper、notarization、DMG 和 cross-machine distribution
+  继续作为 future distribution qualification，不因 local ad-hoc signing 或
+  bundle verification 被写成 passed。
+
+**M8 scope correction rationale**
+
+The earlier plan correctly listed Linux CI as a broad cross-platform regression
+objective. The current evidence, however, contains no fresh native Linux
+configure, build, CTest, XCB/Wayland/OpenGL GUI runtime, or Linux CI baseline.
+A first modern Linux CI failure could not reliably distinguish a macOS-port
+regression from a historical upstream issue, Linux dependency/toolchain drift,
+or a missing Linux dependency profile. Linux qualification is therefore a
+separate future effort rather than a mandatory completion gate for this macOS
+packaging and reproducibility milestone. This is a scope refinement, not a
+claim that Linux was never intended or that Linux is now qualified.
 
 #### M8-A: packaged offline Cocoa runtime
 
@@ -618,8 +660,12 @@ existing bundle verifier and local ad-hoc signature checks.
 This is Apple Silicon CI evidence only. It does not replace M8-A Cocoa/Finder
 runtime evidence and does not qualify Linux CI/runtime, physical camera,
 model inference, Developer ID, Gatekeeper, notarization, DMG, or distribution.
-The next M8 completion item is native Linux CI foundation; it has not started,
-so M8 overall remains `In progress`.
+At the time of this CI validation, native Linux CI had not started. The later
+[M8 overall closure](macos_milestone_8_validation.md) qualifies M8 for its
+documented macOS Apple Silicon packaging and reproducibility scope. Native
+Linux CI/runtime remains **Deferred / separate future qualification** and
+**Not run / unverified**; it is not evidence of Linux support or regression
+protection.
 
 ## 跨平台实施原则
 

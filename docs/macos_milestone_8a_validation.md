@@ -6,12 +6,16 @@
 packaged runtime, including bounded Terminal-direct and Finder-launched offline
 RAW workflows, within the scope recorded here.
 
-Milestone 8 overall remains **In progress**. Apple Silicon CI, Developer ID
-signing, Gatekeeper distribution qualification, notarization, DMG and
-cross-machine distribution remain outside this closure. This document records
-the complete M8-A evidence chain, including the initial launch failure and its
-M8-A1 repair. It does not qualify physical-camera operation, Linux runtime
-behavior, model runtime in the final regression, or distribution readiness.
+At the time of this M8-A validation, Milestone 8 overall remained **In
+progress**. Apple Silicon CI, Developer ID signing, Gatekeeper distribution
+qualification, notarization, DMG and cross-machine distribution were outside
+this M8-A closure. The later [M8 overall
+closure](macos_milestone_8_validation.md) qualifies M8 for the documented
+macOS Apple Silicon packaging and reproducibility scope; it does not revise
+this M8-A technical evidence. This document records the complete M8-A evidence
+chain, including the initial launch failure and its M8-A1 repair. It does not
+qualify physical-camera operation, Linux runtime behavior, model runtime in the
+final regression, or distribution readiness.
 
 No GUI redesign was part of M8-A. The application currently uses a deliberate
 frameless window with a custom title bar; the absence of native macOS traffic
@@ -258,8 +262,11 @@ recurrent ONNX artifact was copied into the app or added to Git.
 
 M8-A is **Complete / Qualified for local ad-hoc-signed macOS arm64 packaged
 runtime, including both Terminal-direct and Finder launch, within the
-documented offline RAW scope**. M8 overall remains **In progress** pending CI
-and distribution work. M6 remains
+documented offline RAW scope**. At the time of this record, M8 overall remained
+**In progress** pending CI and distribution work. The later [M8 overall
+closure](macos_milestone_8_validation.md) marks M8 **Complete / Qualified** for
+the documented macOS Apple Silicon packaging and reproducibility scope; it does
+not qualify Linux or distribution work. M6 remains
 **Planned / Paused — physical CenturyArks camera unavailable**; M7 remains
 **In progress / paused pending M6 hardware prerequisites** for its live-camera
 dependent slices.

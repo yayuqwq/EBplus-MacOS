@@ -131,5 +131,9 @@ from the GitHub-hosted runner.
 ## Final disposition
 
 M8-B1 is **Complete / Qualified** for its documented fresh macOS arm64 CI
-foundation scope. M8 overall remains **In progress** because native Linux CI
-has not started.
+foundation scope. At the time of this validation native Linux CI had not
+started. The later [M8 overall closure](macos_milestone_8_validation.md)
+qualifies M8 for the documented macOS Apple Silicon packaging and
+reproducibility scope. Linux CI/native runtime is **Deferred / separate future
+qualification** and remains **Not run / unverified**; that disposition does not
+claim Linux support or regression protection.
