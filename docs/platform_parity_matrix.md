@@ -12,12 +12,12 @@ validation](macos_upstream_baseline_integration_validation.md)。
 - Milestone 1 静态审计本身未执行 CMake configure、构建、GUI 启动、RAW 回放、真实相机、算法、模型或导出测试。
 - `Linux source status` 描述当前源码和应用接线；`Linux runtime status` 描述运行验证状态。代码存在或已接入应用不等于运行验证通过。
 - 未有后续明确证据的 Linux runtime 状态继续保持 `Requires verification`；证据不足时使用 `Unknown`。
-- 未有后续明确证据的 macOS 项目保持 `Not started`；只有发现明确且已证实的阻塞条件时才使用 `Blocked`。经维护者明确 scope decision 确认的 generic/optional path 可使用 `Deferred / Optional`；它不表示 runtime qualification。
+- 未有后续明确证据的 macOS 项目保持 `Not started`；只有发现明确且已证实的阻塞条件时才使用 `Blocked`。经维护者明确 scope decision 确认的 generic/optional path 可使用 `Deferred / Optional`；另行界定的 future qualification 可使用 `Deferred / separate future qualification`。两者都不表示 runtime qualification。
 - 静态分析无法证明必然错误的事项统一写为“潜在风险，需要运行时验证”，不视为已经复现的 Bug。
 - source/static、automated CTest、Mach-O/linkage、CLI runtime、macOS GUI
   runtime、physical-camera 和 Linux evidence 必须分开解释；风险接受不是验证证据。
 
-状态值限定为：`Implemented in source`、`Wired into application`、`Documented only`、`Previously reported`、`Requires verification`、`Unknown`、`Not started`、`In progress`、`Blocked`、`Deferred / Optional`、`Verified`、`Not applicable`。
+状态值限定为：`Implemented in source`、`Wired into application`、`Documented only`、`Previously reported`、`Requires verification`、`Unknown`、`Not started`、`In progress`、`Blocked`、`Deferred / Optional`、`Deferred / separate future qualification`、`Verified`、`Not applicable`。
 
 ## 2. 算法注册计数
 
@@ -263,9 +263,10 @@ output evidence.
 | PKG-002 | Packaging | macOS RPATH | Not applicable | Not applicable | Verified | Final bundle verifier checked `LC_LOAD_DYLIB`/`LC_RPATH`, 289 logical arm64 entries and zero prohibited loader paths; see [M8-A validation](macos_milestone_8a_validation.md) | Native Linux comparison and broader package variants | M3/M8 | no developer absolute path, `/usr/local` OpenEB, `/opt/homebrew` or producer build-tree dependency |
 | PKG-003 | Packaging | Dependency bundling | Unknown | Unknown | Verified | Final staged Qt/OpenCV/OpenEB/HAL/HDF5/ECF/ORT closure passed static audit and the scrubbed packaged Cocoa RAW session; see [M8-A validation](macos_milestone_8a_validation.md) | model packaging, broader dependency variants and distribution workflows | M8 | full CTest inherited `HDF5_PLUGIN_PATH` and is not isolation evidence; no model was packaged |
 | PKG-004 | Packaging | Code signing | Not applicable | Not applicable | Verified | M8-A1 diagnosed post-fixup signature invalidation and added deterministic inside-out local ad-hoc signing; recursive `codesign --verify --deep --strict` passed; see [M8-A validation](macos_milestone_8a_validation.md) | Developer ID, Gatekeeper and distribution signing | M8 | local ad-hoc execution integrity only; not release-ready signing |
-| PKG-005 | Packaging | Notarization | Not applicable | Not applicable | Not started | 当前未找到 notarization 配置 | Apple notarization workflow | M8 | 后续可选工作 |
-| PKG-006 | Packaging | DMG | Not applicable | Not applicable | Not started | 当前未找到 DMG 生成逻辑 | 安装、卸载和空间预算 | M8 | 仅 milestone 需要时生成 |
-| PKG-007 | CI | Linux and Apple Silicon CI | Unknown | Unknown | In progress — Apple Silicon CI verified; Linux CI not started | [M8-B1 CI validation](macos_milestone_8b1_validation.md): fresh GitHub-hosted macOS 15 arm64 build/test/package/static closure; [successful run](https://github.com/yayuqwq/EBplus-MacOS/actions/runs/32626325967) | native Linux CI configure/build/tests | M8 | Apple Silicon half is qualified; Linux half remains unverified and CI must not break the Linux baseline |
+| PKG-005 | Packaging | Notarization | Not applicable | Not applicable | Deferred / Optional | 当前未找到 notarization 配置；见 [M8 closure](macos_milestone_8_validation.md) | Future distribution qualification: Developer ID signing, Gatekeeper and notarization workflow | Future distribution qualification | Not run. Local ad-hoc signing and bundle verification are not notarization evidence and notarization is not a current M8 closure gate. |
+| PKG-006 | Packaging | DMG | Not applicable | Not applicable | Deferred / Optional | 当前未找到 DMG 生成逻辑；见 [M8 closure](macos_milestone_8_validation.md) | Future distribution qualification: DMG install, first launch, upgrade/overwrite, uninstall guidance and disk budget | Future distribution qualification | Not run. DMG is optional/as-needed and is not a current M8 closure gate. |
+| PKG-007a | CI | Apple Silicon CI | Not applicable | Not applicable | Verified | [M8-B1 CI validation](macos_milestone_8b1_validation.md): fresh GitHub-hosted macOS 15 arm64 build/test/package/static closure; [technical run](https://github.com/yayuqwq/EBplus-MacOS/actions/runs/32626325967) and [docs validation run](https://github.com/yayuqwq/EBplus-MacOS/actions/runs/32628955967) both succeeded | Maintain the scoped macOS CI on future relevant changes | M8 | Verified Apple Silicon CI only; it does not exercise or qualify Linux. |
+| PKG-007b | CI | Linux CI / native Linux regression qualification | Not started | Requires verification | Deferred / separate future qualification | No native Linux CI workflow or current native Linux qualification baseline exists; see [M8 closure](macos_milestone_8_validation.md) | Separate future qualification: native Linux dependency profile, configure/build/CTest and Linux XCB/Wayland/OpenGL GUI runtime | Future Linux qualification | Deferred from the current M8 mandatory scope. Not run / unverified; source-path preservation is not Linux validation or regression protection. |
 
 ## 12. 更新规则
 
