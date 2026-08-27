@@ -342,7 +342,7 @@ TEST(FilterChainAdmission, UnsupportedExtentChangingAndArbitraryRequestsRemainIn
         EXPECT_FALSE(chain.is_stage_enabled(stage)) << stage;
     }
 
-    for (const auto rotation : {std::string("90"), std::string("270"), std::string("0.5")}) {
+    for (const auto& rotation : {std::string("90"), std::string("270"), std::string("0.5")}) {
         auto rotate = request("rotate", true);
         rotate.parameters["rotation"] = rotation;
         const auto result = chain.try_apply_stage(rotate);
