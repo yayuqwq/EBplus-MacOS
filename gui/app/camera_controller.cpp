@@ -105,7 +105,7 @@ bool CameraController::connect_first_available() {
         // remote discovery.
         auto cam = Metavision::Camera::from_serial(std::string());
         setup_camera(std::move(cam), false);
-        return true;
+        return static_cast<bool>(camera_);
     } catch (const Metavision::CameraException& e) {
         // teardown() already destroyed the previous camera/pipeline but never
         // emits disconnected() — do so here so the UI cleans up its stale
@@ -122,7 +122,7 @@ bool CameraController::connect_serial(const std::string& serial) {
     try {
         auto cam = Metavision::Camera::from_serial(serial);
         setup_camera(std::move(cam), false);
-        return true;
+        return static_cast<bool>(camera_);
     } catch (const Metavision::CameraException& e) {
         emit disconnected();
         emit error(QString::fromUtf8(e.what()));
@@ -221,6 +221,20 @@ bool CameraController::is_running() const {
     return camera_ && camera_->is_running();
 }
 
+FilterAdmissionResult CameraController::try_apply_filter_stage(
+    const FilterStageRequest& request) {
+    return filter_chain_.try_apply_stage(request);
+}
+
+bool CameraController::set_processed_recording_admission(const bool active, QString* reason) {
+    std::string rejection;
+    if (!filter_chain_.try_set_processed_recording_active(active, &rejection)) {
+        if (reason) *reason = QString::fromStdString(rejection);
+        return false;
+    }
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Phase 2 facility accessors
 // ---------------------------------------------------------------------------
@@ -235,7 +249,21 @@ facility::Roi* CameraController::roi_facility() {
 }
 
 bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
-                                       std::optional<bool> roni) {
+                                       std::optional<bool> roni,
+                                       QString* rejection_reason) {
+    bool previously_enabled = false;
+    int previous_x0 = 0, previous_y0 = 0, previous_x1 = 0, previous_y1 = 0;
+    unified_roi(previously_enabled, previous_x0, previous_y0, previous_x1, previous_y1);
+    std::string admission_rejection;
+    if (!filter_chain_.try_set_raw_roi_or_roni_active(enabled, &admission_rejection)) {
+        if (rejection_reason) *rejection_reason = QString::fromStdString(admission_rejection);
+        return false;
+    }
+    const auto rollback_admission = [this, previously_enabled]() {
+        // The current ROI state is the previously committed source of truth;
+        // restore it if the hardware/file mutation below cannot complete.
+        filter_chain_.try_set_raw_roi_or_roni_active(previously_enabled);
+    };
     const bool roni_mode = roni.value_or(roi_roni_);
     if (is_file_) {
         // File playback: no hardware — software crop with the same
@@ -250,7 +278,10 @@ bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
         return true;
     }
     auto* roi = roi_facility();
-    if (!roi) return false;
+    if (!roi) {
+        rollback_admission();
+        return false;
+    }
     try {
         // Compute the window (auto-center on -1, clamp to sensor), mirroring
         // ProcessRegion::compute so live and file paths agree.
@@ -260,7 +291,10 @@ bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
         const int rh = (h <= 0) ? sh : std::min(h, sh);
         const int rx = (x < 0) ? (sw - rw) / 2 : std::min(std::max(0, x), sw - rw);
         const int ry = (y < 0) ? (sh - rh) / 2 : std::min(std::max(0, y), sh - rh);
-        if (rw <= 0 || rh <= 0) return false;
+        if (rw <= 0 || rh <= 0) {
+            rollback_admission();
+            return false;
+        }
         // Phase 2.6 debug D-5: the mode is part of the unified state (was
         // hardcoded ROI, clobbering RONI set via the RoiPanel), and the
         // window/mode are configured even when disabling so callers can
@@ -275,6 +309,7 @@ bool CameraController::set_unified_roi(bool enabled, int x, int y, int w, int h,
         roi_x0_ = rx; roi_y0_ = ry;
         roi_x1_ = rx + rw; roi_y1_ = ry + rh;
     } catch (const std::exception&) {
+        rollback_admission();
         return false;
     }
     emit roi_state_changed(roi_enabled_, roi_x0_, roi_y0_, roi_x1_, roi_y1_);
@@ -318,6 +353,24 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
     is_file_ = is_file;
     camera_ = std::make_unique<Metavision::Camera>(std::move(cam));
     fetch_sensor_info();
+
+    // A retained file ROI lives in FileFrameGenerator, while a newly opened
+    // live source has no active hardware ROI until one is applied to it.
+    // Reconcile the admission context with this source before publishing its
+    // geometry, rather than carrying a stale context across source types.
+    bool source_raw_roi_or_roni_active = false;
+    if (is_file_) {
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+        frame_pipeline_.file_roi(source_raw_roi_or_roni_active, x0, y0, x1, y1);
+    }
+    std::string admission_reason;
+    if (!filter_chain_.try_set_raw_roi_or_roni_active(source_raw_roi_or_roni_active,
+                                                       &admission_reason)) {
+        teardown();
+        emit disconnected();
+        emit error(tr("Source ROI cannot be reconciled with the preprocessing contract."));
+        return;
+    }
 
     // Runtime error callback: file EOF, disconnects, firmware errors arrive here.
     // Capture the camera pointer: this callback's queued lambdas may execute
@@ -441,7 +494,12 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
         });
 
     statistics_.reset();
-    filter_chain_.set_geometry(sensor_info_.width, sensor_info_.height);
+    if (!filter_chain_.set_geometry(sensor_info_.width, sensor_info_.height)) {
+        teardown();
+        emit disconnected();
+        emit error(tr("Source geometry cannot be represented by the preprocessing contract."));
+        return;
+    }
 
     // Start the frame pipeline for the new sensor geometry. File sources use
     // FileFrameGenerator (buffers events, controls playback rate via QTimer);
@@ -506,6 +564,10 @@ void CameraController::teardown() {
 
     sensor_info_ = SensorInfo{};
     is_file_ = false;
+    filter_chain_.try_set_processed_recording_active(false);
+    // The next source reconstructs this context from its own actual raw ROI.
+    // Clearing it here prevents an old source type from constraining a new one.
+    filter_chain_.try_set_raw_roi_or_roni_active(false);
 }
 
 void CameraController::fetch_sensor_info() {

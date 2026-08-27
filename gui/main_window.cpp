@@ -465,7 +465,12 @@ void MainWindow::build_menus() {
                 const int ry = parse(legacy_roi, "roi_y", -1);
                 const int rw = parse(legacy_roi, "roi_w", 128);
                 const int rh = parse(legacy_roi, "roi_h", 128);
-                camera_.set_unified_roi(on, rx, ry, rw, rh);
+                QString rejection;
+                if (!camera_.set_unified_roi(on, rx, ry, rw, rh,
+                                             std::nullopt, &rejection)) {
+                    restore_roi_checkbox_state();
+                    report_roi_admission_rejection(rejection);
+                }
             }
             // Apply is model-side. Reflect it passively so a config load does
             // not construct algorithms, emit toggles, or re-enter the mutex.
@@ -1114,7 +1119,11 @@ void MainWindow::wire_signals() {
                     open_roi_settings_dialog();
                     return;
                 }
-                camera_.set_unified_roi(true, x, y, w, h);
+                QString rejection;
+                if (!camera_.set_unified_roi(true, x, y, w, h, std::nullopt, &rejection)) {
+                    restore_roi_checkbox_state();
+                    report_roi_admission_rejection(rejection);
+                }
             });
     connect(roi, &RoiPanel::roi_enable_toggled, this,
             &MainWindow::on_roi_enable_toggled);
@@ -1260,7 +1269,12 @@ void MainWindow::wire_signals() {
                             camera_.unified_roi(en, x0, y0, x1, y1);
                             roi_automation_save_ = {en, x0, y0, x1, y1,
                                                     camera_.unified_roi_roni()};
-                            camera_.set_unified_roi(true, -1, -1, 256, 144);
+                            QString rejection;
+                            if (!camera_.set_unified_roi(true, -1, -1, 256, 144,
+                                                         std::nullopt, &rejection)) {
+                                restore_roi_checkbox_state();
+                                report_roi_admission_rejection(rejection);
+                            }
                         }
                         // Phase 3 (user decision, reproduction-driven Phase
                         // scope): E2VID forces the shared 1/4 downsample ON
@@ -1288,11 +1302,19 @@ void MainWindow::wire_signals() {
                             const int w = s.x1 - s.x0;
                             const int h = s.y1 - s.y0;
                             if (w > 0 && h > 0) {
-                                camera_.set_unified_roi(s.enabled, s.x0, s.y0,
-                                                        w, h, s.roni);
+                                QString rejection;
+                                if (!camera_.set_unified_roi(s.enabled, s.x0, s.y0,
+                                                             w, h, s.roni, &rejection)) {
+                                    restore_roi_checkbox_state();
+                                    report_roi_admission_rejection(rejection);
+                                }
                             } else {
-                                camera_.set_unified_roi(s.enabled, -1, -1,
-                                                        256, 144, s.roni);
+                                QString rejection;
+                                if (!camera_.set_unified_roi(s.enabled, -1, -1,
+                                                             256, 144, s.roni, &rejection)) {
+                                    restore_roi_checkbox_state();
+                                    report_roi_admission_rejection(rejection);
+                                }
                             }
                             roi_automation_save_.reset();
                         }
@@ -1501,7 +1523,12 @@ void MainWindow::on_roi_enable_toggled(bool on) {
         w = 256;
         h = 144;
     }
-    camera_.set_unified_roi(on, x, y, w, h);
+    QString rejection;
+    if (!camera_.set_unified_roi(on, x, y, w, h, std::nullopt, &rejection)) {
+        restore_roi_checkbox_state();
+        report_roi_admission_rejection(rejection);
+        return;
+    }
     // Turning ROI on opens the settings dialog so the rect can be adjusted
     // right away (user decision).
     if (on) {
@@ -1539,9 +1566,30 @@ void MainWindow::open_roi_settings_dialog() {
     }
     roi_pending_rect_.reset();
     if (rc == QDialog::Accepted) {
-        camera_.set_unified_roi(en, dlg.x(), dlg.y(),
-                                dlg.w(), dlg.h(), dlg.roni());
+        QString rejection;
+        if (!camera_.set_unified_roi(en, dlg.x(), dlg.y(),
+                                    dlg.w(), dlg.h(), dlg.roni(), &rejection)) {
+            restore_roi_checkbox_state();
+            report_roi_admission_rejection(rejection);
+        }
     }
+}
+
+void MainWindow::restore_roi_checkbox_state() {
+    bool enabled = false;
+    int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    camera_.unified_roi(enabled, x0, y0, x1, y1);
+    if (settings_) {
+        if (auto* algorithms = settings_->algorithms_panel()) algorithms->set_roi_enabled(enabled);
+        if (auto* roi = settings_->roi_panel()) roi->set_roi_enabled(enabled);
+    }
+}
+
+void MainWindow::report_roi_admission_rejection(const QString& reason) {
+    statusBar()->showMessage(
+        reason.isEmpty() ? tr("ROI request was not applied.")
+                         : tr("ROI request rejected: %1").arg(reason),
+        5000);
 }
 
 void MainWindow::on_record_start() {

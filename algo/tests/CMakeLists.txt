@@ -119,8 +119,8 @@ gtest_discover_tests(test_raw_algos
     DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
 )
 
-# Exact synthetic semantics for the seven OpenEB FilterChain stages. A
-# non-square geometry makes coordinate/axis mistakes visible without a GUI.
+# Exact synthetic semantics for currently admitted FilterChain stages. The
+# geometry core separately tests typed mappings that U1C1 still gates.
 add_executable(test_filter_chain_semantics
     test_filter_chain_semantics.cpp
 )
@@ -135,6 +135,24 @@ target_link_libraries(test_filter_chain_semantics PRIVATE
 )
 target_compile_options(test_filter_chain_semantics PRIVATE -Wall -Wextra -Werror)
 gtest_discover_tests(test_filter_chain_semantics
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
+)
+
+# U1C1 immutable conditioned-geometry contract and fail-closed admission.
+add_executable(test_conditioned_geometry
+    test_conditioned_geometry.cpp
+)
+target_include_directories(test_conditioned_geometry PRIVATE
+    ${CMAKE_SOURCE_DIR}/gui
+    ${CMAKE_SOURCE_DIR}
+)
+target_link_libraries(test_conditioned_geometry PRIVATE
+    gui_core
+    GTest::GTest
+    GTest::Main
+)
+target_compile_options(test_conditioned_geometry PRIVATE -Wall -Wextra -Werror)
+gtest_discover_tests(test_conditioned_geometry
     DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
 )
 
@@ -187,6 +205,7 @@ add_test(NAME playback_e2v COMMAND test_playback_e2v ${CMAKE_CURRENT_SOURCE_DIR}
 add_executable(test_file_frame_generator
     test_file_frame_generator.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
+    ${CMAKE_SOURCE_DIR}/gui/algo_bridge/conditioned_geometry.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
 )
@@ -210,6 +229,7 @@ add_test(NAME file_frame_generator COMMAND test_file_frame_generator ${CMAKE_CUR
 add_executable(test_filter_in_render
     test_filter_in_render.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
+    ${CMAKE_SOURCE_DIR}/gui/algo_bridge/conditioned_geometry.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
     ${CMAKE_SOURCE_DIR}/algo/calibration/intrinsic.cpp
@@ -235,6 +255,7 @@ add_test(NAME filter_in_render COMMAND test_filter_in_render)
 add_executable(test_filter_integration
     test_filter_integration.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
+    ${CMAKE_SOURCE_DIR}/gui/algo_bridge/conditioned_geometry.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
 )
@@ -257,6 +278,7 @@ add_test(NAME filter_integration COMMAND test_filter_integration ${CMAKE_CURRENT
 add_executable(test_loop_flip
     test_loop_flip.cpp
     ${CMAKE_SOURCE_DIR}/gui/app/file_frame_generator.cpp
+    ${CMAKE_SOURCE_DIR}/gui/algo_bridge/conditioned_geometry.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/filter_chain.cpp
     ${CMAKE_SOURCE_DIR}/gui/algo_bridge/backends/backend_common.cpp
 )

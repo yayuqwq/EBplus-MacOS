@@ -93,6 +93,8 @@ private slots:
     void on_save_biases();
     void on_load_biases();
     void on_toggle_roi_drag(bool on);
+    void restore_roi_checkbox_state();
+    void report_roi_admission_rejection(const QString& reason);
     /// Shared handler for both pages' "Enable ROI" checkboxes (Phase 2.6
     /// debug D-6): applies the stored rect (default center 256×144 when
     /// unset) and opens the settings dialog when turned on.

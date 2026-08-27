@@ -21,6 +21,7 @@ set(GUI_LIB_SOURCES
     algo_bridge/backends/filter_backends.cpp
     algo_bridge/backends/backend_factory.cpp
     algo_bridge/backends/backend_common.cpp
+    algo_bridge/conditioned_geometry.cpp
     algo_bridge/filter_chain.cpp
     config/config_manager.cpp
     display/event_display_widget.cpp

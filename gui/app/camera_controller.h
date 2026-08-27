@@ -95,7 +95,16 @@ public:
     const SensorInfo& sensor_info() const { return sensor_info_; }
     FramePipeline* frame_pipeline() { return &frame_pipeline_; }
     StatisticsController* statistics() { return &statistics_; }
+    /// @brief Read/process access for existing pipelines. Preprocessing state
+    /// changes must go through try_apply_filter_stage so U1C1 admission is
+    /// evaluated atomically with the current ROI/recording context.
     FilterChain* filter_chain() { return &filter_chain_; }
+
+    FilterAdmissionResult try_apply_filter_stage(const FilterStageRequest& request);
+
+    /// @brief Transitions the processed-recording admission context. A true
+    /// transition fails closed when a non-identity coordinate plan is active.
+    bool set_processed_recording_admission(bool active, QString* reason = nullptr);
 
     /// @brief Phase 2 facility accessors. Each returns nullptr when no camera
     /// is connected or the connected sensor does not support that feature.
@@ -121,7 +130,8 @@ public:
     /// driver for the overlay frame, zoom button and algorithm path,
     /// Phase 2.6 debug D-5).
     bool set_unified_roi(bool enabled, int x, int y, int w, int h,
-                         std::optional<bool> roni = std::nullopt);
+                         std::optional<bool> roni = std::nullopt,
+                         QString* rejection_reason = nullptr);
 
     /// @brief Reads the current unified ROI state (computed rect
     /// [x0,x1) × [y0,y1]) for overlay rendering.

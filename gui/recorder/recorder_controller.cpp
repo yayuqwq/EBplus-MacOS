@@ -101,6 +101,14 @@ bool RecorderController::start_processed(CameraController* controller,
         emit error(tr("Camera is not streaming. Start streaming before recording."));
         return false;
     }
+    QString admission_reason;
+    if (!controller->set_processed_recording_admission(true, &admission_reason)) {
+        emit error(tr("Processed recording rejected: %1").arg(admission_reason));
+        return false;
+    }
+    const auto rollback_admission = [controller]() {
+        controller->set_processed_recording_admission(false);
+    };
     int w = 0, h = 0;
     try {
         const auto& info = controller->sensor_info();
@@ -108,10 +116,12 @@ bool RecorderController::start_processed(CameraController* controller,
         h = info.height;
     } catch (...) {
         emit error(tr("Sensor geometry unavailable for processed recording."));
+        rollback_admission();
         return false;
     }
     if (w <= 0 || h <= 0) {
         emit error(tr("Invalid sensor geometry (%1x%2) for processed recording.").arg(w).arg(h));
+        rollback_admission();
         return false;
     }
     try {
@@ -119,6 +129,7 @@ bool RecorderController::start_processed(CameraController* controller,
     } catch (const std::exception& e) {
         emit error(QString::fromUtf8(e.what()));
         writer_.reset();
+        rollback_admission();
         return false;
     }
     // RAWEvt2EventFileWriter only LOGS (does not throw) when the output file
@@ -127,6 +138,7 @@ bool RecorderController::start_processed(CameraController* controller,
     if (!writer_->is_open()) {
         emit error(tr("Failed to open recording file:\n%1").arg(path));
         writer_.reset();
+        rollback_admission();
         return false;
     }
     fp_ = fp;
@@ -179,6 +191,7 @@ void RecorderController::stop() {
             try { writer_->close(); } catch (...) {}
             writer_.reset();
         }
+        if (controller_) controller_->set_processed_recording_admission(false);
         processed_mode_ = false;
     } else if (controller_) {
         if (auto* cam = controller_->camera_handle()) {
