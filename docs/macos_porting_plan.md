@@ -667,6 +667,37 @@ Linux CI/runtime remains **Deferred / separate future qualification** and
 **Not run / unverified**; it is not evidence of Linux support or regression
 protection.
 
+## Post-M8 continuation (2026-08-26)
+
+M8 remains **Complete / Qualified** for its documented macOS Apple Silicon
+packaging and reproducibility scope. That historical closure is separate from
+subsequent static findings about optional coordinate-changing preprocessing;
+packaging/reproducibility qualification is not coordinate-transform runtime
+qualification.
+
+Post-M8 work is an unnamed continuation, not a new `M9` distribution
+milestone. The current high-level record and ordering are in the
+[Post-M8 continuation plan](macos_post_m8_continuation_plan.md). The durable
+U1 static findings and U1B implementation-design freeze are in the
+[U1 geometry contract design record](macos_u1_geometry_contract_design.md).
+
+- **Complete:** Post-M8 upstream reconnaissance (read-only), U1 coordinate
+  transform geometry-safety audit (static/source), and U1B geometry contract
+  design freeze (qualified for implementation design only).
+- **Next:** U1C1 -- Geometry Core + Fail-Closed Safety Containment.
+- **Planned after the geometry slices:** U1C2 file consumer migration, U1C3
+  shared live conditioned batch, then G1 GUI defect inventory, G2 native macOS
+  window chrome, and G3 Liquid Glass feasibility research.
+- **Independent deferred branches:** M6 remains paused pending a physical
+  CenturyArks camera; M7 Slices 5/6 remain blocked by M6; Linux
+  requalification is a separate future effort; and formal macOS distribution
+  (Developer ID, Gatekeeper cross-machine qualification, notarization, and
+  DMG) is deferred by the maintainer.
+
+Future upstream adoption should normally be assessed as semantic slices rather
+than a broad merge by default. This is a current planning decision, not a
+permanent prohibition on re-evaluating a broader integration with new evidence.
+
 ## 跨平台实施原则
 
 1. macOS 支持不能通过删除 Linux 分支或使 Linux 分支失效实现。
