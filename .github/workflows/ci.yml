@@ -27,6 +27,8 @@ jobs:
       EBPLUS_OPENEB_PREFIX: ${{ github.workspace }}/.deps/openeb-5.2.0-centuryarks-macos
       EBPLUS_BUILD: ${{ github.workspace }}/.build/ebplus-macos
       EBPLUS_PREFIX: ${{ github.workspace }}/.deps/ebplus-macos
+      EBPLUS_APP_ARTIFACT_ROOT: ${{ github.workspace }}/.artifacts/ci-app-delivery
+      EBPLUS_APP_ARTIFACT_NAME: EBplus-macOS-arm64-${{ github.run_id }}-${{ github.run_attempt }}
 
     steps:
       - name: Check out the complete source and submodules
@@ -747,6 +749,112 @@ jobs:
           /usr/bin/codesign -d --verbose=4 "$app"
           /usr/bin/codesign --verify --strict --verbose=4 "$main_executable"
           /usr/bin/codesign --verify --deep --strict --verbose=4 "$app"
+
+      - name: Archive the verified packaged app
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="$EBPLUS_PREFIX/gui_for_openeb.app"
+          main_executable="$app/Contents/MacOS/gui_for_openeb"
+          artifact_root="$EBPLUS_APP_ARTIFACT_ROOT"
+          archive="$artifact_root/${EBPLUS_APP_ARTIFACT_NAME}.zip"
+
+          if [[ -e "$artifact_root" || -L "$artifact_root" ]]; then
+            printf 'Artifact workspace already exists: %s\n' "$artifact_root" >&2
+            exit 1
+          fi
+          test -d "$app"
+          test -x "$main_executable"
+          mkdir -p "$artifact_root"
+          /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$app" "$archive"
+          test -s "$archive"
+          printf 'Packaged app archive=%s\n' "$archive"
+          printf 'Packaged app archive bytes=%s\n' "$(stat -f '%z' "$archive")"
+
+      - name: Round-trip verify the packaged app archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$EBPLUS_APP_ARTIFACT_ROOT/${EBPLUS_APP_ARTIFACT_NAME}.zip"
+          extract_root="$EBPLUS_APP_ARTIFACT_ROOT/round-trip"
+          extracted_app="$extract_root/gui_for_openeb.app"
+          extracted_executable="$extracted_app/Contents/MacOS/gui_for_openeb"
+
+          if [[ -e "$extract_root" || -L "$extract_root" ]]; then
+            printf 'Round-trip extraction root already exists: %s\n' "$extract_root" >&2
+            exit 1
+          fi
+          test -s "$archive"
+          mkdir -p "$extract_root"
+          /usr/bin/ditto -x -k "$archive" "$extract_root"
+          if [[ ! -d "$extracted_app" || -L "$extracted_app" ]]; then
+            printf 'Round-trip bundle is invalid: %s\n' "$extracted_app" >&2
+            exit 1
+          fi
+          test -x "$extracted_executable"
+          cmake \
+            -DEBPLUS_BUNDLE_PATH="$extracted_app" \
+            -P "$EBPLUS_BUILD/gui/verify_macos_bundle.cmake"
+          /usr/bin/codesign -d --verbose=4 "$extracted_app"
+          /usr/bin/codesign --verify --strict --verbose=4 "$extracted_executable"
+          /usr/bin/codesign --verify --deep --strict --verbose=4 "$extracted_app"
+
+      - name: Describe the verified macOS app archive
+        shell: bash
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          archive="$EBPLUS_APP_ARTIFACT_ROOT/${EBPLUS_APP_ARTIFACT_NAME}.zip"
+          manifest="$EBPLUS_APP_ARTIFACT_ROOT/artifact-manifest.txt"
+          actual_checkout_sha="$(git rev-parse HEAD)"
+          pr_head_sha="${PR_HEAD_SHA:-}"
+          app_bundle_path=".deps/ebplus-macos/gui_for_openeb.app"
+
+          test -s "$archive"
+          git cat-file -e "${actual_checkout_sha}^{commit}"
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" && -z "$pr_head_sha" ]]; then
+            echo 'Pull request event did not provide a head SHA.' >&2
+            exit 1
+          fi
+          if [[ -z "$pr_head_sha" ]]; then
+            pr_head_sha="N/A"
+          fi
+          archive_sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          if [[ ! "$archive_sha256" =~ ^[[:xdigit:]]{64}$ ]]; then
+            printf 'Invalid archive SHA-256: %s\n' "$archive_sha256" >&2
+            exit 1
+          fi
+
+          {
+            printf 'repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'workflow_run_id=%s\n' "$GITHUB_RUN_ID"
+            printf 'workflow_run_attempt=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'event_name=%s\n' "$GITHUB_EVENT_NAME"
+            printf 'actual_checkout_sha=%s\n' "$actual_checkout_sha"
+            printf 'github_sha=%s\n' "$GITHUB_SHA"
+            printf 'pr_head_sha=%s\n' "$pr_head_sha"
+            printf 'runner_os=%s\n' "$RUNNER_OS"
+            printf 'runner_arch=%s\n' "$(uname -m)"
+            printf 'app_bundle_path=%s\n' "$app_bundle_path"
+            printf 'app_bundle_name=%s\n' "gui_for_openeb.app"
+            printf 'archive_filename=%s\n' "${EBPLUS_APP_ARTIFACT_NAME}.zip"
+            printf 'archive_sha256=%s\n' "$archive_sha256"
+            printf 'created_at_utc=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          } > "$manifest"
+          test -s "$manifest"
+          printf 'Packaged app archive SHA-256=%s\n' "$archive_sha256"
+          cat "$manifest"
+
+      - name: Upload the verified macOS app archive
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: ${{ env.EBPLUS_APP_ARTIFACT_NAME }}
+          path: |
+            ${{ env.EBPLUS_APP_ARTIFACT_ROOT }}/${{ env.EBPLUS_APP_ARTIFACT_NAME }}.zip
+            ${{ env.EBPLUS_APP_ARTIFACT_ROOT }}/artifact-manifest.txt
+          if-no-files-found: error
+          compression-level: 0
 
       - name: Report final disk telemetry
         shell: bash
