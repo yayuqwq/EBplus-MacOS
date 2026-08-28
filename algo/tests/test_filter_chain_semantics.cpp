@@ -85,6 +85,14 @@ TEST(FilterChainSemantics, PolarityFilterAndInvertPreserveExactEventFields) {
     expect_event(output[2], 2, 3, 0, 300);
 }
 
+TEST(FilterChainSemantics, StageParametersRequireCompleteNumericInput) {
+    gui::FilterChain chain = configured_chain();
+
+    EXPECT_TRUE(chain.set_stage_param("polarity_filter", "polarity", "1"));
+    EXPECT_TRUE(chain.set_stage_param("polarity_filter", "polarity", " 1 "));
+    EXPECT_FALSE(chain.set_stage_param("polarity_filter", "polarity", "1x"));
+}
+
 TEST(FilterChainSemantics, FlipsRespectNonSquareGeometry) {
     const std::vector<Event> input = input_events();
 

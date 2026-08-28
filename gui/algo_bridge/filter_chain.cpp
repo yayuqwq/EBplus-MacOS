@@ -33,9 +33,11 @@ namespace {
 template<class T>
 bool parse(const std::string& s, T& out) {
     std::istringstream iss(s);
-    iss >> out;
+    if (!(iss >> out)) return false;
     iss >> std::ws;
-    return !iss.fail() && iss.eof();
+    // A successful extraction can already be at EOF; std::ws then adds
+    // failbit while preserving eofbit. Full consumption remains valid.
+    return iss.eof();
 }
 template<>
 bool parse<bool>(const std::string& s, bool& out) {
