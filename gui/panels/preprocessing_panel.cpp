@@ -9,6 +9,7 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QSignalBlocker>
 #include <QSpinBox>
 #include <QVBoxLayout>
 
@@ -51,8 +52,7 @@ void PreprocessingPanel::build_ui() {
         hl->addWidget(cmb, 1);
         form->addRow(w);
         enables_[stage] = cb;
-        connect(cb, &QCheckBox::toggled, this, [this, stage, cmb](bool on) {
-            cmb->setEnabled(on);
+        connect(cb, &QCheckBox::toggled, this, [this, stage](bool) {
             apply_stage(stage);
         });
         connect(cmb, &QComboBox::currentTextChanged, this, [this, stage](const QString&) {
@@ -87,8 +87,7 @@ void PreprocessingPanel::build_ui() {
         // Store pointers for apply_stage (typed correctly, no casts).
         double_spins_["rescale|scale_width"] = sx;
         double_spins_["rescale|scale_height"] = sy;
-        connect(cb, &QCheckBox::toggled, this, [this, sx, sy](bool on) {
-            sx->setEnabled(on); sy->setEnabled(on);
+        connect(cb, &QCheckBox::toggled, this, [this](bool) {
             apply_stage("rescale");
         });
         connect(sx, qOverload<double>(&QDoubleSpinBox::valueChanged), this, [this](double) {
@@ -108,33 +107,85 @@ void PreprocessingPanel::build_ui() {
 
 void PreprocessingPanel::apply_stage(const QString& stage) {
     if (!camera_) return;
-    auto* chain = camera_->filter_chain();
     auto* cb = enables_.value(stage);
     if (!cb) return;
-    // Use the thread-safe locked wrappers. Calling chain->stage()->set_enabled
-    // / set_param directly would race the SDK thread's process() call which
-    // reads the same fields under chain_mutex().
-    chain->set_stage_enabled(stage.toStdString(), cb->isChecked());
+    FilterStageRequest request;
+    request.stage = stage.toStdString();
+    request.enabled = cb->isChecked();
     if (stage == "polarity_filter") {
         auto* cmb = combos_.value("polarity_filter|polarity");
-        if (cmb) chain->set_stage_param(stage.toStdString(), "polarity",
-                                        std::to_string(cmb->currentIndex()));
+        if (cmb) request.parameters["polarity"] = std::to_string(cmb->currentIndex());
     } else if (stage == "rotate") {
         auto* cmb = combos_.value("rotate|rotation");
-        if (cmb) chain->set_stage_param(stage.toStdString(), "rotation",
-                                        cmb->currentText().toStdString());
+        if (cmb) request.parameters["rotation"] = cmb->currentText().toStdString();
     } else if (stage == "rescale") {
         auto* sx = double_spins_.value("rescale|scale_width");
         auto* sy = double_spins_.value("rescale|scale_height");
-        if (sx) chain->set_stage_param(stage.toStdString(), "scale_width",
-                                       std::to_string(sx->value()));
-        if (sy) chain->set_stage_param(stage.toStdString(), "scale_height",
-                                       std::to_string(sy->value()));
+        if (sx) request.parameters["scale_width"] = std::to_string(sx->value());
+        if (sy) request.parameters["scale_height"] = std::to_string(sy->value());
     }
-    if (cb->isChecked()) {
+
+    const auto result = camera_->try_apply_filter_stage(request);
+    if (!result.accepted) {
+        restore_committed_stage(stage, result.committed_state);
+        emit error_message(tr("Preprocess request rejected: %1")
+                               .arg(QString::fromStdString(result.reason)));
+        return;
+    }
+    restore_committed_stage(stage, result.committed_state);
+    if (result.committed_state.enabled) {
         emit info_message(tr("Preprocess: %1 on").arg(stage));
     }
-    emit stage_toggled(stage, cb->isChecked());
+    emit stage_toggled(stage, result.committed_state.enabled);
+}
+
+void PreprocessingPanel::set_stage_parameter_controls_enabled(const QString& stage,
+                                                               const bool enabled) {
+    if (stage == "polarity_filter") {
+        if (auto* cmb = combos_.value("polarity_filter|polarity")) cmb->setEnabled(enabled);
+    } else if (stage == "rotate") {
+        if (auto* cmb = combos_.value("rotate|rotation")) cmb->setEnabled(enabled);
+    } else if (stage == "rescale") {
+        if (auto* sx = double_spins_.value("rescale|scale_width")) sx->setEnabled(enabled);
+        if (auto* sy = double_spins_.value("rescale|scale_height")) sy->setEnabled(enabled);
+    }
+}
+
+void PreprocessingPanel::restore_committed_stage(const QString& stage,
+                                                  const FilterStageState& state) {
+    if (auto* cb = enables_.value(stage)) {
+        const QSignalBlocker blocker(cb);
+        cb->setChecked(state.enabled);
+    }
+    if (stage == "polarity_filter") {
+        if (auto* cmb = combos_.value("polarity_filter|polarity")) {
+            const QSignalBlocker blocker(cmb);
+            const auto it = state.parameters.find("polarity");
+            if (it != state.parameters.end()) cmb->setCurrentIndex(it->second == "1" ? 1 : 0);
+        }
+    } else if (stage == "rotate") {
+        if (auto* cmb = combos_.value("rotate|rotation")) {
+            const QSignalBlocker blocker(cmb);
+            const auto it = state.parameters.find("rotation");
+            if (it != state.parameters.end()) {
+                const int index = cmb->findText(QString::fromStdString(it->second));
+                if (index >= 0) cmb->setCurrentIndex(index);
+            }
+        }
+    } else if (stage == "rescale") {
+        const auto restore_scale = [&state](QDoubleSpinBox* spin, const char* key) {
+            if (!spin) return;
+            const QSignalBlocker blocker(spin);
+            const auto it = state.parameters.find(key);
+            if (it == state.parameters.end()) return;
+            bool ok = false;
+            const double value = QString::fromStdString(it->second).toDouble(&ok);
+            if (ok) spin->setValue(value);
+        };
+        restore_scale(double_spins_.value("rescale|scale_width"), "scale_width");
+        restore_scale(double_spins_.value("rescale|scale_height"), "scale_height");
+    }
+    set_stage_parameter_controls_enabled(stage, state.enabled);
 }
 
 void PreprocessingPanel::on_camera_connected(CameraController* controller) {
@@ -169,6 +220,9 @@ void PreprocessingPanel::on_camera_disconnected() {
         cb->blockSignals(true);
         cb->setChecked(false);
         cb->blockSignals(false);
+    }
+    for (auto it = enables_.constBegin(); it != enables_.constEnd(); ++it) {
+        set_stage_parameter_controls_enabled(it.key(), false);
     }
 }
 

@@ -85,7 +85,15 @@ TEST(FilterChainSemantics, PolarityFilterAndInvertPreserveExactEventFields) {
     expect_event(output[2], 2, 3, 0, 300);
 }
 
-TEST(FilterChainSemantics, FlipsAndTransposeRespectNonSquareGeometry) {
+TEST(FilterChainSemantics, StageParametersRequireCompleteNumericInput) {
+    gui::FilterChain chain = configured_chain();
+
+    EXPECT_TRUE(chain.set_stage_param("polarity_filter", "polarity", "1"));
+    EXPECT_TRUE(chain.set_stage_param("polarity_filter", "polarity", " 1 "));
+    EXPECT_FALSE(chain.set_stage_param("polarity_filter", "polarity", "1x"));
+}
+
+TEST(FilterChainSemantics, FlipsRespectNonSquareGeometry) {
     const std::vector<Event> input = input_events();
 
     gui::FilterChain flip_x = configured_chain();
@@ -104,59 +112,34 @@ TEST(FilterChainSemantics, FlipsAndTransposeRespectNonSquareGeometry) {
     expect_event(y_output[1], 6, 0, 1, 200);
     expect_event(y_output[2], 2, 1, 1, 300);
 
-    gui::FilterChain transpose = configured_chain();
-    transpose.set_stage_enabled("transpose", true);
-    const std::vector<Event> transposed = process(transpose, input);
-    ASSERT_EQ(transposed.size(), input.size());
-    expect_event(transposed[0], 0, 0, 0, 100);
-    expect_event(transposed[1], 4, 6, 1, 200);
-    expect_event(transposed[2], 3, 2, 1, 300);
-    for (const Event& event : transposed) {
-        EXPECT_LT(event.x, kHeight);
-        EXPECT_LT(event.y, kWidth);
-    }
 }
 
-TEST(FilterChainSemantics, OrthogonalRotationUsesSwappedNonSquareBounds) {
+TEST(FilterChainSemantics, Rotate180PreservesNonSquareBounds) {
     const std::vector<Event> input = input_events();
 
-    gui::FilterChain clockwise = configured_chain();
-    ASSERT_TRUE(clockwise.set_stage_param("rotate", "rotation", "90"));
-    clockwise.set_stage_enabled("rotate", true);
-    const std::vector<Event> rotated_90 = process(clockwise, input);
-    ASSERT_EQ(rotated_90.size(), input.size());
-    expect_event(rotated_90[0], 4, 0, 0, 100);
-    expect_event(rotated_90[1], 0, 6, 1, 200);
-    expect_event(rotated_90[2], 1, 2, 1, 300);
-
-    gui::FilterChain counter_clockwise = configured_chain();
-    ASSERT_TRUE(counter_clockwise.set_stage_param("rotate", "rotation", "270"));
-    counter_clockwise.set_stage_enabled("rotate", true);
-    const std::vector<Event> rotated_270 = process(counter_clockwise, input);
-    ASSERT_EQ(rotated_270.size(), input.size());
-    expect_event(rotated_270[0], 0, 6, 0, 100);
-    expect_event(rotated_270[1], 4, 0, 1, 200);
-    expect_event(rotated_270[2], 3, 4, 1, 300);
-
-    for (const Event& event : rotated_90) {
-        EXPECT_LT(event.x, kHeight);
-        EXPECT_LT(event.y, kWidth);
-    }
-    for (const Event& event : rotated_270) {
-        EXPECT_LT(event.x, kHeight);
-        EXPECT_LT(event.y, kWidth);
-    }
+    gui::FilterChain chain = configured_chain();
+    ASSERT_TRUE(chain.set_stage_param("rotate", "rotation", "180"));
+    ASSERT_TRUE(chain.set_stage_enabled("rotate", true));
+    const std::vector<Event> output = process(chain, input);
+    ASSERT_EQ(output.size(), input.size());
+    expect_event(output[0], 6, 4, 0, 100);
+    expect_event(output[1], 0, 0, 1, 200);
+    expect_event(output[2], 4, 1, 1, 300);
 }
 
-TEST(FilterChainSemantics, RescaleUsesOpenEBTruncationAndScaleOffsets) {
-    gui::FilterChain chain = configured_chain();
-    ASSERT_TRUE(chain.set_stage_param("rescale", "scale_width", "2"));
-    ASSERT_TRUE(chain.set_stage_param("rescale", "scale_height", "0.5"));
-    chain.set_stage_enabled("rescale", true);
+TEST(FilterChainSemantics, UnsafeExtentChangingStagesFailClosed) {
+    gui::FilterChain transpose = configured_chain();
+    EXPECT_FALSE(transpose.set_stage_enabled("transpose", true));
+    EXPECT_FALSE(transpose.is_stage_enabled("transpose"));
 
-    const std::vector<Event> output = process(chain, input_events());
-    ASSERT_EQ(output.size(), 3u);
-    expect_event(output[0], 0, 0, 0, 100);
-    expect_event(output[1], 12, 2, 1, 200);
-    expect_event(output[2], 4, 1, 1, 300);
+    gui::FilterChain rotate = configured_chain();
+    ASSERT_TRUE(rotate.set_stage_param("rotate", "rotation", "90"));
+    EXPECT_FALSE(rotate.set_stage_enabled("rotate", true));
+    EXPECT_FALSE(rotate.is_stage_enabled("rotate"));
+
+    gui::FilterChain rescale = configured_chain();
+    ASSERT_TRUE(rescale.set_stage_param("rescale", "scale_width", "2"));
+    ASSERT_TRUE(rescale.set_stage_param("rescale", "scale_height", "0.5"));
+    EXPECT_FALSE(rescale.set_stage_enabled("rescale", true));
+    EXPECT_FALSE(rescale.is_stage_enabled("rescale"));
 }

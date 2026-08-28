@@ -21,6 +21,7 @@ class QGroupBox;
 namespace gui {
 
 class CameraController;
+struct FilterStageState;
 
 class PreprocessingPanel : public AbstractPanel {
     Q_OBJECT
@@ -48,6 +49,9 @@ signals:
 private:
     void build_ui();
     void apply_stage(const QString& name);
+    void restore_committed_stage(const QString& stage,
+                                 const FilterStageState& state);
+    void set_stage_parameter_controls_enabled(const QString& stage, bool enabled);
 
     QHash<QString, QCheckBox*> enables_;
     QHash<QString, QComboBox*> combos_;
