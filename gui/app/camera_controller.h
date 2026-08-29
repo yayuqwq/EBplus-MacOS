@@ -106,6 +106,11 @@ public:
     /// transition fails closed when a non-identity coordinate plan is active.
     bool set_processed_recording_admission(bool active, QString* reason = nullptr);
 
+    /// Reports whether raw-coordinate undistort calibration is active. This is
+    /// an admission fact only; U1C2 does not migrate calibration coordinates.
+    bool set_raw_coordinate_calibration_admission(bool active,
+                                                  QString* reason = nullptr);
+
     /// @brief Phase 2 facility accessors. Each returns nullptr when no camera
     /// is connected or the connected sensor does not support that feature.
     /// Panels must nullptr-check before invoking any method on the returned

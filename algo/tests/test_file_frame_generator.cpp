@@ -22,6 +22,7 @@
 #include <metavision/sdk/stream/file_config_hints.h>
 #include <metavision/sdk/stream/offline_streaming_control.h>
 
+#include "algo_bridge/filter_chain.h"
 #include "app/file_frame_generator.h"
 
 using namespace gui;
@@ -37,6 +38,7 @@ int main(int argc, char** argv) {
     const std::string path = argv[1];
 
     // --- Phase 1: Open file and buffer all events ---
+    FilterChain chain;
     FileFrameGenerator gen;
     int frame_count = 0;
     Metavision::timestamp last_frame_ts = 0;
@@ -51,6 +53,11 @@ int main(int argc, char** argv) {
     Metavision::Camera cam = Metavision::Camera::from_file(path, hints);
     const long w = cam.geometry().get_width();
     const long h = cam.geometry().get_height();
+    if (!chain.set_geometry(static_cast<int>(w), static_cast<int>(h))) {
+        std::fprintf(stderr, "FAIL: cannot initialize conditioned geometry\n");
+        return 1;
+    }
+    gen.set_filter_chain(&chain);
     gen.set_geometry(w, h);
 
     bool camera_done = false;

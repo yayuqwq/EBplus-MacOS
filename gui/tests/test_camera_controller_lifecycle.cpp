@@ -136,9 +136,9 @@ public:
         });
         QObject::connect(
             pipeline, &gui::FramePipeline::events_window_ready, &receiver_,
-            [this](std::shared_ptr<std::vector<Metavision::EventCD>> events,
+            [this](std::shared_ptr<const gui::ConditionedBatch> batch,
                    Metavision::timestamp) {
-                trace_.event_window_sizes.push_back(events ? events->size() : 0u);
+                trace_.event_window_sizes.push_back(batch ? batch->events.size() : 0u);
             });
     }
 

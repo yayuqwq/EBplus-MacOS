@@ -24,6 +24,7 @@
 
 #include <metavision/sdk/base/events/event_cd.h>
 
+#include "algo_bridge/conditioned_geometry.h"
 #include "algo/cv/xyt_visualizer.h"
 #include "algo/common/event.h"
 
@@ -40,6 +41,11 @@ public:
 
     /// @brief Sets the sensor geometry (used to centre the point cloud).
     void set_sensor_geometry(int width, int height);
+
+    /// @brief Installs the file batch's immutable conditioned geometry. A
+    /// revision change, including mapping-only changes, clears stale points
+    /// before events from the new coordinate mapping are consumed.
+    void set_conditioned_geometry(const ConditionedGeometry& geometry);
 
     /// @brief Feeds a batch of events. Thread-safe via Qt::QueuedConnection
     /// if called from a non-GUI thread.
@@ -95,6 +101,7 @@ private:
 
     int sensor_w_{0};
     int sensor_h_{0};
+    GeometryRevision geometry_revision_{0};
 
     /// Time axis aspect ratio (depth relative to max of x,y). jAER default=4.
     float time_aspect_ratio_{4.0f};

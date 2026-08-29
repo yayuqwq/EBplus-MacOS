@@ -160,6 +160,10 @@ public:
     void set_unified_roi(bool enabled, int x0, int y0, int x1, int y1);
 
 private:
+    /// Replays declared parameters in registry order after a backend geometry
+    /// rebuild. Several backends reset internal configuration on resize.
+    void reapply_saved_parameters_locked();
+
     AlgoInfo info_;
     int width_;
     int height_;
@@ -259,8 +263,8 @@ public:
     void set_unified_roi_state(bool enabled, int x0, int y0, int x1, int y1,
                                bool roni = false);
 
-    /// @brief Sets the actual sensor dimensions so new instances are created
-    /// with the correct width/height instead of the 1280x720 default.
+    /// @brief Sets the actual sensor dimensions and refreshes every existing
+    /// live instance while preserving its declared and shared-preproc config.
     void set_sensor_dimensions(int width, int height);
 
     /// @brief Applies a shared preprocessing parameter (preproc_*) to every

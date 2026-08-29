@@ -260,6 +260,33 @@ TEST(AlgoBridgeInstances, TimeSurfaceDecayParamsRoundTrip) {
     EXPECT_EQ(inst->get_param("refresh_rate_hz"), "60");
 }
 
+TEST(AlgoBridgeInstances, GeometryRefreshPreservesAlgorithmConfiguration) {
+    AlgoBridge bridge;
+    bridge.set_sensor_dimensions(7, 5);
+    auto inst = bridge.find_or_create("time_surface");
+    ASSERT_NE(inst, nullptr);
+    inst->set_param("decay", "1");
+    inst->set_param("tau_us", "200000");
+    inst->set_param("channels", "2");
+    ASSERT_TRUE(bridge.set_algo_enabled("time_surface", true));
+
+    bridge.set_sensor_dimensions(5, 7);
+    EXPECT_EQ(inst->get_param("decay"), "1");
+    EXPECT_EQ(inst->get_param("tau_us"), "200000");
+    EXPECT_EQ(inst->get_param("channels"), "2");
+    const EventCD full_event(4, 6, 1, 100);
+    inst->push_events(&full_event, &full_event + 1);
+    EXPECT_NE(inst->pull_result().status.find("5x7"), std::string::npos);
+
+    bridge.set_unified_roi_state(true, 1, 2, 4, 6);
+    EXPECT_EQ(inst->get_param("decay"), "1");
+    EXPECT_EQ(inst->get_param("tau_us"), "200000");
+    EXPECT_EQ(inst->get_param("channels"), "2");
+    const EventCD roi_event(1, 2, 1, 200);
+    inst->push_events(&roi_event, &roi_event + 1);
+    EXPECT_NE(inst->pull_result().status.find("3x4"), std::string::npos);
+}
+
 TEST(AlgoBridgeInstances, DefaultsAppliedAtConstruction) {
     AlgoBridge bridge;
     auto inst = bridge.find_or_create("hot_pixel_filter");

@@ -103,15 +103,11 @@ void OverlayStrategy::apply(QImage& frame, AlgoResult& r,
     // back by the ROI origin so they land on the processing region of the
     // full-sensor main frame. No-op (offset 0,0) when the ROI is off.
     int ox = 0, oy = 0;
-    if (ctx.camera) {
-        bool roi_on = false;
-        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-        ctx.camera->unified_roi(roi_on, x0, y0, x1, y1);
-        // RONI (debug D-5): events keep absolute coordinates — no shift.
-        if (roi_on && !ctx.camera->unified_roi_roni()) {
-            ox = x0;
-            oy = y0;
-        }
+    // RONI keeps absolute coordinates, so only ordinary ROI has a local
+    // origin. The values are already expressed in the current frame space.
+    if (ctx.frame_roi_active && !ctx.frame_roi_roni) {
+        ox = ctx.frame_roi_x0;
+        oy = ctx.frame_roi_y0;
     }
     // Convert AlgoResult overlay primitives into FrameAnnotator calls.
     // Boxes: tracked-object boxes with optional id.
@@ -216,17 +212,13 @@ void ReplaceStrategy::apply(QImage& frame, AlgoResult& r,
         // at ROI dimensions, so its output frame covers only the ROI
         // window — composite it at the ROI origin instead of replacing the
         // full-sensor frame.
-        bool roi_on = false;
-        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-        if (ctx.camera) {
-            ctx.camera->unified_roi(roi_on, x0, y0, x1, y1);
-        }
         // RONI (debug D-5): the backend stays full-sensor (pass-through), so
         // its output frame replaces the full frame as before.
-        if (roi_on && !ctx.camera->unified_roi_roni() &&
-            q.width() == x1 - x0 && q.height() == y1 - y0) {
+        if (ctx.frame_roi_active && !ctx.frame_roi_roni &&
+            q.width() == ctx.frame_roi_x1 - ctx.frame_roi_x0 &&
+            q.height() == ctx.frame_roi_y1 - ctx.frame_roi_y0) {
             QPainter p(&frame);
-            p.drawImage(x0, y0, q);
+            p.drawImage(ctx.frame_roi_x0, ctx.frame_roi_y0, q);
         } else {
             frame = q;
         }

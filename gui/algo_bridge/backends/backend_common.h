@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdio>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -194,8 +195,20 @@ struct Preprocessor {
     bool undistort_lut_valid_{false};
 
     void init(int w, int h) {
-        filter_w_ = w; filter_h_ = h;
-        rebuild_filter();
+        // Build any geometry-dependent filter state before replacing the
+        // committed dimensions. FileFrameGenerator can then reject an
+        // allocation failure without leaving the old frame paired with a
+        // partially resized preprocessor.
+        std::unique_ptr<gui_algo::NoiseFilter> next_filter;
+        if (filter_enabled_ && w > 0 && h > 0) {
+            next_filter = std::make_unique<gui_algo::NoiseFilter>(w, h, filter_mode_);
+            for (const auto& kv : filter_params_) {
+                apply_noise_filter_param(*next_filter, kv.first, kv.second);
+            }
+        }
+        filter_w_ = w;
+        filter_h_ = h;
+        filter_ = std::move(next_filter);
         undistort_lut_valid_ = false;  // geometry changed → LUT needs rebuild
     }
     /// @brief Clears the noise filter's temporal state (timestamp surfaces).

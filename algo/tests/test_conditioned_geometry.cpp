@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <string>
 
@@ -13,6 +14,7 @@ namespace {
 
 using gui::ConditionedGeometry;
 using gui::ConditionedTransformPlan;
+using gui::FilterAdmissionSource;
 using gui::FilterChain;
 using gui::FilterStageRequest;
 using gui::GeometryExtent;
@@ -41,6 +43,11 @@ FilterStageRequest request(const std::string& stage, const bool enabled) {
     value.stage = stage;
     value.enabled = enabled;
     return value;
+}
+
+std::uint64_t pixel_area(const GeometryExtent extent) {
+    return static_cast<std::uint64_t>(extent.width) *
+           static_cast<std::uint64_t>(extent.height);
 }
 
 } // namespace
@@ -382,6 +389,206 @@ TEST(FilterChainAdmission, RoiAndProcessedRecordingGateBothOrderingDirections) {
 
     ASSERT_TRUE(chain.try_apply_stage(rotate180).accepted);
     EXPECT_FALSE(chain.try_set_processed_recording_active(true, &reason));
+    EXPECT_FALSE(reason.empty());
+}
+
+TEST(FilterChainAdmission, FileContextAdmitsOnlyMigratedCoordinateConsumers) {
+    auto configured_file_chain = []() {
+        FilterChain chain;
+        EXPECT_TRUE(chain.set_geometry(7, 5));
+        EXPECT_TRUE(chain.try_set_admission_source(FilterAdmissionSource::File));
+        return chain;
+    };
+
+    FilterChain transpose = configured_file_chain();
+    EXPECT_TRUE(transpose.try_apply_stage(request("transpose", true)).accepted);
+    ASSERT_TRUE(transpose.conditioned_geometry().has_value());
+    EXPECT_EQ(transpose.conditioned_geometry()->output_extent(), (GeometryExtent{5, 7}));
+
+    FilterChain rotate90 = configured_file_chain();
+    auto rotate90_request = request("rotate", true);
+    rotate90_request.parameters["rotation"] = "90";
+    EXPECT_TRUE(rotate90.try_apply_stage(rotate90_request).accepted);
+    ASSERT_TRUE(rotate90.conditioned_geometry().has_value());
+    EXPECT_EQ(rotate90.conditioned_geometry()->output_extent(), (GeometryExtent{5, 7}));
+
+    FilterChain rotate270 = configured_file_chain();
+    auto rotate270_request = request("rotate", true);
+    rotate270_request.parameters["rotation"] = "270";
+    EXPECT_TRUE(rotate270.try_apply_stage(rotate270_request).accepted);
+    ASSERT_TRUE(rotate270.conditioned_geometry().has_value());
+    EXPECT_EQ(rotate270.conditioned_geometry()->output_extent(), (GeometryExtent{5, 7}));
+
+    FilterChain rescale = configured_file_chain();
+    auto rescale_request = request("rescale", true);
+    rescale_request.parameters["scale_width"] = "2";
+    rescale_request.parameters["scale_height"] = "0.5";
+    EXPECT_TRUE(rescale.try_apply_stage(rescale_request).accepted);
+    ASSERT_TRUE(rescale.conditioned_geometry().has_value());
+    EXPECT_EQ(rescale.conditioned_geometry()->output_extent(), (GeometryExtent{13, 3}));
+
+    // A file-qualified extent-changing plan cannot leak into U1C3's live
+    // path, and live still rejects the plan once the file-only stage is off.
+    std::string reason;
+    EXPECT_FALSE(rotate90.try_set_admission_source(FilterAdmissionSource::Live, &reason));
+    EXPECT_FALSE(reason.empty());
+    ASSERT_TRUE(rotate90.set_stage_enabled("rotate", false));
+    ASSERT_TRUE(rotate90.try_set_admission_source(FilterAdmissionSource::Live));
+    EXPECT_FALSE(rotate90.try_apply_stage(rotate90_request).accepted);
+}
+
+TEST(FilterChainAdmission, FileRasterBoundRejectsUnrenderableRescaleAtomically) {
+    FilterChain chain;
+    ASSERT_TRUE(chain.set_geometry(6400, 6400));
+    ASSERT_TRUE(chain.try_set_admission_source(FilterAdmissionSource::File));
+    const auto before = chain.conditioned_geometry();
+    ASSERT_TRUE(before.has_value());
+
+    auto rescale = request("rescale", true);
+    rescale.parameters["scale_width"] = "10";
+    rescale.parameters["scale_height"] = "10";
+    const auto rejected = chain.try_apply_stage(rescale);
+
+    EXPECT_FALSE(rejected.accepted);
+    EXPECT_FALSE(chain.is_stage_enabled("rescale"));
+    const auto after = chain.conditioned_geometry();
+    ASSERT_TRUE(after.has_value());
+    EXPECT_EQ(after->revision(), before->revision());
+    EXPECT_EQ(after->output_extent(), before->output_extent());
+}
+
+TEST(FilterChainAdmission, FileRasterBoundAllowsReferenceNonSquareUpscale) {
+    FilterChain chain;
+    ASSERT_TRUE(chain.set_geometry(1280, 720));
+    ASSERT_TRUE(chain.try_set_admission_source(FilterAdmissionSource::File));
+
+    auto rescale = request("rescale", true);
+    rescale.parameters["scale_width"] = "2";
+    rescale.parameters["scale_height"] = "2";
+    EXPECT_TRUE(chain.try_apply_stage(rescale).accepted);
+    const auto geometry = chain.conditioned_geometry();
+    ASSERT_TRUE(geometry.has_value());
+    EXPECT_EQ(geometry->output_extent(), (GeometryExtent{2559, 1439}));
+}
+
+TEST(FilterChainAdmission, FileRasterBoundPinsExactOutputAreaBoundary) {
+    constexpr std::uint64_t kRasterLimit = FilterChain::kMaxFileRasterPixels;
+    const auto rescale_request = [](const char* scale) {
+        auto result = request("rescale", true);
+        result.parameters["scale_width"] = scale;
+        result.parameters["scale_height"] = scale;
+        return result;
+    };
+
+    FilterChain below;
+    ASSERT_TRUE(below.set_geometry(1024, 1025));
+    ASSERT_TRUE(below.try_set_admission_source(FilterAdmissionSource::File));
+    const auto below_before = below.conditioned_geometry();
+    ASSERT_TRUE(below_before.has_value());
+    const auto below_result = below.try_apply_stage(rescale_request("2"));
+    ASSERT_TRUE(below_result.accepted);
+    EXPECT_TRUE(below.is_stage_enabled("rescale"));
+    const auto below_after = below.conditioned_geometry();
+    ASSERT_TRUE(below_after.has_value());
+    EXPECT_EQ(below_after->output_extent(), (GeometryExtent{2047, 2049}));
+    EXPECT_EQ(pixel_area(below_after->output_extent()), kRasterLimit - 1);
+    EXPECT_GT(pixel_area(below_after->output_extent()), pixel_area(below_after->raw_extent()));
+    EXPECT_NE(below_after->revision(), below_before->revision());
+    EXPECT_EQ(below_result.geometry_revision, below_after->revision());
+
+    FilterChain exact;
+    ASSERT_TRUE(exact.set_geometry(1366, 342));
+    ASSERT_TRUE(exact.try_set_admission_source(FilterAdmissionSource::File));
+    const auto exact_before = exact.conditioned_geometry();
+    ASSERT_TRUE(exact_before.has_value());
+    const auto exact_result = exact.try_apply_stage(rescale_request("3"));
+    ASSERT_TRUE(exact_result.accepted);
+    EXPECT_TRUE(exact.is_stage_enabled("rescale"));
+    const auto exact_after = exact.conditioned_geometry();
+    ASSERT_TRUE(exact_after.has_value());
+    EXPECT_EQ(exact_after->output_extent(), (GeometryExtent{4096, 1024}));
+    EXPECT_EQ(pixel_area(exact_after->output_extent()), kRasterLimit);
+    EXPECT_GT(pixel_area(exact_after->output_extent()), pixel_area(exact_after->raw_extent()));
+    EXPECT_NE(exact_after->revision(), exact_before->revision());
+    EXPECT_EQ(exact_result.geometry_revision, exact_after->revision());
+
+    ConditionedTransformPlan above_plan;
+    above_plan.rescale_enabled = true;
+    above_plan.scale_x = 2.0f;
+    above_plan.scale_y = 2.0f;
+    const auto above_candidate = geometry({993, 1057}, above_plan);
+    EXPECT_EQ(above_candidate.output_extent(), (GeometryExtent{1985, 2113}));
+    EXPECT_EQ(pixel_area(above_candidate.output_extent()), kRasterLimit + 1);
+    EXPECT_GT(pixel_area(above_candidate.output_extent()), pixel_area(above_candidate.raw_extent()));
+
+    FilterChain above;
+    ASSERT_TRUE(above.set_geometry(993, 1057));
+    ASSERT_TRUE(above.try_set_admission_source(FilterAdmissionSource::File));
+    const auto above_before = above.conditioned_geometry();
+    ASSERT_TRUE(above_before.has_value());
+    const auto above_result = above.try_apply_stage(rescale_request("2"));
+    EXPECT_FALSE(above_result.accepted);
+    EXPECT_FALSE(above.is_stage_enabled("rescale"));
+    const auto above_state = above.stage_state("rescale");
+    ASSERT_TRUE(above_state.has_value());
+    EXPECT_EQ(above_state->parameters.at("scale_width"), "1.0");
+    EXPECT_EQ(above_state->parameters.at("scale_height"), "1.0");
+    const auto above_after = above.conditioned_geometry();
+    ASSERT_TRUE(above_after.has_value());
+    EXPECT_EQ(above_after->raw_extent(), above_before->raw_extent());
+    EXPECT_EQ(above_after->output_extent(), above_before->output_extent());
+    EXPECT_EQ(above_after->revision(), above_before->revision());
+    EXPECT_EQ(above_result.geometry_revision, above_before->revision());
+}
+
+TEST(FilterChainAdmission, FileRawRoiAndCalibrationContainmentAreTransactional) {
+    auto rotate90_request = request("rotate", true);
+    rotate90_request.parameters["rotation"] = "90";
+
+    // File raw ROI/RONI selection happens before conditioning and is admitted
+    // in both mutation orders after U1C2 migration.
+    FilterChain roi_first;
+    ASSERT_TRUE(roi_first.set_geometry(7, 5));
+    ASSERT_TRUE(roi_first.try_set_admission_source(FilterAdmissionSource::File));
+    ASSERT_TRUE(roi_first.try_set_raw_roi_or_roni_active(true));
+    EXPECT_TRUE(roi_first.try_apply_stage(rotate90_request).accepted);
+
+    FilterChain transform_first;
+    ASSERT_TRUE(transform_first.set_geometry(7, 5));
+    ASSERT_TRUE(transform_first.try_set_admission_source(FilterAdmissionSource::File));
+    ASSERT_TRUE(transform_first.try_apply_stage(rotate90_request).accepted);
+    EXPECT_TRUE(transform_first.try_set_raw_roi_or_roni_active(true));
+
+    // Conditioned EVT2 recording remains unqualified in both orders.
+    FilterChain recording_first;
+    ASSERT_TRUE(recording_first.set_geometry(7, 5));
+    ASSERT_TRUE(recording_first.try_set_admission_source(FilterAdmissionSource::File));
+    ASSERT_TRUE(recording_first.try_set_processed_recording_active(true));
+    EXPECT_FALSE(recording_first.try_apply_stage(rotate90_request).accepted);
+
+    FilterChain transform_before_recording;
+    ASSERT_TRUE(transform_before_recording.set_geometry(7, 5));
+    ASSERT_TRUE(transform_before_recording.try_set_admission_source(FilterAdmissionSource::File));
+    ASSERT_TRUE(transform_before_recording.try_apply_stage(rotate90_request).accepted);
+    std::string reason;
+    EXPECT_FALSE(transform_before_recording.try_set_processed_recording_active(true, &reason));
+    EXPECT_FALSE(reason.empty());
+
+    // Undistort LUTs remain in Raw Source Space, so both orderings reject a
+    // non-identity coordinate plan without committing the rejected state.
+    FilterChain calibration_first;
+    ASSERT_TRUE(calibration_first.set_geometry(7, 5));
+    ASSERT_TRUE(calibration_first.try_set_admission_source(FilterAdmissionSource::File));
+    ASSERT_TRUE(calibration_first.try_set_raw_coordinate_calibration_active(true));
+    EXPECT_FALSE(calibration_first.try_apply_stage(rotate90_request).accepted);
+    EXPECT_FALSE(calibration_first.is_stage_enabled("rotate"));
+
+    FilterChain transform_before_calibration;
+    ASSERT_TRUE(transform_before_calibration.set_geometry(7, 5));
+    ASSERT_TRUE(transform_before_calibration.try_set_admission_source(FilterAdmissionSource::File));
+    ASSERT_TRUE(transform_before_calibration.try_apply_stage(rotate90_request).accepted);
+    EXPECT_FALSE(transform_before_calibration.try_set_raw_coordinate_calibration_active(
+        true, &reason));
     EXPECT_FALSE(reason.empty());
 }
 

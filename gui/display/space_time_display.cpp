@@ -172,6 +172,19 @@ SpaceTimeDisplay::~SpaceTimeDisplay() {
 void SpaceTimeDisplay::set_sensor_geometry(int width, int height) {
     sensor_w_ = (width > 0) ? width : 0;
     sensor_h_ = (height > 0) ? height : 0;
+    geometry_revision_ = 0;
+}
+
+void SpaceTimeDisplay::set_conditioned_geometry(const ConditionedGeometry& geometry) {
+    const GeometryExtent extent = geometry.output_extent();
+    if (geometry_revision_ == geometry.revision() && sensor_w_ == extent.width &&
+        sensor_h_ == extent.height) {
+        return;
+    }
+    sensor_w_ = extent.width;
+    sensor_h_ = extent.height;
+    geometry_revision_ = geometry.revision();
+    clear();
 }
 
 void SpaceTimeDisplay::push_events(const Metavision::EventCD* begin,

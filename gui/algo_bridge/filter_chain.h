@@ -11,6 +11,7 @@
 #define GUI_ALGO_BRIDGE_FILTER_CHAIN_H
 
 #include <functional>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -55,11 +56,21 @@ struct FilterStageState {
     std::unordered_map<std::string, std::string> parameters;
 };
 
-/// Cross-owner facts needed by U1C1 containment. Geometry itself remains
-/// Qt-free; CameraController owns the transitions that update this snapshot.
+/// Source class for admission. File playback is migrated in U1C2 while the
+/// live path remains under U1C1 containment until U1C3.
+enum class FilterAdmissionSource {
+    Live,
+    File,
+};
+
+/// Cross-owner facts needed by containment. Geometry itself remains Qt-free;
+/// CameraController owns source/recording transitions and MainWindow reports
+/// whether raw-coordinate calibration is active.
 struct FilterAdmissionContext {
+    FilterAdmissionSource source{FilterAdmissionSource::Live};
     bool raw_roi_or_roni_active{false};
     bool processed_recording_active{false};
+    bool raw_coordinate_calibration_active{false};
 };
 
 struct FilterAdmissionResult {
@@ -80,6 +91,13 @@ struct ConditionedBatch {
 /// @brief Ordered chain of event filters applied left-to-right.
 class FilterChain {
 public:
+    /// File playback owns a BGR raster in addition to the immutable event
+    /// batch. Keep output-expanding geometry changes below a bounded
+    /// allocation budget before a stage mutation can commit. Four Mi pixels
+    /// keeps the optional per-pixel display NoiseFilter state to roughly
+    /// 340 MiB, plus the BGR/Qt frame copies and normal process headroom.
+    static constexpr std::uint64_t kMaxFileRasterPixels = 4ULL * 1024ULL * 1024ULL;
+
     FilterChain();
 
     /// @brief Sets the raw source geometry and atomically derives a new
@@ -117,11 +135,26 @@ public:
     /// processed recording is requested after transforms are already active.
     bool can_activate_raw_roi_or_roni(std::string* reason = nullptr) const;
     bool can_start_processed_recording(std::string* reason = nullptr) const;
+    /// Changes the admission source atomically. A file-only transform plan
+    /// cannot be carried into the still-unmigrated live path.
+    bool try_set_admission_source(FilterAdmissionSource source,
+                                  std::string* reason = nullptr);
+    /// Validates the file display's bounded BGR raster contract without
+    /// allocating. Both file admission and FileFrameGenerator use this exact
+    /// check so an accepted plan is renderable before UI/backend commit.
+    static bool is_file_raster_extent_representable(GeometryExtent raw_extent,
+                                                     GeometryExtent output_extent,
+                                                     std::string* reason = nullptr);
     /// Commits a context transition only if it does not create a forbidden
     /// active combination. These methods make direct FilterChain callers obey
     /// the same live context as the panel path.
     bool try_set_raw_roi_or_roni_active(bool active, std::string* reason = nullptr);
     bool try_set_processed_recording_active(bool active, std::string* reason = nullptr);
+    /// Calibration LUTs remain defined in Raw Source Space. Until a separate
+    /// calibration migration exists, they cannot be active with a non-identity
+    /// coordinate plan in either source context.
+    bool try_set_raw_coordinate_calibration_active(bool active,
+                                                   std::string* reason = nullptr);
     bool has_non_identity_coordinate_plan() const;
 
     /// @brief Applies all enabled stages in order.
