@@ -268,6 +268,22 @@ bool parse_finite_float(const std::string& value, float& parsed) {
     return parse(value, parsed) && std::isfinite(parsed) && parsed > 0.0f;
 }
 
+bool is_known_admission_source(const FilterAdmissionSource source) {
+    switch (source) {
+        case FilterAdmissionSource::Live:
+        case FilterAdmissionSource::File:
+            return true;
+    }
+    return false;
+}
+
+bool plan_requires_file_consumer_migration(const ConditionedTransformPlan& plan) {
+    return plan.transpose_enabled || plan.rescale_enabled ||
+           (plan.rotate_enabled &&
+            (plan.rotation == OrthogonalRotation::Degrees90 ||
+             plan.rotation == OrthogonalRotation::Degrees270));
+}
+
 std::optional<GeometryRevision> next_geometry_revision(const GeometryRevision current) {
     if (current == std::numeric_limits<GeometryRevision>::max()) {
         return std::nullopt;
@@ -390,12 +406,71 @@ std::optional<ConditionedGeometry> FilterChain::conditioned_geometry() const {
     return conditioned_geometry_;
 }
 
+bool FilterChain::is_file_raster_extent_representable(const GeometryExtent raw_extent,
+                                                       const GeometryExtent output_extent,
+                                                       std::string* reason) {
+    if (raw_extent.width <= 0 || raw_extent.height <= 0 ||
+        output_extent.width <= 0 || output_extent.height <= 0) {
+        if (reason) *reason = "file raw and output extents must be positive";
+        return false;
+    }
+    const auto raw_pixels = static_cast<std::uint64_t>(raw_extent.width) *
+                            static_cast<std::uint64_t>(raw_extent.height);
+    const auto output_pixels = static_cast<std::uint64_t>(output_extent.width) *
+                               static_cast<std::uint64_t>(output_extent.height);
+    // Do not retroactively narrow an already-supported source-native frame.
+    // This file-only containment applies when conditioning grows its canvas.
+    if (output_pixels > raw_pixels && output_pixels > kMaxFileRasterPixels) {
+        if (reason) *reason = "file output extent exceeds the bounded raster budget";
+        return false;
+    }
+    return true;
+}
+
 bool FilterChain::can_activate_raw_roi_or_roni(std::string* reason) const {
     std::lock_guard<std::mutex> lk(chain_mutex());
-    if (plan_.has_non_identity_coordinate_mapping()) {
+    if (plan_.has_non_identity_coordinate_mapping() &&
+        admission_context_.source != FilterAdmissionSource::File) {
         if (reason) *reason = "ROI/RONI requires raw-space migration before coordinate transforms";
         return false;
     }
+    return true;
+}
+
+bool FilterChain::try_set_admission_source(const FilterAdmissionSource source,
+                                            std::string* reason) {
+    std::lock_guard<std::mutex> lk(chain_mutex());
+    if (!is_known_admission_source(source)) {
+        if (reason) *reason = "unknown preprocessing admission source";
+        return false;
+    }
+    if (source == admission_context_.source) return true;
+    if (source == FilterAdmissionSource::Live &&
+        plan_requires_file_consumer_migration(plan_)) {
+        if (reason) *reason =
+            "the active coordinate plan is only qualified for file playback";
+        return false;
+    }
+    if (plan_.has_non_identity_coordinate_mapping() &&
+        admission_context_.processed_recording_active) {
+        if (reason) *reason =
+            "processed recording requires qualified geometry metadata for coordinate transforms";
+        return false;
+    }
+    if (plan_.has_non_identity_coordinate_mapping() &&
+        admission_context_.raw_coordinate_calibration_active) {
+        if (reason) *reason =
+            "coordinate transforms require calibration-space migration while undistort is active";
+        return false;
+    }
+    if (source == FilterAdmissionSource::Live &&
+        plan_.has_non_identity_coordinate_mapping() &&
+        admission_context_.raw_roi_or_roni_active) {
+        if (reason) *reason =
+            "ROI/RONI requires raw-space migration before coordinate transforms";
+        return false;
+    }
+    admission_context_.source = source;
     return true;
 }
 
@@ -411,7 +486,8 @@ bool FilterChain::can_start_processed_recording(std::string* reason) const {
 
 bool FilterChain::try_set_raw_roi_or_roni_active(const bool active, std::string* reason) {
     std::lock_guard<std::mutex> lk(chain_mutex());
-    if (active && plan_.has_non_identity_coordinate_mapping()) {
+    if (active && plan_.has_non_identity_coordinate_mapping() &&
+        admission_context_.source != FilterAdmissionSource::File) {
         if (reason) *reason = "ROI/RONI requires raw-space migration before coordinate transforms";
         return false;
     }
@@ -427,6 +503,18 @@ bool FilterChain::try_set_processed_recording_active(const bool active, std::str
         return false;
     }
     admission_context_.processed_recording_active = active;
+    return true;
+}
+
+bool FilterChain::try_set_raw_coordinate_calibration_active(const bool active,
+                                                             std::string* reason) {
+    std::lock_guard<std::mutex> lk(chain_mutex());
+    if (active && plan_.has_non_identity_coordinate_mapping()) {
+        if (reason) *reason =
+            "coordinate transforms require calibration-space migration while undistort is active";
+        return false;
+    }
+    admission_context_.raw_coordinate_calibration_active = active;
     return true;
 }
 
@@ -513,11 +601,13 @@ bool FilterChain::rebuild_conditioned_geometry_locked(std::string* reason) {
         return false;
     }
     if (plan_.has_non_identity_coordinate_mapping() &&
-        (admission_context_.raw_roi_or_roni_active ||
-         admission_context_.processed_recording_active)) {
+        ((admission_context_.source != FilterAdmissionSource::File &&
+          admission_context_.raw_roi_or_roni_active) ||
+         admission_context_.processed_recording_active ||
+         admission_context_.raw_coordinate_calibration_active)) {
         conditioned_geometry_.reset();
         if (reason) *reason =
-            "coordinate transforms cannot be rebuilt with active ROI/RONI or processed recording";
+            "coordinate transforms cannot be rebuilt with the active admission context";
         return false;
     }
     std::string producer_reason;
@@ -538,6 +628,12 @@ bool FilterChain::rebuild_conditioned_geometry_locked(std::string* reason) {
     if (!candidate) {
         conditioned_geometry_.reset();
         if (reason) *reason = geometry_reason;
+        return false;
+    }
+    if (admission_context_.source == FilterAdmissionSource::File &&
+        !is_file_raster_extent_representable(candidate->raw_extent(),
+                                             candidate->output_extent(), reason)) {
+        conditioned_geometry_.reset();
         return false;
     }
     conditioned_geometry_ = std::move(candidate);
@@ -597,21 +693,25 @@ FilterAdmissionResult FilterChain::try_apply_stage_locked(const FilterStageReque
     }
 
     if (plan_changed) {
-        if (candidate_plan.transpose_enabled) {
+        if (admission_context_.source == FilterAdmissionSource::Live &&
+            candidate_plan.transpose_enabled) {
             result.reason = "Transpose is unavailable until geometry consumers are migrated.";
             return result;
         }
-        if (candidate_plan.rotate_enabled &&
+        if (admission_context_.source == FilterAdmissionSource::Live &&
+            candidate_plan.rotate_enabled &&
             (candidate_plan.rotation == OrthogonalRotation::Degrees90 ||
              candidate_plan.rotation == OrthogonalRotation::Degrees270)) {
             result.reason = "Rotate 90/270 is unavailable until geometry consumers are migrated.";
             return result;
         }
-        if (candidate_plan.rescale_enabled) {
+        if (admission_context_.source == FilterAdmissionSource::Live &&
+            candidate_plan.rescale_enabled) {
             result.reason = "Rescale is unavailable until geometry consumers are migrated.";
             return result;
         }
-        if (admission_context_.raw_roi_or_roni_active &&
+        if (admission_context_.source != FilterAdmissionSource::File &&
+            admission_context_.raw_roi_or_roni_active &&
             candidate_plan.has_non_identity_coordinate_mapping()) {
             result.reason =
                 "Coordinate transforms are unavailable while raw ROI/RONI is active.";
@@ -621,6 +721,12 @@ FilterAdmissionResult FilterChain::try_apply_stage_locked(const FilterStageReque
             candidate_plan.has_non_identity_coordinate_mapping()) {
             result.reason =
                 "Coordinate transforms are unavailable during processed recording.";
+            return result;
+        }
+        if (admission_context_.raw_coordinate_calibration_active &&
+            candidate_plan.has_non_identity_coordinate_mapping()) {
+            result.reason =
+                "Coordinate transforms are unavailable while undistort calibration is active.";
             return result;
         }
         if (!producer_supports_plan({width_, height_}, candidate_plan, reason)) {
@@ -642,6 +748,13 @@ FilterAdmissionResult FilterChain::try_apply_stage_locked(const FilterStageReque
         auto candidate_geometry = ConditionedGeometry::create(
             {width_, height_}, candidate_plan, *next_revision, &reason);
         if (!candidate_geometry) {
+            result.reason = reason;
+            return result;
+        }
+        if (admission_context_.source == FilterAdmissionSource::File &&
+            !is_file_raster_extent_representable(candidate_geometry->raw_extent(),
+                                                  candidate_geometry->output_extent(),
+                                                  &reason)) {
             result.reason = reason;
             return result;
         }
@@ -700,12 +813,17 @@ std::optional<ConditionedBatch> FilterChain::process_conditioned(
 void FilterChain::process_locked(const Metavision::EventCD* begin,
                                  const Metavision::EventCD* end,
                                  std::vector<Metavision::EventCD>& out) {
+    out.clear();
+    if (begin == nullptr || end == nullptr) {
+        return;
+    }
     std::vector<Metavision::EventCD> cur(begin, end);
     std::vector<Metavision::EventCD> next;
     next.reserve(cur.size());
     for (const auto& name : order_) {
         auto* stage = stages_.at(name).get();
         if (!stage || !stage->enabled()) continue;
+        if (cur.empty()) break;
         next.clear();
         stage->process(cur.data(), cur.data() + cur.size(), next);
         cur.swap(next);

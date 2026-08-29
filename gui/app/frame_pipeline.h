@@ -156,10 +156,9 @@ signals:
     /// effect before new events are pushed.
     void file_seeked(Metavision::timestamp t_us);
 
-    /// File mode: emitted with the events in the current accumulation window
-    /// [start, end) so algorithm instances can process them synchronously
-    /// with the displayed frame. Emitted before frame_ready.
-    void events_window_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events,
+    /// File mode: emitted with the immutable conditioned batch for the
+    /// current accumulation window [start, end), before frame_ready.
+    void events_window_ready(std::shared_ptr<const ConditionedBatch> batch,
                              Metavision::timestamp ts);
 
     /// File mode: emitted once when the FileFrameGenerator's event buffer

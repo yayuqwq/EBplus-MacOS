@@ -36,13 +36,12 @@
 
 #include <metavision/sdk/base/utils/timestamp.h>
 
+#include "algo_bridge/filter_chain.h"
 #include "algo_bridge/backends/backend_common.h"
 #include <metavision/sdk/base/events/event_cd.h>
 #include <metavision/sdk/core/utils/colors.h>
 
 namespace gui {
-
-class FilterChain;  ///< Forward decl — applied at render time for file mode.
 
 class FileFrameGenerator : public QObject {
     Q_OBJECT
@@ -62,7 +61,7 @@ public:
     /// ~4.8 GB resident — beyond this we drop incoming batches.
     static constexpr std::size_t kMaxBufferedEvents = 300'000'000;
 
-    /// @brief Sets the sensor geometry for frame rendering.
+    /// @brief Sets the raw source geometry used by file buffering and raw ROI.
     void set_geometry(long width, long height);
 
     /// @brief Sets the display frame rate (Hz). Updates the timer interval
@@ -80,11 +79,8 @@ public:
     /// @brief Sets the color palette for rendering (matches CDFrameGenerator).
     void set_color_palette(Metavision::ColorPalette palette);
 
-    /// @brief Sets the FilterChain for event transformation (flip, rotate,
-    /// etc.) during file playback. Applied per-frame in render_frame() to
-    /// BOTH the display rendering and the events emitted via
-    /// events_window_ready, so that flip/rotate/etc. take effect immediately
-    /// and algorithm output is also transformed. nullptr = no filtering.
+    /// @brief Sets the FilterChain that produces the one immutable
+    /// ConditionedBatch consumed by file display, algorithms, and XYT.
     void set_filter_chain(FilterChain* fc) { filter_chain_ = fc; }
 
     // --- Playback control (GUI thread only) ---
@@ -161,12 +157,10 @@ signals:
     /// are pushed.
     void seeked(Metavision::timestamp t_us);
 
-    /// @brief Emitted with the (filtered) events in the current accumulation
-    /// window [start, end). Used to feed algorithm instances synchronously
-    /// with the displayed frame during file playback. When a FilterChain is
-    /// set, the events are already filtered (flip/rotate/etc. applied) so
-    /// algorithm output matches the display orientation.
-    void events_window_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events,
+    /// @brief Emitted with the one conditioned batch for the current
+    /// accumulation window [start, end). Events and immutable geometry are
+    /// published together before frame_ready, including for empty windows.
+    void events_window_ready(std::shared_ptr<const ConditionedBatch> batch,
                              Metavision::timestamp ts);
 
     /// @brief Emitted once when the event buffer reaches kMaxBufferedEvents
@@ -177,6 +171,7 @@ signals:
 private:
     void on_timer();
     void render_frame(Metavision::timestamp start_us, Metavision::timestamp end_us);
+    bool update_output_geometry(const ConditionedGeometry& geometry);
 
     // Event buffer — appended from SDK thread, read from GUI thread.
     std::vector<Metavision::EventCD> events_;
@@ -184,9 +179,14 @@ private:
     // OOM guard state (audit §六-C2), guarded by mutex_.
     bool truncated_{false};
 
-    // Geometry
-    long width_{0};
-    long height_{0};
+    // Raw Source Space geometry. ROI selection always remains in this space.
+    long raw_width_{0};
+    long raw_height_{0};
+    // Current Conditioned Output Space geometry. This alone sizes the frame
+    // and display preprocessor after U1C2 migration.
+    int output_width_{0};
+    int output_height_{0};
+    GeometryRevision rendered_geometry_revision_{0};
 
     // Parameters
     std::uint16_t fps_{30};
@@ -207,15 +207,13 @@ private:
     // Reused render buffer (BGR)
     cv::Mat frame_;
 
-    // Filter chain (file mode). Applied in render_frame() to both the
-    // rendered pixels and the events emitted via events_window_ready, so
-    // algorithm output matches the display orientation.
+    // File mode conditioning owner. A missing or invalid snapshot fails
+    // closed instead of publishing a raw/vector-only parallel path.
     FilterChain* filter_chain_{nullptr};
 
     // Display-path preprocessing (Phase 2.5). Applied in render_frame() to
-    // the RENDERED pixels only — events_window_ready keeps the un-noise-
-    // filtered stream for algorithm instances (they own their Preprocessor
-    // stage). GUI thread only (render_frame runs there).
+    // pixels only; the conditioned batch remains un-noise-filtered for
+    // algorithm instances. GUI thread only (render_frame runs there).
     gui::backend_detail::Preprocessor display_preproc_;
 
     // Software ROI (Phase 2.6). Computed rect [x0,x1) × [y0,y1); applied in

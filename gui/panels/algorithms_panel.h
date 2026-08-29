@@ -113,6 +113,18 @@ public:
     }
     void set_preproc_downsample(bool on);
 
+    /// @brief Returns the last undistort state that was admitted and applied
+    /// to the algorithm/display preprocessing paths.
+    bool preproc_undistort_enabled() const { return preproc_undistort_committed_; }
+
+    /// @brief Commits an already-admitted undistort transition exactly once.
+    /// MainWindow owns admission because it has the FilterChain context.
+    void commit_preproc_undistort(bool on);
+
+    /// @brief Restores the checkbox after MainWindow rejects a requested
+    /// transition without changing downstream preprocessing state.
+    void restore_preproc_undistort();
+
 signals:
     /// @brief Emitted when an algorithm's enable state changes.
     void algorithm_toggled(const QString& name, bool enabled);
@@ -123,6 +135,9 @@ signals:
     /// (preproc_* key + value). MainWindow forwards it to the display-path
     /// preprocessing in FramePipeline (Phase 2.5).
     void preproc_display_param_changed(const QString& key, const QString& value);
+    /// @brief User intent to toggle raw-coordinate undistortion. The panel
+    /// does not mutate preprocessing until MainWindow admits the transition.
+    void preproc_undistort_requested(bool on);
     /// @brief Emitted when the USER toggles the panel's "Enable ROI"
     /// checkbox (Phase 2.6 debug D-6). MainWindow applies it via
     /// CameraController::set_unified_roi (and opens the settings dialog when
@@ -234,6 +249,7 @@ private:
     QCheckBox* preproc_undistort_cb_{nullptr};
     QLineEdit* preproc_undistort_path_{nullptr};
     QPushButton* preproc_undistort_browse_{nullptr};
+    bool preproc_undistort_committed_{false};
 
     /// Container for mode-specific NoiseFilter parameter rows (BUG-3).
     /// Rows are pre-created for all 9 modes and shown/hidden based on the

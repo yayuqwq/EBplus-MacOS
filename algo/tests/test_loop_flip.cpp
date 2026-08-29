@@ -210,9 +210,10 @@ int main(int argc, char** argv) {
     });
     QObject::connect(&gen, &gui::FileFrameGenerator::events_window_ready,
                      &app,
-                     [&](std::shared_ptr<std::vector<Event>> events, timestamp start_us) {
-                         if (!events) return;
-                         const CapturedWindow window{start_us, *events};
+                     [&](std::shared_ptr<const gui::ConditionedBatch> batch,
+                         timestamp start_us) {
+                         if (!batch) return;
+                         const CapturedWindow window{start_us, batch->events};
                          if (capture == Capture::RawBaseline &&
                              start_us == baseline_start_us && !raw_baseline) {
                              raw_baseline = window;

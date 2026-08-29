@@ -45,6 +45,15 @@ struct DisplayContext {
     MainWindow* window;
     CameraController* camera;
     AlgoInstance* instance;  ///< Set by AlgoInstance::apply_strategy() before dispatch.
+    /// The ROI expressed in the current frame's coordinate space. For live
+    /// frames this is raw source space; for file frames U1C2 derives it from
+    /// the matching ConditionedGeometry snapshot.
+    bool frame_roi_active{false};
+    bool frame_roi_roni{false};
+    int frame_roi_x0{0};
+    int frame_roi_y0{0};
+    int frame_roi_x1{0};
+    int frame_roi_y1{0};
 };
 
 /// Abstract display strategy. apply() mutates @p frame in place (Overlay /

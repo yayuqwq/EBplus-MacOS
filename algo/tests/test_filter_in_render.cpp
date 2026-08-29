@@ -38,10 +38,10 @@ int main(int argc, char** argv) {
                      [&](QImage f, Metavision::timestamp) { rendered = f; });
 
     // Capture events_window_ready
-    std::shared_ptr<std::vector<Metavision::EventCD>> emitted_events;
+    std::shared_ptr<const ConditionedBatch> emitted_batch;
     QObject::connect(&gen, &FileFrameGenerator::events_window_ready,
-                     [&](std::shared_ptr<std::vector<Metavision::EventCD>> evs,
-                         Metavision::timestamp) { emitted_events = evs; });
+                     [&](std::shared_ptr<const ConditionedBatch> batch,
+                         Metavision::timestamp) { emitted_batch = batch; });
 
     // Add a single event at (10, 50, p=1, t=100)
     Metavision::EventCD ev{10, 50, 100, 1};
@@ -56,13 +56,13 @@ int main(int argc, char** argv) {
     }
     const QRgb no_filter_pixel = rendered.pixel(10, 50);
     std::fprintf(stderr, "No filter: pixel(10,50) = %08X\n", no_filter_pixel);
-    if (!emitted_events || emitted_events->size() != 1) {
+    if (!emitted_batch || emitted_batch->events.size() != 1) {
         std::fprintf(stderr, "FAIL: events_window_ready didn't emit 1 event\n");
         return 1;
     }
-    if ((*emitted_events)[0].x != 10) {
+    if (emitted_batch->events[0].x != 10) {
         std::fprintf(stderr, "FAIL: emitted event x=%d (expected 10)\n",
-                     (*emitted_events)[0].x);
+                     emitted_batch->events[0].x);
         return 1;
     }
 
@@ -89,12 +89,12 @@ int main(int argc, char** argv) {
         ok = false;
     }
     // Verify events_window_ready also emits FLIPPED events
-    if (!emitted_events || emitted_events->size() != 1) {
+    if (!emitted_batch || emitted_batch->events.size() != 1) {
         std::fprintf(stderr, "FAIL: events_window_ready didn't emit 1 event with flip\n");
         ok = false;
-    } else if ((*emitted_events)[0].x != 89) {
+    } else if (emitted_batch->events[0].x != 89) {
         std::fprintf(stderr, "FAIL: emitted event x=%d (expected 89 after flip_x)\n",
-                     (*emitted_events)[0].x);
+                     emitted_batch->events[0].x);
         ok = false;
     } else {
         std::fprintf(stderr, "PASS: events_window_ready emitted flipped event x=89\n");
@@ -107,8 +107,11 @@ int main(int argc, char** argv) {
     // from the RENDERED frame, while events_window_ready keeps the
     // un-noise-filtered stream for algorithm instances.
     {
+        FilterChain chain2;
+        chain2.set_geometry(W, H);
         FileFrameGenerator gen2;
         gen2.set_geometry(W, H);
+        gen2.set_filter_chain(&chain2);
         gen2.set_fps(60);
         gen2.set_accumulation_time_us(1000);
         gen2.set_display_preproc_param("preproc_filter_enabled", "true");
@@ -119,10 +122,10 @@ int main(int argc, char** argv) {
         QImage rendered2;
         QObject::connect(&gen2, &FileFrameGenerator::frame_ready,
                          [&](QImage f, Metavision::timestamp) { rendered2 = f; });
-        std::shared_ptr<std::vector<Metavision::EventCD>> emitted2;
+        std::shared_ptr<const ConditionedBatch> emitted2;
         QObject::connect(&gen2, &FileFrameGenerator::events_window_ready,
-                         [&](std::shared_ptr<std::vector<Metavision::EventCD>> evs,
-                             Metavision::timestamp) { emitted2 = evs; });
+                         [&](std::shared_ptr<const ConditionedBatch> batch,
+                             Metavision::timestamp) { emitted2 = batch; });
 
         // Isolated event at (10,50) t=100 + a supported pair at (60,60) t=200/300.
         std::vector<Metavision::EventCD> evs;
@@ -146,10 +149,10 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "FAIL: supported pair should pass the display filter\n");
             return 1;
         }
-        if (!emitted2 || emitted2->size() != 3) {
+        if (!emitted2 || emitted2->events.size() != 3) {
             std::fprintf(stderr, "FAIL: events_window_ready must stay un-noise-filtered "
                                  "(expected 3 events, got %zu)\n",
-                         emitted2 ? emitted2->size() : 0);
+                         emitted2 ? emitted2->events.size() : 0);
             return 1;
         }
         std::fprintf(stderr, "PASS: display noise filter — render filtered, algo stream kept\n");
@@ -174,8 +177,11 @@ int main(int argc, char** argv) {
         std::vector<cv::Point2f> in{{10, 10}}, gt;
         cv::undistortPoints(in, gt, K, dist, cv::noArray(), K);
 
+        FilterChain chain3;
+        chain3.set_geometry(W, H);
         FileFrameGenerator gen3;
         gen3.set_geometry(W, H);
+        gen3.set_filter_chain(&chain3);
         gen3.set_fps(60);
         gen3.set_accumulation_time_us(1000);
         gen3.set_display_preproc_param("preproc_undistort_path", yml);
@@ -212,8 +218,11 @@ int main(int argc, char** argv) {
     // step 4): only even-parity coordinates render (positions unchanged,
     // no coordinate halving); events_window_ready keeps the full stream.
     {
+        FilterChain chain4;
+        chain4.set_geometry(W, H);
         FileFrameGenerator gen4;
         gen4.set_geometry(W, H);
+        gen4.set_filter_chain(&chain4);
         gen4.set_fps(60);
         gen4.set_accumulation_time_us(1000);
         gen4.set_display_preproc_param("preproc_downsample", "true");
@@ -221,10 +230,10 @@ int main(int argc, char** argv) {
         QImage rendered4;
         QObject::connect(&gen4, &FileFrameGenerator::frame_ready,
                          [&](QImage f, Metavision::timestamp) { rendered4 = f; });
-        std::shared_ptr<std::vector<Metavision::EventCD>> emitted4;
+        std::shared_ptr<const ConditionedBatch> emitted4;
         QObject::connect(&gen4, &FileFrameGenerator::events_window_ready,
-                         [&](std::shared_ptr<std::vector<Metavision::EventCD>> evs,
-                             Metavision::timestamp) { emitted4 = evs; });
+                         [&](std::shared_ptr<const ConditionedBatch> batch,
+                             Metavision::timestamp) { emitted4 = batch; });
 
         std::vector<Metavision::EventCD> evs;
         evs.push_back(Metavision::EventCD{10, 50, 100, 1});   // even/even → kept
@@ -250,10 +259,10 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "FAIL: odd-coordinate events must be thinned\n");
             return 1;
         }
-        if (!emitted4 || emitted4->size() != 5) {
+        if (!emitted4 || emitted4->events.size() != 5) {
             std::fprintf(stderr, "FAIL: events_window_ready must stay complete "
                                  "(expected 5 events, got %zu)\n",
-                         emitted4 ? emitted4->size() : 0);
+                         emitted4 ? emitted4->events.size() : 0);
             return 1;
         }
         std::fprintf(stderr, "PASS: display downsample — even-parity rendered at "

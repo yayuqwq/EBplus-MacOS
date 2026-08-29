@@ -393,6 +393,18 @@ void AlgorithmsPanel::set_preproc_downsample(bool on) {
     apply_global_preproc("preproc_downsample", on ? "true" : "false");
 }
 
+void AlgorithmsPanel::commit_preproc_undistort(const bool on) {
+    preproc_undistort_committed_ = on;
+    QSignalBlocker blocker(preproc_undistort_cb_);
+    preproc_undistort_cb_->setChecked(on);
+    apply_global_preproc("preproc_undistort_enabled", on ? "true" : "false");
+}
+
+void AlgorithmsPanel::restore_preproc_undistort() {
+    QSignalBlocker blocker(preproc_undistort_cb_);
+    preproc_undistort_cb_->setChecked(preproc_undistort_committed_);
+}
+
 void AlgorithmsPanel::apply_global_preproc(const std::string& key,
                                            const std::string& value) {
     // Delegate to the bridge, which iterates every live self-developed
@@ -603,7 +615,7 @@ void AlgorithmsPanel::build_preproc_selector(QVBoxLayout* parent_layout) {
         preproc_downsample_user_touched_ = true;
     });
     connect(preproc_undistort_cb_, &QCheckBox::toggled, this, [this](bool on) {
-        apply_global_preproc("preproc_undistort_enabled", on ? "true" : "false");
+        emit preproc_undistort_requested(on);
     });
     connect(preproc_undistort_path_, &QLineEdit::textChanged, this, [this](const QString& text) {
         apply_global_preproc("preproc_undistort_path", text.toStdString());

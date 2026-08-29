@@ -27,6 +27,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <vector>
 
@@ -98,10 +99,11 @@ MainWindow::MainWindow(QWidget* parent)
         // When zooming, the whole view IS the ROI — hide the yellow overlay
         // frame (its sensor coordinates no longer map onto the cropped
         // texture). Restore it when returning to the full-canvas mode.
-        bool en = false;
-        int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-        camera_.unified_roi(en, x0, y0, x1, y1);
-        display_->set_roi_overlay(x0, y0, x1 - x0, y1 - y0, en && !on);
+        refresh_frame_space_roi();
+        display_->set_roi_overlay(frame_space_roi_.x0, frame_space_roi_.y0,
+                                  frame_space_roi_.x1 - frame_space_roi_.x0,
+                                  frame_space_roi_.y1 - frame_space_roi_.y0,
+                                  frame_space_roi_.active && !on);
     });
 
     // Theme controller must be attached before the menu is built (so the
@@ -784,11 +786,29 @@ void MainWindow::wire_signals() {
 
     // Controller -> UI
     connect(&camera_, &CameraController::connected, this, [this](const SensorInfo& info) {
+        std::optional<ConditionedGeometry> initial_file_geometry;
+        if (info.is_file) {
+            initial_file_geometry = camera_.filter_chain()->conditioned_geometry();
+        }
+        file_conditioned_geometry_.reset();
+        frame_space_roi_ = FrameSpaceRoi{};
+        if (info.is_file && !initial_file_geometry) {
+            // setup_camera() normally publishes this before connected(). Do
+            // not let a file source fall back to interpreting a conditioned
+            // stream with raw source dimensions if that invariant is broken.
+            statusBar()->showMessage(
+                tr("File playback did not publish conditioned geometry."), 5000);
+            camera_.disconnect();
+            return;
+        }
         settings_->information_panel()->set_info(info);
         settings_->devices_panel()->set_connected(true);
-        // Propagate actual sensor dimensions to the algorithm bridge so
-        // algorithm backends are created with the correct width/height.
-        algo_bridge_.set_sensor_dimensions(info.width, info.height);
+        if (initial_file_geometry) {
+            synchronize_file_consumers(*initial_file_geometry);
+        } else {
+            // Live remains in Raw Source Space until U1C3's fan-out work.
+            algo_bridge_.set_sensor_dimensions(info.width, info.height);
+        }
         status_conn_->setText(tr("Connected: %1").arg(info.generation_name.isEmpty()
                                                            ? info.integrator
                                                            : info.generation_name));
@@ -809,13 +829,12 @@ void MainWindow::wire_signals() {
         if (auto* pb = findChild<QDockWidget*>("PlaybackDock")) {
             pb->setVisible(info.is_file);
         }
-        // Keep the XYT 3D display's sensor geometry in sync with the live
-        // camera so point coordinates are normalized correctly. Without this
-        // (e.g. when the XYT window was opened before a camera connected, or
-        // after a reconnect) points render at raw pixel scale and the cloud
-        // is clipped/garbled.
         if (xyt_display_) {
-            xyt_display_->set_sensor_geometry(info.width, info.height);
+            if (initial_file_geometry) {
+                xyt_display_->set_conditioned_geometry(*initial_file_geometry);
+            } else {
+                xyt_display_->set_sensor_geometry(info.width, info.height);
+            }
         }
         // Reset ALL algorithm instances to clear temporal state from a
         // previous session (previous file or live camera). Without this,
@@ -830,13 +849,13 @@ void MainWindow::wire_signals() {
         // events would update current_t_ (e.t > current_t_ is false) → the
         // algorithm freezes on stale output. See devlog/gui_optimization.md §8.
         //
-        // Also update sensor dimensions on existing instances: when a new
-        // file/camera connects with different dimensions, the ROI must be
-        // recomputed at the new sensor size. Without this, the ROI stays at
-        // the old sensor's center, filtering out most events and producing
-        // dark/black output from frame-producing algorithms.
+        // Calibration remains defined in raw coordinates. Geometry-aware
+        // consumers were refreshed above from the file snapshot; only a
+        // calibration instance needs its raw-source dimensions restored.
         for (auto& inst : algo_bridge_.list_live()) {
-            inst->set_sensor_dimensions(info.width, info.height);
+            if (inst->info().category == "calibration") {
+                inst->set_sensor_dimensions(info.width, info.height);
+            }
             inst->reset();
         }
         // Clear the XYT 3D display buffer so stale events from the previous
@@ -888,6 +907,8 @@ void MainWindow::wire_signals() {
         remove_algo_callback();
         prev_frame_ts_ = 0;
         prev_frame_wall_ = {};
+        file_conditioned_geometry_.reset();
+        frame_space_roi_ = FrameSpaceRoi{};
         perf_meter_.reset();
         last_rate_eps_ = 0.0;
         settings_->information_panel()->clear();
@@ -959,11 +980,13 @@ void MainWindow::wire_signals() {
                 // EventDisplayWidget scales it to the window. Mode (b) is
                 // the pass-through default.
                 if (roi_zoom_cb_->isChecked()) {
-                    bool zen = false;
-                    int zx0 = 0, zy0 = 0, zx1 = 0, zy1 = 0;
-                    camera_.unified_roi(zen, zx0, zy0, zx1, zy1);
-                    if (zen && zx1 > zx0 && zy1 > zy0) {
-                        QRect zr(zx0, zy0, zx1 - zx0, zy1 - zy0);
+                    refresh_frame_space_roi();
+                    if (frame_space_roi_.active &&
+                        frame_space_roi_.x1 > frame_space_roi_.x0 &&
+                        frame_space_roi_.y1 > frame_space_roi_.y0) {
+                        QRect zr(frame_space_roi_.x0, frame_space_roi_.y0,
+                                 frame_space_roi_.x1 - frame_space_roi_.x0,
+                                 frame_space_roi_.y1 - frame_space_roi_.y0);
                         zr &= frame.rect();
                         if (!zr.isEmpty() && zr != frame.rect()) {
                             frame = frame.copy(zr);
@@ -1112,15 +1135,41 @@ void MainWindow::wire_signals() {
     // the dialog re-opens with the drawn rect for confirmation instead.
     connect(display_, &EventDisplayWidget::roi_dragged, this,
             [this](int x, int y, int w, int h) {
+                // A zoomed file frame is cropped in Conditioned Output Space.
+                // Restore its full-frame offset before conservatively mapping
+                // the drag back to canonical Raw Source Space.
+                refresh_frame_space_roi();
+                int frame_x = x;
+                int frame_y = y;
+                if (roi_zoom_cb_->isChecked() && frame_space_roi_.active) {
+                    if (frame_x < 0 || frame_y < 0 ||
+                        frame_x > std::numeric_limits<int>::max() - frame_space_roi_.x0 ||
+                        frame_y > std::numeric_limits<int>::max() - frame_space_roi_.y0) {
+                        report_roi_admission_rejection(
+                            tr("ROI drag cannot be represented in source coordinates."));
+                        return;
+                    }
+                    frame_x += frame_space_roi_.x0;
+                    frame_y += frame_space_roi_.y0;
+                }
+                const auto raw_rect = map_display_rectangle_to_raw(frame_x, frame_y, w, h);
+                if (!raw_rect) {
+                    report_roi_admission_rejection(
+                        tr("ROI drag cannot be mapped to the current source geometry."));
+                    return;
+                }
+                const int raw_w = raw_rect->x1 - raw_rect->x0;
+                const int raw_h = raw_rect->y1 - raw_rect->y0;
                 if (roi_draw_pending_) {
                     roi_draw_pending_ = false;
                     on_toggle_roi_drag(false);
-                    roi_pending_rect_ = {x, y, w, h};
+                    roi_pending_rect_ = {raw_rect->x0, raw_rect->y0, raw_w, raw_h};
                     open_roi_settings_dialog();
                     return;
                 }
                 QString rejection;
-                if (!camera_.set_unified_roi(true, x, y, w, h, std::nullopt, &rejection)) {
+                if (!camera_.set_unified_roi(true, raw_rect->x0, raw_rect->y0,
+                                             raw_w, raw_h, std::nullopt, &rejection)) {
                     restore_roi_checkbox_state();
                     report_roi_admission_rejection(rejection);
                 }
@@ -1221,6 +1270,8 @@ void MainWindow::wire_signals() {
                         fp->set_display_preproc_param(key.toStdString(), value.toStdString());
                     }
                 });
+        connect(ap, &AlgorithmsPanel::preproc_undistort_requested, this,
+                &MainWindow::on_preproc_undistort_requested);
         // Unified ROI (Phase 2.6 debug D-6): the Algorithms page and the
         // Hardware page each expose an "Enable ROI" checkbox + a "ROI
         // Settings..." button, all driving the single state source. All
@@ -1240,16 +1291,7 @@ void MainWindow::wire_signals() {
                     // active; while zoomed the overlay frame is hidden (the
                     // whole view is the ROI).
                     roi_zoom_cb_->setEnabled(en);
-                    const bool zoomed = en && roi_zoom_cb_->isChecked();
-                    display_->set_roi_overlay(x0, y0, x1 - x0, y1 - y0,
-                                              en && !zoomed);
-                    // Same window drives the algorithm path: every live
-                    // instance is resized to the ROI and fed ROI-relative
-                    // events — except in RONI mode, where the source drops
-                    // inside-rect events at absolute coordinates and the
-                    // instances stay pass-through (debug D-5).
-                    algo_bridge_.set_unified_roi_state(en, x0, y0, x1, y1,
-                                                       camera_.unified_roi_roni());
+                    apply_frame_space_roi_to_consumers();
                 });
         connect(ap, &AlgorithmsPanel::algorithm_toggled, this,
                 [this, ap](const QString& name, bool on) {
@@ -1506,6 +1548,23 @@ void MainWindow::on_toggle_roi_drag(bool on) {
     display_->set_roi_drag_mode(on);
     statusBar()->showMessage(on ? tr("ROI drag mode on — draw a rectangle on the display.")
                                 : tr("ROI drag mode off."), 3000);
+}
+
+void MainWindow::on_preproc_undistort_requested(const bool on) {
+    auto* panel = settings_ ? settings_->algorithms_panel() : nullptr;
+    if (!panel) return;
+
+    QString rejection;
+    if (!camera_.set_raw_coordinate_calibration_admission(on, &rejection)) {
+        panel->restore_preproc_undistort();
+        statusBar()->showMessage(
+            rejection.isEmpty()
+                ? tr("Undistort request was not applied.")
+                : tr("Undistort request rejected: %1").arg(rejection),
+            5000);
+        return;
+    }
+    panel->commit_preproc_undistort(on);
 }
 
 void MainWindow::on_roi_enable_toggled(bool on) {
@@ -1826,9 +1885,107 @@ void MainWindow::install_algo_callback() {
         });
 }
 
-void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events,
+std::optional<ConditionedGeometry> MainWindow::active_file_geometry() {
+    if (file_conditioned_geometry_) return file_conditioned_geometry_;
+    if (!camera_.is_file_source()) return std::nullopt;
+    return camera_.filter_chain()->conditioned_geometry();
+}
+
+void MainWindow::refresh_frame_space_roi() {
+    FrameSpaceRoi next;
+    bool raw_enabled = false;
+    int raw_x0 = 0, raw_y0 = 0, raw_x1 = 0, raw_y1 = 0;
+    camera_.unified_roi(raw_enabled, raw_x0, raw_y0, raw_x1, raw_y1);
+    if (!raw_enabled) {
+        frame_space_roi_ = next;
+        return;
+    }
+
+    next.active = true;
+    next.roni = camera_.unified_roi_roni();
+    GeometryRect frame_rect{raw_x0, raw_y0, raw_x1, raw_y1};
+    if (camera_.is_file_source()) {
+        const auto geometry = active_file_geometry();
+        if (!geometry) {
+            // File events cannot be safely interpreted until their matching
+            // snapshot is available. Do not fall back to raw frame geometry.
+            frame_space_roi_ = FrameSpaceRoi{};
+            return;
+        }
+        const auto mapped = geometry->map_raw_rectangle(frame_rect);
+        if (!mapped) {
+            frame_space_roi_ = FrameSpaceRoi{};
+            return;
+        }
+        frame_rect = *mapped;
+    }
+    next.x0 = frame_rect.x0;
+    next.y0 = frame_rect.y0;
+    next.x1 = frame_rect.x1;
+    next.y1 = frame_rect.y1;
+    frame_space_roi_ = next;
+}
+
+void MainWindow::apply_frame_space_roi_to_consumers() {
+    refresh_frame_space_roi();
+    const bool zoomed = frame_space_roi_.active && roi_zoom_cb_->isChecked();
+    display_->set_roi_overlay(frame_space_roi_.x0, frame_space_roi_.y0,
+                              frame_space_roi_.x1 - frame_space_roi_.x0,
+                              frame_space_roi_.y1 - frame_space_roi_.y0,
+                              frame_space_roi_.active && !zoomed);
+    algo_bridge_.set_unified_roi_state(frame_space_roi_.active,
+                                       frame_space_roi_.x0, frame_space_roi_.y0,
+                                       frame_space_roi_.x1, frame_space_roi_.y1,
+                                       frame_space_roi_.roni);
+}
+
+void MainWindow::synchronize_file_consumers(const ConditionedGeometry& geometry) {
+    const bool revision_changed = !file_conditioned_geometry_ ||
+        file_conditioned_geometry_->revision() != geometry.revision();
+    if (revision_changed) {
+        file_conditioned_geometry_ = geometry;
+        const GeometryExtent output = geometry.output_extent();
+        // Dimension updates and ROI-local state are applied before this
+        // batch's events reach an algorithm. Mapping-only revisions take the
+        // same path even when output W/H do not change.
+        algo_bridge_.set_sensor_dimensions(output.width, output.height);
+        apply_frame_space_roi_to_consumers();
+        for (auto& instance : algo_bridge_.list_live()) {
+            if (instance->info().category != "calibration") instance->reset();
+        }
+    }
+    if (xyt_display_) {
+        xyt_display_->set_conditioned_geometry(geometry);
+    }
+}
+
+std::optional<GeometryRect> MainWindow::map_display_rectangle_to_raw(const int x,
+                                                                       const int y,
+                                                                       const int w,
+                                                                       const int h) {
+    if (x < 0 || y < 0 || w <= 0 || h <= 0 ||
+        x > std::numeric_limits<int>::max() - w ||
+        y > std::numeric_limits<int>::max() - h) {
+        return std::nullopt;
+    }
+    GeometryRect frame_rect{x, y, x + w, y + h};
+    if (!camera_.is_file_source()) return frame_rect;
+    const auto geometry = active_file_geometry();
+    if (!geometry) return std::nullopt;
+    const auto raw_cover = geometry->map_output_rectangle_to_raw_cover(frame_rect);
+    // Upscaling can create output-only gaps. They intentionally have an empty
+    // conservative raw cover, which is not a valid ROI request: the legacy
+    // ROI API interprets a zero width/height as the full source.
+    if (!raw_cover || raw_cover->is_empty()) return std::nullopt;
+    return raw_cover;
+}
+
+void MainWindow::on_events_window_ready(std::shared_ptr<const ConditionedBatch> batch,
                                         Metavision::timestamp ts) {
-    if (!events || events->empty()) return;
+    if (!batch) return;
+    synchronize_file_consumers(batch->geometry);
+    const auto& events = batch->events;
+    if (events.empty()) return;
 
     // ======================================================================
     // TIMESTAMP SCALING FOR ALGORITHM EVENT FEEDING (FILE PLAYBACK ONLY)
@@ -1897,9 +2054,9 @@ void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::
                 // Create a copy with scaled timestamps: scaled_t = real_t / rate.
                 // This makes the algorithm see time advancing at wall-clock rate.
                 auto scaled = std::make_shared<std::vector<Metavision::EventCD>>();
-                scaled->reserve(events->size());
+                scaled->reserve(events.size());
                 const double inv_rate = 1.0 / playback_rate;
-                for (const auto& ev : *events) {
+                for (const auto& ev : events) {
                     Metavision::EventCD scaled_ev = ev;
                     scaled_ev.t = static_cast<Metavision::timestamp>(
                         static_cast<double>(ev.t) * inv_rate);
@@ -1914,8 +2071,8 @@ void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::
             } else {
                 for (auto& inst : instances) {
                     if (inst->is_enabled()) {
-                        inst->push_events(events->data(),
-                                          events->data() + events->size());
+                        inst->push_events(events.data(),
+                                          events.data() + events.size());
                     }
                 }
             }
@@ -1939,23 +2096,23 @@ void MainWindow::on_events_window_ready(std::shared_ptr<std::vector<Metavision::
     // Feed the performance profiler (file playback path). For file mode the
     // latency measured here → frame_ready is near-zero (both on GUI thread),
     // which correctly reflects that file playback has no real-time backlog.
-    perf_meter_.tick_events(events->size(), ts);
+    perf_meter_.tick_events(events.size(), ts);
 
     // Feed the XYT 3D display with REAL (unscaled) timestamps — the Z axis
     // must show the actual event time, not the scaled playback time.
     // Same downsampling as the live path so a large accumulation window
     // doesn't overwhelm the OpenGL point cloud.
     if (xyt_display_) {
-        const std::size_t count = events->size();
+        const std::size_t count = events.size();
         auto copy = std::make_shared<std::vector<Metavision::EventCD>>();
         if (count > 5000) {
             const std::size_t stride = count / 5000;
             copy->reserve(count / stride + 1);
             for (std::size_t i = 0; i < count; i += stride) {
-                copy->push_back((*events)[i]);
+                copy->push_back(events[i]);
             }
         } else {
-            *copy = *events;
+            *copy = events;
         }
         if (xyt_algo_) {
             const auto tw = xyt_algo_->get_param("time_window_us");
@@ -1987,6 +2144,13 @@ void MainWindow::process_algo_results(QImage& frame) {
     // in the concrete IDisplayStrategy classes (gui/display/display_strategy.cpp).
     DisplayContext ctx{&annotator_, &algo_windows_, xyt_display_.data(), this,
                        &camera_, nullptr};
+    refresh_frame_space_roi();
+    ctx.frame_roi_active = frame_space_roi_.active;
+    ctx.frame_roi_roni = frame_space_roi_.roni;
+    ctx.frame_roi_x0 = frame_space_roi_.x0;
+    ctx.frame_roi_y0 = frame_space_roi_.y0;
+    ctx.frame_roi_x1 = frame_space_roi_.x1;
+    ctx.frame_roi_y1 = frame_space_roi_.y1;
     // Snapshot once and reuse for draw_roi_overlays to avoid a redundant
     // list_live() call (N7).
     auto instances = algo_bridge_.list_live();
@@ -2315,8 +2479,15 @@ void MainWindow::on_open_xyt_view() {
         xyt_display_->setWindowTitle(tr("XYT 3D Event Cloud"));
         xyt_display_->setAttribute(Qt::WA_DeleteOnClose);
         if (camera_.is_connected()) {
-            const auto& info = camera_.sensor_info();
-            xyt_display_->set_sensor_geometry(info.width, info.height);
+            if (camera_.is_file_source()) {
+                const auto geometry = active_file_geometry();
+                if (geometry) {
+                    xyt_display_->set_conditioned_geometry(*geometry);
+                }
+            } else {
+                const auto& info = camera_.sensor_info();
+                xyt_display_->set_sensor_geometry(info.width, info.height);
+            }
         }
         xyt_algo_ = algo_bridge_.find_live("xyt_visualizer");
         if (!xyt_algo_) xyt_algo_ = algo_bridge_.find_or_create("xyt_visualizer");

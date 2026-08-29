@@ -95,6 +95,7 @@ private slots:
     void on_toggle_roi_drag(bool on);
     void restore_roi_checkbox_state();
     void report_roi_admission_rejection(const QString& reason);
+    void on_preproc_undistort_requested(bool on);
     /// Shared handler for both pages' "Enable ROI" checkboxes (Phase 2.6
     /// debug D-6): applies the stored rect (default center 256×144 when
     /// unset) and opens the settings dialog when turned on.
@@ -159,6 +160,22 @@ private:
 
     void on_file_opened_for_playback(const QString& path);
 
+    struct FrameSpaceRoi {
+        bool active{false};
+        bool roni{false};
+        int x0{0};
+        int y0{0};
+        int x1{0};
+        int y1{0};
+    };
+
+    std::optional<ConditionedGeometry> active_file_geometry();
+    void refresh_frame_space_roi();
+    void apply_frame_space_roi_to_consumers();
+    void synchronize_file_consumers(const ConditionedGeometry& geometry);
+    std::optional<GeometryRect> map_display_rectangle_to_raw(int x, int y,
+                                                              int w, int h);
+
     // Algorithm event/result pipeline — pushes CD events to all live
     // AlgoInstances and pulls results for overlay/replace/standalone display.
     void install_algo_callback();
@@ -170,7 +187,7 @@ private:
     /// XYT 3D display, synchronously with the displayed frame. This replaces
     /// the SDK CD callback path for file sources, where all events arrive in
     /// ~10ms and would otherwise be processed before the first frame is shown.
-    void on_events_window_ready(std::shared_ptr<std::vector<Metavision::EventCD>> events,
+    void on_events_window_ready(std::shared_ptr<const ConditionedBatch> batch,
                                 Metavision::timestamp ts);
 
     EventDisplayWidget* display_{nullptr};
@@ -187,6 +204,10 @@ private:
     bool roi_draw_pending_{false};
     struct PendingRect { int x, y, w, h; };
     std::optional<PendingRect> roi_pending_rect_;
+    /// The latest file-batch geometry. It is copied from ConditionedBatch so
+    /// frame-space interactions never infer output geometry from raw metadata.
+    std::optional<ConditionedGeometry> file_conditioned_geometry_;
+    FrameSpaceRoi frame_space_roi_;
     /// Saved unified-ROI state for the default-ROI automation (Phase 2.6
     /// debug D-7): heavy algorithms force the center 256×144 ROI on enable
     /// and restore this prior state on disable.

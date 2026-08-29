@@ -235,6 +235,16 @@ bool CameraController::set_processed_recording_admission(const bool active, QStr
     return true;
 }
 
+bool CameraController::set_raw_coordinate_calibration_admission(const bool active,
+                                                                 QString* reason) {
+    std::string rejection;
+    if (!filter_chain_.try_set_raw_coordinate_calibration_active(active, &rejection)) {
+        if (reason) *reason = QString::fromStdString(rejection);
+        return false;
+    }
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Phase 2 facility accessors
 // ---------------------------------------------------------------------------
@@ -354,6 +364,16 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
     camera_ = std::make_unique<Metavision::Camera>(std::move(cam));
     fetch_sensor_info();
 
+    std::string admission_reason;
+    if (!filter_chain_.try_set_admission_source(
+            is_file_ ? FilterAdmissionSource::File : FilterAdmissionSource::Live,
+            &admission_reason)) {
+        teardown();
+        emit disconnected();
+        emit error(tr("Source cannot represent the active preprocessing plan."));
+        return;
+    }
+
     // A retained file ROI lives in FileFrameGenerator, while a newly opened
     // live source has no active hardware ROI until one is applied to it.
     // Reconcile the admission context with this source before publishing its
@@ -363,7 +383,6 @@ void CameraController::setup_camera(Metavision::Camera&& cam, bool is_file) {
         int x0 = 0, y0 = 0, x1 = 0, y1 = 0;
         frame_pipeline_.file_roi(source_raw_roi_or_roni_active, x0, y0, x1, y1);
     }
-    std::string admission_reason;
     if (!filter_chain_.try_set_raw_roi_or_roni_active(source_raw_roi_or_roni_active,
                                                        &admission_reason)) {
         teardown();

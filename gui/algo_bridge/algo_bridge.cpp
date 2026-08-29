@@ -8,6 +8,7 @@
 
 #include <QImage>
 
+#include <algorithm>
 #include <mutex>
 
 #include "display/display_strategy.h"  // IDisplayStrategy + concrete strategies
@@ -250,6 +251,18 @@ void AlgoInstance::reset() {
     }
 }
 
+void AlgoInstance::reapply_saved_parameters_locked() {
+    if (!backend_) return;
+    // Keep the registry order rather than iterating the unordered value map:
+    // some backends rebuild dependent state while applying their parameters.
+    for (const auto& spec : info_.params) {
+        const auto value = param_values_.find(spec.key);
+        if (value != param_values_.end()) {
+            backend_->set_param(value->first, value->second);
+        }
+    }
+}
+
 void AlgoInstance::set_sensor_dimensions(int width, int height) {
     std::lock_guard<std::mutex> lk(mutex_);
     // Track the source's full-sensor dims (source switch) so a later
@@ -269,6 +282,7 @@ void AlgoInstance::set_sensor_dimensions(int width, int height) {
     }
     if (backend_) {
         backend_->set_sensor_dimensions(width_, height_);
+        reapply_saved_parameters_locked();
     }
 }
 
@@ -288,6 +302,7 @@ void AlgoInstance::set_unified_roi(bool enabled, int x0, int y0, int x1, int y1)
         height_ = create_h_;
     }
     backend_->set_sensor_dimensions(width_, height_);
+    reapply_saved_parameters_locked();
 }
 
 // ---------------------------------------------------------------------------
@@ -518,8 +533,31 @@ std::shared_ptr<AlgoInstance> AlgoBridge::find_or_create_with_info(const AlgoInf
 }
 
 void AlgoBridge::set_sensor_dimensions(int width, int height) {
-    sensor_w_ = (width > 0) ? width : 1280;
-    sensor_h_ = (height > 0) ? height : 720;
+    std::vector<std::shared_ptr<AlgoInstance>> instances;
+    std::vector<std::pair<std::string, std::string>> preproc;
+    {
+        std::lock_guard<std::mutex> lk(live_mutex_);
+        sensor_w_ = (width > 0) ? width : 1280;
+        sensor_h_ = (height > 0) ? height : 720;
+        for (auto it = live_instances_.begin(); it != live_instances_.end();) {
+            if (auto instance = it->second.lock()) {
+                if (instance->info().category != "calibration") {
+                    instances.push_back(std::move(instance));
+                }
+                ++it;
+            } else {
+                it = live_instances_.erase(it);
+            }
+        }
+        preproc.assign(preproc_cache_.begin(), preproc_cache_.end());
+    }
+    std::sort(preproc.begin(), preproc.end());
+    for (auto& instance : instances) {
+        instance->set_sensor_dimensions(sensor_w_, sensor_h_);
+        for (const auto& [key, value] : preproc) {
+            instance->set_param(key, value);
+        }
+    }
 }
 
 void AlgoBridge::apply_global_preproc(const std::string& key,
@@ -589,11 +627,13 @@ void AlgoBridge::set_unified_roi_state(bool enabled, int x0, int y0,
     // set_unified_roi(false) = pass-through at full dimensions.
     const bool inst_enabled = enabled && !roni;
     std::vector<std::shared_ptr<AlgoInstance>> snapshot;
+    std::vector<std::pair<std::string, std::string>> preproc;
     {
         std::lock_guard<std::mutex> lk(live_mutex_);
         uroi_enabled_ = enabled;
         uroi_roni_ = roni;
         uroi_x0_ = x0; uroi_y0_ = y0; uroi_x1_ = x1; uroi_y1_ = y1;
+        preproc.assign(preproc_cache_.begin(), preproc_cache_.end());
         for (auto it = live_instances_.begin(); it != live_instances_.end(); ) {
             if (auto inst = it->second.lock()) {
                 // Calibration instances manage their own geometry and must
@@ -608,8 +648,12 @@ void AlgoBridge::set_unified_roi_state(bool enabled, int x0, int y0,
             }
         }
     }
+    std::sort(preproc.begin(), preproc.end());
     for (auto& inst : snapshot) {
         inst->set_unified_roi(inst_enabled, x0, y0, x1, y1);
+        for (const auto& [key, value] : preproc) {
+            inst->set_param(key, value);
+        }
     }
 }
 

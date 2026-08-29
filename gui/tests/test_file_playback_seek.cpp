@@ -32,6 +32,7 @@
 #include <metavision/sdk/stream/file_config_hints.h>
 
 #include "algo_bridge/algo_bridge.h"
+#include "algo_bridge/filter_chain.h"
 #include "app/frame_pipeline.h"
 #include "display/event_display_widget.h"
 
@@ -40,7 +41,7 @@ namespace {
 struct SeekCapture {
     std::vector<std::string> order;
     QImage frame;
-    std::shared_ptr<std::vector<Metavision::EventCD>> events;
+    std::shared_ptr<const gui::ConditionedBatch> batch;
     Metavision::timestamp position{-1};
 };
 
@@ -234,16 +235,17 @@ public:
                          });
         QObject::connect(&pipeline_, &gui::FramePipeline::events_window_ready,
                          &pipeline_,
-                         [this](std::shared_ptr<std::vector<Metavision::EventCD>> events,
+                         [this](std::shared_ptr<const gui::ConditionedBatch> batch,
                                 Metavision::timestamp timestamp_us) {
                              have_pending_window_ = true;
                              pending_timestamp_us_ = timestamp_us;
-                             pending_event_count_ = events ? events->size() : 0u;
-                             if (!events || events->empty()) return;
+                             pending_event_count_ = batch ? batch->events.size() : 0u;
+                             if (!batch || batch->events.empty()) return;
                              for (auto &instance : bridge_.list_live()) {
                                  if (instance->is_enabled()) {
-                                     instance->push_events(events->data(),
-                                                           events->data() + events->size());
+                                     instance->push_events(batch->events.data(),
+                                                           batch->events.data() +
+                                                               batch->events.size());
                                  }
                              }
                          });
@@ -302,6 +304,10 @@ public:
             const int roi_x = (source_width - kRawRoiWidth) / 2;
             const int roi_y = (source_height - kRawRoiHeight) / 2;
 
+            if (!filter_chain_.set_geometry(source_width, source_height)) {
+                return fail(error, "Failed to initialize conditioned geometry");
+            }
+            pipeline_.set_file_filter_chain(&filter_chain_);
             if (!pipeline_.start_file(source_width, source_height, 30, kRawWindowUs)) {
                 return fail(error, "FramePipeline::start_file failed");
             }
@@ -413,6 +419,7 @@ private:
         }
     }
 
+    gui::FilterChain filter_chain_;
     gui::FramePipeline pipeline_;
     gui::AlgoBridge bridge_;
     std::shared_ptr<gui::AlgoInstance> e2vid_;
@@ -451,9 +458,12 @@ int main(int argc, char** argv) {
 }
 
 TEST(PausedSeekImmediateRender, FramesAndDisplayUpdateSynchronously) {
+    gui::FilterChain filter_chain;
     gui::FramePipeline pipeline;
     gui::EventDisplayWidget display;
 
+    ASSERT_TRUE(filter_chain.set_geometry(4, 4));
+    pipeline.set_file_filter_chain(&filter_chain);
     ASSERT_TRUE(pipeline.start_file(4, 4, 30, 100));
     // FramePipeline no longer exposes FileFrameGenerator's internal playing
     // state. The synchronous signal order below is the supported paused-seek
@@ -470,10 +480,10 @@ TEST(PausedSeekImmediateRender, FramesAndDisplayUpdateSynchronously) {
     QObject::connect(&pipeline, &gui::FramePipeline::file_seeked,
                      [&](Metavision::timestamp) { capture.order.push_back("seeked"); });
     QObject::connect(&pipeline, &gui::FramePipeline::events_window_ready,
-                     [&](std::shared_ptr<std::vector<Metavision::EventCD>> window,
+                     [&](std::shared_ptr<const gui::ConditionedBatch> batch,
                          Metavision::timestamp) {
                          capture.order.push_back("events");
-                         capture.events = std::move(window);
+                         capture.batch = batch;
                      });
     QObject::connect(&pipeline, &gui::FramePipeline::frame_ready,
                      [&](QImage frame, Metavision::timestamp) {
@@ -490,10 +500,10 @@ TEST(PausedSeekImmediateRender, FramesAndDisplayUpdateSynchronously) {
     pipeline.seek_file(0);
 
     ASSERT_EQ(capture.order, (std::vector<std::string>{"seeked", "events", "frame", "position"}));
-    ASSERT_NE(capture.events, nullptr);
-    ASSERT_EQ(capture.events->size(), 1u);
-    EXPECT_EQ(capture.events->front().x, 0);
-    EXPECT_EQ(capture.events->front().y, 0);
+    ASSERT_NE(capture.batch, nullptr);
+    ASSERT_EQ(capture.batch->events.size(), 1u);
+    EXPECT_EQ(capture.batch->events.front().x, 0);
+    EXPECT_EQ(capture.batch->events.front().y, 0);
     EXPECT_EQ(capture.position, 0);
     ASSERT_FALSE(capture.frame.isNull());
     const QImage first_frame = capture.frame.copy();
@@ -503,10 +513,10 @@ TEST(PausedSeekImmediateRender, FramesAndDisplayUpdateSynchronously) {
     pipeline.seek_file(200);
 
     ASSERT_EQ(capture.order, (std::vector<std::string>{"seeked", "events", "frame", "position"}));
-    ASSERT_NE(capture.events, nullptr);
-    ASSERT_EQ(capture.events->size(), 1u);
-    EXPECT_EQ(capture.events->front().x, 3);
-    EXPECT_EQ(capture.events->front().y, 3);
+    ASSERT_NE(capture.batch, nullptr);
+    ASSERT_EQ(capture.batch->events.size(), 1u);
+    EXPECT_EQ(capture.batch->events.front().x, 3);
+    EXPECT_EQ(capture.batch->events.front().y, 3);
     EXPECT_EQ(capture.position, 200);
     ASSERT_FALSE(capture.frame.isNull());
     EXPECT_NE(capture.frame, first_frame);

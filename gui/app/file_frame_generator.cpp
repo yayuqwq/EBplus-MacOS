@@ -3,6 +3,7 @@
 #include "file_frame_generator.h"
 
 #include <algorithm>
+#include <exception>
 
 #include <opencv2/imgproc.hpp>
 
@@ -59,12 +60,13 @@ void FileFrameGenerator::add_events(const Metavision::EventCD* begin,
 
 void FileFrameGenerator::set_geometry(long width, long height) {
     if (width <= 0 || height <= 0) return;
-    if (width_ == width && height_ == height && !frame_.empty()) return;
-    width_ = width;
-    height_ = height;
-    frame_.create(static_cast<int>(height_), static_cast<int>(width_), CV_8UC3);
-    display_preproc_.init(static_cast<int>(width), static_cast<int>(height));
-    // Recompute the software ROI rect against the new sensor size.
+    raw_width_ = width;
+    raw_height_ = height;
+    output_width_ = 0;
+    output_height_ = 0;
+    rendered_geometry_revision_ = 0;
+    frame_.release();
+    // Recompute the canonical raw ROI rect against the new source size.
     set_display_roi(roi_enabled_, roi_x_, roi_y_, roi_w_, roi_h_, roi_roni_);
 }
 
@@ -75,8 +77,8 @@ void FileFrameGenerator::set_display_roi(bool enabled, int x, int y, int w, int 
     roi_x_ = x; roi_y_ = y; roi_w_ = w; roi_h_ = h;
     // Compute the rect (auto-center on -1, clamp to sensor), mirroring
     // ProcessRegion::compute and CameraController::set_unified_roi.
-    const int sw = width_ > 0 ? static_cast<int>(width_) : 1280;
-    const int sh = height_ > 0 ? static_cast<int>(height_) : 720;
+    const int sw = raw_width_ > 0 ? static_cast<int>(raw_width_) : 1280;
+    const int sh = raw_height_ > 0 ? static_cast<int>(raw_height_) : 720;
     const int rw = (w <= 0) ? sw : std::min(w, sw);
     const int rh = (h <= 0) ? sh : std::min(h, sh);
     const int rx = (x < 0) ? (sw - rw) / 2 : std::min(std::max(0, x), sw - rw);
@@ -115,7 +117,7 @@ void FileFrameGenerator::set_duration_us(Metavision::timestamp us) {
 
 void FileFrameGenerator::play() {
     if (playing_) return;
-    if (width_ <= 0 || height_ <= 0) return;
+    if (raw_width_ <= 0 || raw_height_ <= 0) return;
     // If at or past EOF, restart from the beginning. Only meaningful once
     // loading is complete — a cursor parked at the buffer top while the
     // file is still streaming is NOT EOF (audit §六-P2).
@@ -156,7 +158,7 @@ void FileFrameGenerator::seek(Metavision::timestamp t_us) {
     emit seeked(t_us);
     // Render immediately so the user sees the seeked frame.
     render_frame(cursor_us_, cursor_us_ + accumulation_us_);
-    if (width_ > 0 && height_ > 0 && !frame_.empty()) {
+    if (!frame_.empty()) {
         cv::Mat rgb;
         cv::cvtColor(frame_, rgb, cv::COLOR_BGR2RGB);
         QImage img(rgb.data, rgb.cols, rgb.rows,
@@ -198,7 +200,7 @@ bool FileFrameGenerator::is_truncated() const {
 }
 
 void FileFrameGenerator::on_timer() {
-    if (width_ <= 0 || height_ <= 0) return;
+    if (raw_width_ <= 0 || raw_height_ <= 0) return;
 
     const Metavision::timestamp dur = duration_us_.load(std::memory_order_relaxed);
 
@@ -260,26 +262,10 @@ void FileFrameGenerator::on_timer() {
 
 void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
                                       Metavision::timestamp end_us) {
-    if (frame_.empty()) {
-        if (width_ > 0 && height_ > 0) {
-            frame_.create(static_cast<int>(height_),
-                          static_cast<int>(width_), CV_8UC3);
-        } else {
-            return;
-        }
-    }
-
-    // Use the Metavision color palette (same as CDFrameGenerator).
-    const cv::Vec3b bg   = Metavision::get_bgr_color(palette_, Metavision::ColorType::Background);
-    const cv::Vec3b on   = Metavision::get_bgr_color(palette_, Metavision::ColorType::Positive);
-    const cv::Vec3b off  = Metavision::get_bgr_color(palette_, Metavision::ColorType::Negative);
-    frame_.setTo(cv::Scalar(bg[0], bg[1], bg[2]));
-
-    // Collect the RAW events in [start_us, end_us). These are used both for
-    // rendering (after FilterChain transformation) and for feeding algorithm
-    // instances (RAW, unfiltered — matching live mode where the algo CD
-    // callback is separate from the CameraController's FilterChain callback).
-    auto window_events = std::make_shared<std::vector<Metavision::EventCD>>();
+    // Collect the raw events in [start_us, end_us). Raw ROI/RONI selection
+    // deliberately precedes conditioning and remains the canonical source
+    // contract for file playback.
+    std::vector<Metavision::EventCD> raw_window_events;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!events_.empty()) {
@@ -295,7 +281,7 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
                 [](const Metavision::EventCD& e, Metavision::timestamp t) {
                     return e.t < t;
                 });
-            window_events->assign(begin_it, end_it);
+            raw_window_events.assign(begin_it, end_it);
         }
     }
 
@@ -305,7 +291,7 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
     // hardware ROI enabled. RONI mode (Phase 2.6 debug D-5) inverts the
     // predicate: keep events OUTSIDE the rect (hardware drops inside).
     if (roi_enabled_) {
-        auto& evs = *window_events;
+        auto& evs = raw_window_events;
         std::size_t kept = 0;
         for (std::size_t i = 0; i < evs.size(); ++i) {
             const auto& ev = evs[i];
@@ -318,51 +304,84 @@ void FileFrameGenerator::render_frame(Metavision::timestamp start_us,
         evs.resize(kept);
     }
 
-    // Apply FilterChain to the window events for BOTH display rendering and
-    // algorithm feeding. This ensures flip/rotate/etc. take effect immediately
-    // during file playback (events are buffered raw and filtered per-frame),
-    // AND that algorithm output is also flipped — ReplaceStrategy replaces
-    // the display frame with the algorithm's output, so if algorithms receive
-    // raw (unflipped) events, the flip would be invisible when a Replace-mode
-    // algorithm is running.
-    //
-    // NOTE: process() clears its output vector before filling it. We must NOT
-    // pass *window_events as both input (begin/end) and output — out.clear()
-    // would invalidate the input iterators (aliasing UB). Use a separate
-    // vector and move the result back.
-    const int h = static_cast<int>(height_);
-    const int w = static_cast<int>(width_);
-    if (filter_chain_ && filter_chain_->has_enabled()) {
-        std::vector<Metavision::EventCD> filtered;
-        filter_chain_->process(window_events->data(),
-                               window_events->data() + window_events->size(),
-                               filtered);
-        *window_events = std::move(filtered);
-    }
+    // One file window is conditioned exactly once. Even identity plans and
+    // empty windows publish their immutable snapshot so consumers can update
+    // geometry before receiving the next revision's events.
+    if (!filter_chain_) return;
+    const Metavision::EventCD* raw_begin =
+        raw_window_events.empty() ? nullptr : raw_window_events.data();
+    const Metavision::EventCD* raw_end = raw_begin == nullptr
+        ? nullptr
+        : raw_begin + raw_window_events.size();
+    auto conditioned = filter_chain_->process_conditioned(raw_begin, raw_end);
+    if (!conditioned) return;
+    auto batch = std::make_shared<const ConditionedBatch>(std::move(*conditioned));
+    if (!update_output_geometry(batch->geometry)) return;
+
+    // Use the Metavision color palette (same as CDFrameGenerator).
+    const cv::Vec3b bg =
+        Metavision::get_bgr_color(palette_, Metavision::ColorType::Background);
+    const cv::Vec3b on =
+        Metavision::get_bgr_color(palette_, Metavision::ColorType::Positive);
+    const cv::Vec3b off =
+        Metavision::get_bgr_color(palette_, Metavision::ColorType::Negative);
+    frame_.setTo(cv::Scalar(bg[0], bg[1], bg[2]));
+
     // Display-path preprocessing (Phase 2.5): apply the Preprocessing panel's
     // noise filter to the RENDERED pixels only. The events emitted to
     // algorithm instances below are intentionally NOT noise-filtered here —
     // each algorithm owns its Preprocessor stage with the same config.
-    const std::vector<Metavision::EventCD>* draw_events = window_events.get();
+    const std::vector<Metavision::EventCD>* draw_events = &batch->events;
     std::vector<Metavision::EventCD> display_filtered;
-    if (display_preproc_.active() && !window_events->empty()) {
+    if (display_preproc_.active() && !batch->events.empty()) {
         auto [p, m] = display_preproc_.apply(
-            reinterpret_cast<const gui_algo::Event*>(window_events->data()),
-            window_events->size());
+            reinterpret_cast<const gui_algo::Event*>(batch->events.data()),
+            batch->events.size());
         display_filtered.assign(
             reinterpret_cast<const Metavision::EventCD*>(p),
             reinterpret_cast<const Metavision::EventCD*>(p) + m);
         draw_events = &display_filtered;
     }
     for (const auto& ev : *draw_events) {
-        if (ev.x < 0 || ev.x >= w || ev.y < 0 || ev.y >= h) continue;
-        frame_.ptr<cv::Vec3b>(static_cast<int>(ev.y))[ev.x] = ev.p ? on : off;
+        const int x = static_cast<int>(ev.x);
+        const int y = static_cast<int>(ev.y);
+        if (x < 0 || x >= output_width_ || y < 0 || y >= output_height_) continue;
+        frame_.ptr<cv::Vec3b>(y)[x] = ev.p ? on : off;
     }
 
-    // Emit the (filtered) events in this window so algorithm instances can
-    // process them synchronously with the displayed frame. Emitted before
-    // frame_ready so results are ready when the frame is displayed.
-    emit events_window_ready(window_events, start_us);
+    // Publish the exact same batch consumed for rasterization before
+    // frame_ready, so algorithm and XYT state is revision-synchronized.
+    emit events_window_ready(std::move(batch), start_us);
+}
+
+bool FileFrameGenerator::update_output_geometry(const ConditionedGeometry& geometry) {
+    const GeometryExtent output = geometry.output_extent();
+    if (!FilterChain::is_file_raster_extent_representable(geometry.raw_extent(), output)) {
+        return false;
+    }
+    if (rendered_geometry_revision_ == geometry.revision() &&
+        output_width_ == output.width && output_height_ == output.height &&
+        !frame_.empty()) {
+        return true;
+    }
+
+    cv::Mat next_frame;
+    try {
+        next_frame.create(output.height, output.width, CV_8UC3);
+        // Rebuild the output-space temporal preprocessor before publishing
+        // the new geometry. Its NoiseFilter owns per-pixel state too, so an
+        // allocation failure cannot leave a partially committed revision.
+        display_preproc_.init(output.width, output.height);
+        display_preproc_.reset_filter();
+    } catch (const std::exception&) {
+        return false;
+    }
+
+    frame_ = std::move(next_frame);
+    output_width_ = output.width;
+    output_height_ = output.height;
+    rendered_geometry_revision_ = geometry.revision();
+    return true;
 }
 
 } // namespace gui

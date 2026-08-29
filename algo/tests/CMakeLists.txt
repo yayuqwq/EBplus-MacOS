@@ -156,6 +156,25 @@ gtest_discover_tests(test_conditioned_geometry
     DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
 )
 
+# U1C2 synthetic file playback: one conditioned batch drives the file
+# rasterizer and retains its matching geometry snapshot across ROI/RONI and
+# revision changes. The target owns a QCoreApplication test main.
+add_executable(test_file_conditioned_consumers
+    test_file_conditioned_consumers.cpp
+)
+target_include_directories(test_file_conditioned_consumers PRIVATE
+    ${CMAKE_SOURCE_DIR}/gui
+    ${CMAKE_SOURCE_DIR}
+)
+target_link_libraries(test_file_conditioned_consumers PRIVATE
+    gui_core
+    GTest::GTest
+)
+target_compile_options(test_file_conditioned_consumers PRIVATE -Wall -Wextra -Werror)
+gtest_discover_tests(test_file_conditioned_consumers
+    DISCOVERY_TIMEOUT "${EBPLUS_GTEST_DISCOVERY_TIMEOUT}"
+)
+
 # Standalone diagnostic: feed .raw events to EventToVideo and report stats.
 # Registered with CTest (audit §三-S7): all 7 diagnostics below assert via
 # their exit code and were verified to pass on algo/tests/sparklers.raw.
